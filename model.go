@@ -7,12 +7,18 @@ import (
 
 // Generator produces model responses. A Generator is configured for the model
 // reported by Info and may be used concurrently by multiple goroutines.
-// Implementations must honor context cancellation, return a nil response when
-// Generate returns an error, and return a nil Stream when Stream returns an
-// error. Before returning a Stream error, an implementation must release all
-// storage borrowed from the request. Info must include CapabilityGeneration. If
-// it does not include CapabilityStreaming, Stream returns an error classified
-// KindUnsupported.
+// Implementations must first call Request.Validate and return its error unchanged
+// or wrapped so errors.As preserves its Error fields. They must next return an
+// error matching ctx.Err if the context is already done, then apply capability
+// checks, then model-specific checks, all before provider I/O. Implementations
+// must continue to honor cancellation until Generate returns or a stream commits
+// its terminal state. They return a nil response when Generate returns an error
+// and a nil Stream when Stream returns an error. Before returning a Stream error,
+// an implementation must release all storage borrowed from the request. Info
+// must include CapabilityGeneration. If it does not include
+// CapabilityStreaming, Stream returns an error classified KindUnsupported.
+// Callers should give operations a context deadline appropriate to their
+// workload when an unbounded request is not acceptable.
 type Generator interface {
 	Info() ModelInfo
 	Generate(ctx context.Context, request Request) (*Response, error)
