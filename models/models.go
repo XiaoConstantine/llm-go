@@ -115,7 +115,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 
 	switch config.api {
 	case OpenAIChatCompletions:
-		return openai.New(openai.Config{
+		generator, err := openai.New(openai.Config{
 			Provider:     config.id,
 			Model:        info.Model,
 			Capabilities: info.Capabilities,
@@ -124,8 +124,12 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 			HTTPClient:   config.httpClient,
 			Headers:      config.headers,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return generator, nil
 	case AnthropicMessages:
-		return anthropic.New(anthropic.Config{
+		generator, err := anthropic.New(anthropic.Config{
 			Provider:     config.id,
 			Model:        info.Model,
 			Capabilities: info.Capabilities,
@@ -134,6 +138,10 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 			HTTPClient:   config.httpClient,
 			Headers:      config.headers,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return generator, nil
 	default:
 		panic("models: invalid configured API")
 	}

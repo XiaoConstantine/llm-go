@@ -140,6 +140,34 @@ func TestGeneratorSupportsOpenAICompatibleProvider(t *testing.T) {
 	}
 }
 
+func TestGeneratorReturnsNilOnProviderConfigurationError(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   ProviderConfig
+		model    string
+		contains string
+	}{
+		{name: "OpenAI", config: ProviderConfig{ID: "openai", API: OpenAIChatCompletions, BaseURL: ":"}, model: "gpt", contains: "base URL"},
+		{name: "Anthropic", config: ProviderConfig{ID: "anthropic", API: AnthropicMessages, BaseURL: ":"}, model: "claude", contains: "base URL"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			collection, err := New(test.config)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			generator, err := collection.Generator(llm.ModelInfo{Provider: test.config.ID, Model: test.model})
+			if generator != nil {
+				t.Fatalf("Generator() = %#v, want nil", generator)
+			}
+			modelErr := requireModelError(t, err, llm.KindInvalidRequest, "configure", test.config.ID)
+			if !strings.Contains(modelErr.Error(), test.contains) {
+				t.Fatalf("Generator() error = %v", modelErr)
+			}
+		})
+	}
+}
+
 func TestGeneratorRejectsInvalidIdentity(t *testing.T) {
 	collection, err := New(ProviderConfig{ID: "openai", API: OpenAIChatCompletions})
 	if err != nil {
