@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/anthropic"
 	"github.com/XiaoConstantine/llm-go/gemini"
 	"github.com/XiaoConstantine/llm-go/openai"
+	openaicodex "github.com/XiaoConstantine/llm-go/openai/codex"
 )
 
 // API identifies a provider wire protocol.
@@ -18,16 +20,30 @@ type API string
 const (
 	// OpenAIChatCompletions selects the OpenAI-compatible Chat Completions API.
 	OpenAIChatCompletions API = "openai-chat-completions"
+	// OpenAICodexResponses selects the ChatGPT subscription Codex Responses API.
+	OpenAICodexResponses API = "openai-codex-responses"
 	// AnthropicMessages selects the Anthropic-compatible Messages API.
 	AnthropicMessages API = "anthropic-messages"
 	// GeminiGenerateContent selects the Gemini Developer API GenerateContent protocol.
 	GeminiGenerateContent API = "gemini-generate-content"
 )
 
+// Credentials contains current token-based provider credentials. AccountID may
+// be empty when the selected protocol can derive it from AccessToken.
+type Credentials struct {
+	AccessToken string
+	AccountID   string
+}
+
+// CredentialResolver returns current token-based provider credentials.
+// rejectedAccessToken is nonempty after a provider rejects a token with HTTP
+// 401. A resolver must be safe for concurrent use.
+type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (Credentials, error)
+
 // ProviderConfig configures one provider. ID is the provider name used by
-// llm.ModelInfo and llm.Error. API selects its wire protocol. APIKey is optional
-// when the selected protocol permits unauthenticated or header-authenticated
-// endpoints; the Gemini Developer API requires it.
+// llm.ModelInfo and llm.Error. API selects its wire protocol. APIKey configures
+// API-key protocols. Credentials or ResolveCredentials configures token-based
+// protocols; currently OpenAICodexResponses is the only such protocol.
 //
 // BaseURL, HTTPClient, and Headers are forwarded to the selected provider
 // implementation. New copies Headers. The caller remains responsible for safe
@@ -35,25 +51,30 @@ const (
 // [http.DefaultClient], so operations should have a context deadline when an
 // unbounded request is not acceptable.
 type ProviderConfig struct {
-	ID         string
-	API        API
-	APIKey     string
-	BaseURL    string
-	HTTPClient *http.Client
-	Headers    http.Header
+	ID                 string
+	API                API
+	APIKey             string
+	Credentials        Credentials
+	ResolveCredentials CredentialResolver
+	BaseURL            string
+	HTTPClient         *http.Client
+	Headers            http.Header
 }
 
 type providerConfig struct {
-	id         string
-	api        API
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
-	headers    http.Header
+	id                 string
+	api                API
+	apiKey             string
+	credentials        Credentials
+	resolveCredentials CredentialResolver
+	baseURL            string
+	httpClient         *http.Client
+	headers            http.Header
 }
 
 // Collection is an immutable set of provider configurations. It is safe for
-// concurrent use when its configured HTTP clients are safe for concurrent use.
+// concurrent use when its configured HTTP clients and credential resolvers are
+// safe for concurrent use.
 type Collection struct {
 	providers map[string]providerConfig
 }
@@ -77,24 +98,48 @@ func New(configs ...ProviderConfig) (*Collection, error) {
 
 		api := API(strings.TrimSpace(string(config.API)))
 		switch api {
-		case OpenAIChatCompletions, AnthropicMessages, GeminiGenerateContent:
+		case OpenAIChatCompletions, OpenAICodexResponses, AnthropicMessages, GeminiGenerateContent:
 		case "":
 			return nil, configureError(id, "API must not be empty")
 		default:
 			return nil, configureError(id, "API %q is not supported", api)
 		}
+		if err := validateCredentials(id, api, config); err != nil {
+			return nil, err
+		}
 
 		providers[id] = providerConfig{
-			id:         id,
-			api:        api,
-			apiKey:     config.APIKey,
-			baseURL:    config.BaseURL,
-			httpClient: config.HTTPClient,
-			headers:    config.Headers.Clone(),
+			id:                 id,
+			api:                api,
+			apiKey:             config.APIKey,
+			credentials:        config.Credentials,
+			resolveCredentials: config.ResolveCredentials,
+			baseURL:            config.BaseURL,
+			httpClient:         config.HTTPClient,
+			headers:            config.Headers.Clone(),
 		}
 	}
 
 	return &Collection{providers: providers}, nil
+}
+
+func validateCredentials(provider string, api API, config ProviderConfig) error {
+	hasTokenCredentials := strings.TrimSpace(config.Credentials.AccessToken) != "" ||
+		strings.TrimSpace(config.Credentials.AccountID) != "" || config.ResolveCredentials != nil
+	if api == OpenAICodexResponses {
+		if strings.TrimSpace(config.APIKey) != "" {
+			return configureError(provider, "APIKey is not used by OpenAICodexResponses; use Credentials or ResolveCredentials")
+		}
+		if config.ResolveCredentials != nil &&
+			(strings.TrimSpace(config.Credentials.AccessToken) != "" || strings.TrimSpace(config.Credentials.AccountID) != "") {
+			return configureError(provider, "Credentials must be empty when ResolveCredentials is set")
+		}
+		return nil
+	}
+	if hasTokenCredentials {
+		return configureError(provider, "Credentials and ResolveCredentials are only supported by token-based protocols")
+	}
+	return nil
 }
 
 // Generator constructs a provider-neutral generator for info. Provider and
@@ -127,6 +172,32 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 			BaseURL:      config.baseURL,
 			HTTPClient:   config.httpClient,
 			Headers:      config.headers,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return generator, nil
+	case OpenAICodexResponses:
+		var resolver openaicodex.CredentialResolver
+		if config.resolveCredentials != nil {
+			resolver = func(ctx context.Context, rejectedAccessToken string) (openaicodex.Credentials, error) {
+				credentials, err := config.resolveCredentials(ctx, rejectedAccessToken)
+				return openaicodex.Credentials{
+					AccessToken: credentials.AccessToken,
+					AccountID:   credentials.AccountID,
+				}, err
+			}
+		}
+		generator, err := openaicodex.New(openaicodex.Config{
+			Provider:           config.id,
+			Model:              info.Model,
+			Capabilities:       info.Capabilities,
+			AccessToken:        config.credentials.AccessToken,
+			AccountID:          config.credentials.AccountID,
+			ResolveCredentials: resolver,
+			BaseURL:            config.baseURL,
+			HTTPClient:         config.httpClient,
+			Headers:            config.headers,
 		})
 		if err != nil {
 			return nil, err

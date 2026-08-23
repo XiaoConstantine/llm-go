@@ -24,6 +24,9 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		{name: "empty ID", configs: []ProviderConfig{{API: OpenAIChatCompletions}}, wantError: "ID must not be empty"},
 		{name: "empty API", configs: []ProviderConfig{{ID: "openai"}}, provider: "openai", wantError: "API must not be empty"},
 		{name: "unsupported API", configs: []ProviderConfig{{ID: "custom", API: "future-api"}}, provider: "custom", wantError: "not supported"},
+		{name: "Codex API key", configs: []ProviderConfig{{ID: "openai-codex", API: OpenAICodexResponses, APIKey: "key"}}, provider: "openai-codex", wantError: "APIKey is not used"},
+		{name: "token on API-key protocol", configs: []ProviderConfig{{ID: "openai", API: OpenAIChatCompletions, Credentials: Credentials{AccessToken: "token"}}}, provider: "openai", wantError: "token-based protocols"},
+		{name: "ambiguous Codex credentials", configs: []ProviderConfig{{ID: "openai-codex", API: OpenAICodexResponses, Credentials: Credentials{AccessToken: "token"}, ResolveCredentials: func(context.Context, string) (Credentials, error) { return Credentials{}, nil }}}, provider: "openai-codex", wantError: "must be empty"},
 		{
 			name: "duplicate ID",
 			configs: []ProviderConfig{
@@ -52,6 +55,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 	collection, err := New(
 		ProviderConfig{ID: " openai ", API: OpenAIChatCompletions},
+		ProviderConfig{ID: "openai-codex", API: OpenAICodexResponses, Credentials: Credentials{AccessToken: "token", AccountID: "account"}},
 		ProviderConfig{ID: "anthropic-gateway", API: AnthropicMessages},
 		ProviderConfig{ID: "google", API: GeminiGenerateContent, APIKey: "key"},
 	)
@@ -68,6 +72,14 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 			info: llm.ModelInfo{
 				Provider:     "openai",
 				Model:        " gpt-model ",
+				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+			},
+		},
+		{
+			name: "OpenAI Codex",
+			info: llm.ModelInfo{
+				Provider:     "openai-codex",
+				Model:        " gpt-codex ",
 				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
 			},
 		},
@@ -104,6 +116,57 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 				t.Fatalf("Generator().Info().Capabilities = %v, want %v", got.Capabilities, wantCapabilities)
 			}
 		})
+	}
+}
+
+func TestGeneratorSupportsOpenAICodexSubscription(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	rejectedTokens := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests <- request.Clone(request.Context())
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+
+	collection, err := New(ProviderConfig{
+		ID:  "openai-codex",
+		API: OpenAICodexResponses,
+		ResolveCredentials: func(_ context.Context, rejectedAccessToken string) (Credentials, error) {
+			rejectedTokens <- rejectedAccessToken
+			return Credentials{AccessToken: "subscription-token", AccountID: "account-123"}, nil
+		},
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "openai-codex", Model: "gpt-codex"})
+	if err != nil {
+		t.Fatalf("Generator() error = %v", err)
+	}
+	response, err := generator.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if response.FinishReason != llm.FinishReasonStop {
+		t.Fatalf("Generate().FinishReason = %q", response.FinishReason)
+	}
+	request := <-requests
+	if request.URL.Path != "/codex/responses" {
+		t.Fatalf("request path = %q", request.URL.Path)
+	}
+	if got := request.Header.Get("Authorization"); got != "Bearer subscription-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := request.Header.Get("ChatGPT-Account-ID"); got != "account-123" {
+		t.Fatalf("ChatGPT-Account-ID = %q", got)
+	}
+	if got := <-rejectedTokens; got != "" {
+		t.Fatalf("rejected access token = %q, want empty", got)
 	}
 }
 
@@ -157,6 +220,7 @@ func TestGeneratorReturnsNilOnProviderConfigurationError(t *testing.T) {
 		contains string
 	}{
 		{name: "OpenAI", config: ProviderConfig{ID: "openai", API: OpenAIChatCompletions, BaseURL: ":"}, model: "gpt", contains: "base URL"},
+		{name: "OpenAI Codex", config: ProviderConfig{ID: "openai-codex", API: OpenAICodexResponses}, model: "gpt-codex", contains: "access token"},
 		{name: "Anthropic", config: ProviderConfig{ID: "anthropic", API: AnthropicMessages, BaseURL: ":"}, model: "claude", contains: "base URL"},
 		{name: "Gemini", config: ProviderConfig{ID: "google", API: GeminiGenerateContent}, model: "gemini", contains: "API key"},
 	}
