@@ -8,6 +8,7 @@ import (
 
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/XiaoConstantine/llm-go/anthropic"
+	"github.com/XiaoConstantine/llm-go/gemini"
 	"github.com/XiaoConstantine/llm-go/openai"
 )
 
@@ -19,11 +20,14 @@ const (
 	OpenAIChatCompletions API = "openai-chat-completions"
 	// AnthropicMessages selects the Anthropic-compatible Messages API.
 	AnthropicMessages API = "anthropic-messages"
+	// GeminiGenerateContent selects the Gemini Developer API GenerateContent protocol.
+	GeminiGenerateContent API = "gemini-generate-content"
 )
 
 // ProviderConfig configures one provider. ID is the provider name used by
 // llm.ModelInfo and llm.Error. API selects its wire protocol. APIKey is optional
-// for local servers and gateways that authenticate with Headers instead.
+// when the selected protocol permits unauthenticated or header-authenticated
+// endpoints; the Gemini Developer API requires it.
 //
 // BaseURL, HTTPClient, and Headers are forwarded to the selected provider
 // implementation. New copies Headers. The caller remains responsible for safe
@@ -73,7 +77,7 @@ func New(configs ...ProviderConfig) (*Collection, error) {
 
 		api := API(strings.TrimSpace(string(config.API)))
 		switch api {
-		case OpenAIChatCompletions, AnthropicMessages:
+		case OpenAIChatCompletions, AnthropicMessages, GeminiGenerateContent:
 		case "":
 			return nil, configureError(id, "API must not be empty")
 		default:
@@ -130,6 +134,20 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 		return generator, nil
 	case AnthropicMessages:
 		generator, err := anthropic.New(anthropic.Config{
+			Provider:     config.id,
+			Model:        info.Model,
+			Capabilities: info.Capabilities,
+			APIKey:       config.apiKey,
+			BaseURL:      config.baseURL,
+			HTTPClient:   config.httpClient,
+			Headers:      config.headers,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return generator, nil
+	case GeminiGenerateContent:
+		generator, err := gemini.New(gemini.Config{
 			Provider:     config.id,
 			Model:        info.Model,
 			Capabilities: info.Capabilities,

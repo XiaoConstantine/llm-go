@@ -53,6 +53,7 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 	collection, err := New(
 		ProviderConfig{ID: " openai ", API: OpenAIChatCompletions},
 		ProviderConfig{ID: "anthropic-gateway", API: AnthropicMessages},
+		ProviderConfig{ID: "google", API: GeminiGenerateContent, APIKey: "key"},
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -76,6 +77,14 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 				Provider:     "anthropic-gateway",
 				Model:        " claude-model ",
 				Capabilities: []llm.Capability{llm.CapabilityStreaming},
+			},
+		},
+		{
+			name: "Gemini",
+			info: llm.ModelInfo{
+				Provider:     "google",
+				Model:        " gemini-model ",
+				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision},
 			},
 		},
 	}
@@ -149,6 +158,7 @@ func TestGeneratorReturnsNilOnProviderConfigurationError(t *testing.T) {
 	}{
 		{name: "OpenAI", config: ProviderConfig{ID: "openai", API: OpenAIChatCompletions, BaseURL: ":"}, model: "gpt", contains: "base URL"},
 		{name: "Anthropic", config: ProviderConfig{ID: "anthropic", API: AnthropicMessages, BaseURL: ":"}, model: "claude", contains: "base URL"},
+		{name: "Gemini", config: ProviderConfig{ID: "google", API: GeminiGenerateContent}, model: "gemini", contains: "API key"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
