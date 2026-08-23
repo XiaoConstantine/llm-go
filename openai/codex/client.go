@@ -1,0 +1,467 @@
+package codex
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+
+	llm "github.com/XiaoConstantine/llm-go"
+	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
+	openaioption "github.com/openai/openai-go/v3/option"
+	openairesponses "github.com/openai/openai-go/v3/responses"
+)
+
+const (
+	defaultProvider      = "openai-codex"
+	defaultBaseURL       = "https://chatgpt.com/backend-api"
+	defaultOriginator    = "llm-go"
+	maxErrorBodyBytes    = 1 << 20
+	maxProviderDataBytes = 16 << 20
+)
+
+// Credentials authorize one request against a ChatGPT subscription. AccountID
+// may be empty when AccessToken is a JWT containing chatgpt_account_id.
+type Credentials struct {
+	AccessToken string
+	AccountID   string
+}
+
+// CredentialResolver returns current ChatGPT subscription credentials.
+// rejectedAccessToken is nonempty after the server rejects a token with HTTP
+// 401. Implementations that refresh credentials should rotate only when their
+// current token still matches rejectedAccessToken. A resolver must be safe for
+// concurrent use.
+type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (Credentials, error)
+
+// Config configures a ChatGPT subscription Codex client. Model is required.
+// Provider identifies the service in ModelInfo and errors and defaults to
+// "openai-codex". Set either AccessToken (with optional AccountID) or
+// ResolveCredentials, but not both. ResolveCredentials is called before every
+// request and once more after an HTTP 401.
+//
+// BaseURL defaults to https://chatgpt.com/backend-api. Capabilities opts the
+// configured model into optional protocol features; generation is always
+// enabled, while streaming and tools must be listed explicitly. A non-nil
+// HTTPClient and custom Headers are used as supplied without being mutated.
+// Authorization, ChatGPT-Account-ID, OpenAI-Beta, Originator, Content-Type,
+// Accept, and User-Agent are owned by Client and overwrite custom values. A nil
+// HTTPClient uses [http.DefaultClient], so callers should use context deadlines
+// when an unbounded request is not acceptable.
+type Config struct {
+	Provider           string
+	Model              string
+	Capabilities       []llm.Capability
+	AccessToken        string
+	AccountID          string
+	ResolveCredentials CredentialResolver
+	BaseURL            string
+	HTTPClient         *http.Client
+	Headers            http.Header
+	Originator         string
+}
+
+// Client is an immutable ChatGPT subscription Codex client. It is safe for
+// concurrent use when its credential resolver and HTTP client are safe for
+// concurrent use.
+type Client struct {
+	provider           string
+	model              string
+	capabilities       []llm.Capability
+	resolveCredentials CredentialResolver
+	headers            http.Header
+	originator         string
+	responses          openairesponses.ResponseService
+}
+
+// New constructs a Client from config.
+func New(config Config) (_ *Client, err error) {
+	provider := strings.TrimSpace(config.Provider)
+	if provider == "" {
+		provider = defaultProvider
+	}
+	defer func() {
+		err = relabelProviderError(err, provider)
+	}()
+
+	model := strings.TrimSpace(config.Model)
+	if model == "" {
+		return nil, configError("model must not be empty")
+	}
+	capabilities, err := configureCapabilities(config.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+
+	resolver, err := configureCredentials(config)
+	if err != nil {
+		return nil, err
+	}
+	sdkBaseURL, err := responseServiceBaseURL(config.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	httpClient := config.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	originator := strings.TrimSpace(config.Originator)
+	if originator == "" {
+		originator = defaultOriginator
+	}
+
+	return &Client{
+		provider:           provider,
+		model:              model,
+		capabilities:       capabilities,
+		resolveCredentials: resolver,
+		headers:            cloneHeader(config.Headers),
+		originator:         originator,
+		responses: openairesponses.NewResponseService(
+			openaioption.WithMaxRetries(0),
+			openaioption.WithHTTPClient(httpClient),
+			openaioption.WithBaseURL(sdkBaseURL),
+		),
+	}, nil
+}
+
+func configureCredentials(config Config) (CredentialResolver, error) {
+	token := strings.TrimSpace(config.AccessToken)
+	accountID := strings.TrimSpace(config.AccountID)
+	if config.ResolveCredentials != nil {
+		if token != "" || accountID != "" {
+			return nil, configError("AccessToken and AccountID must be empty when ResolveCredentials is set")
+		}
+		return config.ResolveCredentials, nil
+	}
+	if token == "" {
+		return nil, configError("access token or credential resolver is required")
+	}
+	if accountID == "" {
+		var err error
+		accountID, err = AccountIDFromToken(token)
+		if err != nil {
+			return nil, configError("resolve account ID from access token: %w", err)
+		}
+	}
+	credentials := Credentials{AccessToken: token, AccountID: accountID}
+	return func(_ context.Context, _ string) (Credentials, error) {
+		return credentials, nil
+	}, nil
+}
+
+func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error) {
+	capabilities := []llm.Capability{llm.CapabilityGeneration}
+	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
+	for _, capability := range configured {
+		switch capability {
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools:
+		default:
+			return nil, configError("capability %q is not implemented", capability)
+		}
+		if _, exists := seen[capability]; exists {
+			continue
+		}
+		seen[capability] = struct{}{}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities, nil
+}
+
+func responseServiceBaseURL(raw string) (string, error) {
+	baseURL := strings.TrimSpace(raw)
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", configError("invalid base URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", configError("base URL scheme must be http or https")
+	}
+	if parsed.Host == "" {
+		return "", configError("base URL must be absolute")
+	}
+	if parsed.User != nil {
+		return "", configError("base URL must not contain user information")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery {
+		return "", configError("base URL must not contain a query or fragment")
+	}
+
+	path := strings.TrimRight(parsed.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/codex/responses"):
+		path = strings.TrimSuffix(path, "responses")
+	case strings.HasSuffix(path, "/codex"):
+		path += "/"
+	default:
+		path += "/codex/"
+	}
+	parsed.Path = path
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func cloneHeader(header http.Header) http.Header {
+	clone := make(http.Header, len(header))
+	for key, values := range header {
+		clone[key] = append([]string(nil), values...)
+	}
+	return clone
+}
+
+// Info describes the configured model and its explicitly declared optional
+// capabilities.
+func (c *Client) Info() llm.ModelInfo {
+	return llm.ModelInfo{
+		Provider:     c.provider,
+		Model:        c.model,
+		Capabilities: append([]llm.Capability(nil), c.capabilities...),
+	}
+}
+
+// Generate performs one Codex Responses request. The subscription endpoint is
+// streaming-only, so Generate assembles its result from the same event stream
+// used by Stream.
+func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Response, err error) {
+	defer func() {
+		err = relabelProviderError(err, c.provider)
+	}()
+	params, err := c.prepare(ctx, "generate", request, false)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &llm.Response{Model: c.model, Message: llm.Message{Role: llm.RoleAssistant}}
+	err = c.produce(ctx, "generate", params, func(chunk llm.Chunk) bool {
+		mergeChunk(response, chunk)
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// Stream starts one streaming Codex Responses request. Provider, credential,
+// and transport failures after validation are delivered by the returned stream.
+func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream, err error) {
+	defer func() {
+		err = relabelProviderError(err, c.provider)
+	}()
+	params, err := c.prepare(ctx, "stream", request, true)
+	if err != nil {
+		return nil, err
+	}
+	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
+		return relabelProviderError(c.produce(producerCtx, "stream", params, emit), c.provider)
+	}), nil
+}
+
+func (c *Client) prepare(ctx context.Context, op string, request llm.Request, requireStreaming bool) (openairesponses.ResponseNewParams, error) {
+	if err := request.Validate(); err != nil {
+		return openairesponses.ResponseNewParams{}, err
+	}
+	if err := contextErr(ctx); err != nil {
+		return openairesponses.ResponseNewParams{}, err
+	}
+	if requireStreaming && !c.hasCapability(llm.CapabilityStreaming) {
+		return openairesponses.ResponseNewParams{}, unsupported(op, "configured model does not declare streaming capability")
+	}
+	if err := c.checkCapabilities(op, request); err != nil {
+		return openairesponses.ResponseNewParams{}, err
+	}
+	if err := checkRequest(op, request); err != nil {
+		return openairesponses.ResponseNewParams{}, err
+	}
+	return requestToWire(op, c.model, request)
+}
+
+func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	usesTools := len(request.Tools) != 0
+	for _, message := range request.Messages {
+		usesTools = usesTools || len(message.ToolCalls) != 0 || len(message.ToolResults) != 0
+	}
+	if usesTools && !c.hasCapability(llm.CapabilityTools) {
+		return unsupported(op, "configured model does not declare tool capability")
+	}
+	if request.ResponseFormat == llm.ResponseFormatJSON {
+		return unsupported(op, "JSON response format is not implemented")
+	}
+	return nil
+}
+
+func (c *Client) hasCapability(capability llm.Capability) bool {
+	for _, configured := range c.capabilities {
+		if configured == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func checkRequest(op string, request llm.Request) error {
+	if request.MaxOutputTokens != 0 {
+		return unsupported(op, "max output tokens are not supported by the subscription endpoint")
+	}
+	if request.TopP != nil || request.PresencePenalty != nil || request.FrequencyPenalty != nil || len(request.Stop) != 0 {
+		return unsupported(op, "top-p, penalties, and stop sequences are not supported by the subscription endpoint")
+	}
+	for i, message := range request.Messages {
+		for _, part := range message.Content {
+			if part.Kind != llm.PartText {
+				return unsupported(op, "binary message content is not implemented")
+			}
+		}
+		for _, result := range message.ToolResults {
+			if result.CallID == "" {
+				return requestError(op, "messages[%d] tool result must have a call ID", i)
+			}
+			for _, part := range result.Content {
+				if part.Kind != llm.PartText {
+					return unsupported(op, "binary tool results are not implemented")
+				}
+			}
+		}
+		for j, call := range message.ToolCalls {
+			if call.ID == "" {
+				return requestError(op, "messages[%d] tool call %d must have an ID", i, j)
+			}
+			if !validFunctionName(call.Name) {
+				return requestError(op, "messages[%d] tool call %d name %q must contain 1-64 letters, digits, underscores, or dashes", i, j, call.Name)
+			}
+		}
+	}
+	for i, tool := range request.Tools {
+		if !validFunctionName(tool.Name) {
+			return requestError(op, "tool %d name %q must contain 1-64 letters, digits, underscores, or dashes", i, tool.Name)
+		}
+	}
+	return checkToolHistory(op, request.Messages)
+}
+
+func checkToolHistory(op string, messages []llm.Message) error {
+	pending := 0
+	for i, message := range messages {
+		if pending != 0 && message.Role != llm.RoleTool {
+			return requestError(op, "messages[%d] must contain tool results for %d pending calls", i, pending)
+		}
+		switch message.Role {
+		case llm.RoleAssistant:
+			pending = len(message.ToolCalls)
+		case llm.RoleTool:
+			pending -= len(message.ToolResults)
+		}
+	}
+	if pending != 0 {
+		return requestError(op, "messages end with %d pending tool calls", pending)
+	}
+	return nil
+}
+
+func validFunctionName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for i := range len(name) {
+		character := name[i]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func mergeChunk(response *llm.Response, chunk llm.Chunk) {
+	if chunk.ID != "" {
+		response.ID = chunk.ID
+	}
+	if chunk.Model != "" {
+		response.Model = chunk.Model
+	}
+	response.Message.Content = append(response.Message.Content, chunk.Content...)
+	response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
+	if len(chunk.ProviderData) != 0 {
+		response.Message.ProviderData = append(response.Message.ProviderData[:0], chunk.ProviderData...)
+	}
+	if chunk.FinishReason != "" {
+		response.FinishReason = chunk.FinishReason
+	}
+	if chunk.Usage != nil {
+		usage := *chunk.Usage
+		response.Usage = &usage
+	}
+}
+
+func contextErr(ctx context.Context) error {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || errors.Is(cause, err) {
+		if cause != nil {
+			return cause
+		}
+		return err
+	}
+	return errors.Join(err, cause)
+}
+
+func relabelProviderError(err error, provider string) error {
+	if err == nil || provider == defaultProvider {
+		return err
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		relabeled := make([]error, len(causes))
+		changed := false
+		for i, cause := range causes {
+			relabeled[i] = relabelProviderError(cause, provider)
+			changed = changed || relabeled[i] != cause
+		}
+		if changed {
+			return errors.Join(relabeled...)
+		}
+		return err
+	}
+	providerErr, ok := err.(*llm.Error)
+	if !ok || providerErr.Provider != defaultProvider {
+		return err
+	}
+	clone := *providerErr
+	clone.Provider = provider
+	return &clone
+}
+
+func configError(format string, args ...any) *llm.Error {
+	return &llm.Error{Kind: llm.KindInvalidRequest, Op: "configure", Provider: defaultProvider, Err: fmt.Errorf(format, args...)}
+}
+
+func requestError(op, format string, args ...any) *llm.Error {
+	return &llm.Error{Kind: llm.KindInvalidRequest, Op: op, Provider: defaultProvider, Err: fmt.Errorf(format, args...)}
+}
+
+func unsupported(op, message string) *llm.Error {
+	return &llm.Error{Kind: llm.KindUnsupported, Op: op, Provider: defaultProvider, Err: errors.New(message)}
+}
+
+func transportError(op string, err error) *llm.Error {
+	return &llm.Error{Kind: llm.KindTransport, Op: op, Provider: defaultProvider, Err: err}
+}
+
+func malformedResponse(op, format string, args ...any) *llm.Error {
+	return &llm.Error{Kind: llm.KindMalformedResponse, Op: op, Provider: defaultProvider, Err: fmt.Errorf(format, args...)}
+}
+
+func authenticationError(op string, err error) *llm.Error {
+	return &llm.Error{Kind: llm.KindAuthentication, Op: op, Provider: defaultProvider, Err: err}
+}
