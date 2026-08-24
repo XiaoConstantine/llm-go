@@ -533,6 +533,12 @@ type convertedParts struct {
 	content []llm.Part
 	calls   []llm.ToolCall
 	data    []messageDataPart
+	order   []convertedPartRef
+}
+
+type convertedPartRef struct {
+	tool  bool
+	index int
 }
 
 func convertSDKParts(op string, parts []*genai.Part, declared, seenIDs map[string]struct{}, contentOffset, callOffset int) (convertedParts, error) {
@@ -540,6 +546,7 @@ func convertSDKParts(op string, parts []*genai.Part, declared, seenIDs map[strin
 		content: make([]llm.Part, 0, len(parts)),
 		calls:   make([]llm.ToolCall, 0),
 		data:    make([]messageDataPart, 0, len(parts)),
+		order:   make([]convertedPartRef, 0, len(parts)),
 	}
 	for index, part := range parts {
 		if part == nil {
@@ -583,6 +590,7 @@ func convertSDKParts(op string, parts []*genai.Part, declared, seenIDs map[strin
 			metadata.Kind = "tool_call"
 			metadata.Index = callOffset + len(converted.calls)
 			converted.calls = append(converted.calls, call)
+			converted.order = append(converted.order, convertedPartRef{tool: true, index: len(converted.calls) - 1})
 		case part.InlineData != nil:
 			content, err := inlineDataFromSDK(op, index, part.InlineData)
 			if err != nil {
@@ -591,10 +599,12 @@ func convertSDKParts(op string, parts []*genai.Part, declared, seenIDs map[strin
 			metadata.Kind = "content"
 			metadata.Index = contentOffset + len(converted.content)
 			converted.content = append(converted.content, content)
+			converted.order = append(converted.order, convertedPartRef{index: len(converted.content) - 1})
 		default:
 			metadata.Kind = "content"
 			metadata.Index = contentOffset + len(converted.content)
 			converted.content = append(converted.content, llm.Part{Kind: llm.PartText, Text: part.Text})
+			converted.order = append(converted.order, convertedPartRef{index: len(converted.content) - 1})
 		}
 		converted.data = append(converted.data, metadata)
 	}

@@ -101,6 +101,16 @@ func TestStreamTranslatesTextCompletion(t *testing.T) {
 	if usage == nil || *usage != (llm.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}) {
 		t.Fatalf("assembled usage = %#v", usage)
 	}
+	assertStreamEventKinds(t, chunks, [][]llm.StreamEventKind{
+		{llm.StreamEventStart},
+		{llm.StreamEventTextStart, llm.StreamEventTextDelta},
+		{llm.StreamEventTextDelta},
+		{llm.StreamEventTextEnd, llm.StreamEventDone},
+		nil,
+	})
+	if chunks[1].Events[1].Delta+chunks[2].Events[0].Delta != "hello" || chunks[3].Events[0].Content != "hello" {
+		t.Fatalf("text events = %#v", chunks)
+	}
 
 	record := <-records
 	if record.path != "/proxy/v1/chat/completions" || !record.forceQuery {
@@ -461,15 +471,27 @@ func TestStreamAssemblesModernToolCalls(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if len(chunks) != 1 || chunks[0].ID != "chat-1" || chunks[0].Model != "served-model" ||
-		chunks[0].FinishReason != llm.FinishReasonToolCall {
-		t.Fatalf("chunks = %#v", chunks)
+	if len(chunks) != 3 {
+		t.Fatalf("len(chunks) = %d, want 3", len(chunks))
+	}
+	final := chunks[len(chunks)-1]
+	if final.ID != "chat-1" || final.Model != "served-model" || final.FinishReason != llm.FinishReasonToolCall {
+		t.Fatalf("final chunk = %#v", final)
+	}
+	wantEventKinds := [][]llm.StreamEventKind{
+		{llm.StreamEventStart, llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta, llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallDelta, llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallEnd, llm.StreamEventToolCallEnd, llm.StreamEventDone},
+	}
+	assertStreamEventKinds(t, chunks, wantEventKinds)
+	if got := chunks[0].Events[2].Delta + chunks[1].Events[1].Delta; got != `{"a":1}` {
+		t.Fatalf("second tool argument deltas = %q", got)
 	}
 	want := []llm.ToolCall{
 		{ID: "call_one", Name: "lookup", Arguments: []byte(`{"q":"go"}`)},
 		{ID: "call_two", Name: "sum", Arguments: []byte(`{"a":1}`)},
 	}
-	if got := chunks[0].ToolCalls; len(got) != len(want) || got[0].ID != want[0].ID ||
+	if got := final.ToolCalls; len(got) != len(want) || got[0].ID != want[0].ID ||
 		got[0].Name != want[0].Name || string(got[0].Arguments) != string(want[0].Arguments) ||
 		got[1].ID != want[1].ID || got[1].Name != want[1].Name ||
 		string(got[1].Arguments) != string(want[1].Arguments) {
@@ -501,10 +523,18 @@ func TestStreamAssemblesLegacyFunctionCall(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if len(chunks) != 1 || chunks[0].FinishReason != llm.FinishReasonToolCall || len(chunks[0].ToolCalls) != 1 {
+	if len(chunks) != 3 || chunks[2].FinishReason != llm.FinishReasonToolCall || len(chunks[2].ToolCalls) != 1 {
 		t.Fatalf("chunks = %#v", chunks)
 	}
-	call := chunks[0].ToolCalls[0]
+	assertStreamEventKinds(t, chunks, [][]llm.StreamEventKind{
+		{llm.StreamEventStart, llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallEnd, llm.StreamEventDone},
+	})
+	if got := chunks[0].Events[2].Delta + chunks[1].Events[0].Delta; got != `{"q":"go"}` {
+		t.Fatalf("tool argument deltas = %q", got)
+	}
+	call := chunks[2].ToolCalls[0]
 	if call.ID != "" || call.Name != "lookup" || string(call.Arguments) != `{"q":"go"}` {
 		t.Fatalf("ToolCall = %#v", call)
 	}
@@ -1485,6 +1515,23 @@ func TestStreamCancellationReachesHTTPServer(t *testing.T) {
 	case <-requestCanceled:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream cancellation did not reach HTTP server")
+	}
+}
+
+func assertStreamEventKinds(t *testing.T, chunks []llm.Chunk, want [][]llm.StreamEventKind) {
+	t.Helper()
+	if len(chunks) != len(want) {
+		t.Fatalf("event chunk count = %d, want %d", len(chunks), len(want))
+	}
+	for chunkIndex, kinds := range want {
+		if len(chunks[chunkIndex].Events) != len(kinds) {
+			t.Fatalf("chunk %d event count = %d, want %d: %#v", chunkIndex, len(chunks[chunkIndex].Events), len(kinds), chunks[chunkIndex].Events)
+		}
+		for eventIndex, kind := range kinds {
+			if got := chunks[chunkIndex].Events[eventIndex].Kind; got != kind {
+				t.Fatalf("chunk %d event %d kind = %q, want %q", chunkIndex, eventIndex, got, kind)
+			}
+		}
 	}
 }
 

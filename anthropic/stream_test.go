@@ -348,23 +348,6 @@ func TestStreamPreflightAndNoIO(t *testing.T) {
 		})
 	}
 
-	toolClient, err := New(Config{
-		Model:        "model",
-		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
-		BaseURL:      "http://example.com/v1",
-		HTTPClient:   httpClient,
-	})
-	if err != nil {
-		t.Fatalf("New(tool client) error = %v", err)
-	}
-	stream, err := toolClient.Stream(context.Background(), toolRequest())
-	if stream != nil {
-		t.Fatalf("Stream(tool request) = %#v", stream)
-	}
-	requireModelError(t, err, llm.KindUnsupported, "stream")
-	if !strings.Contains(err.Error(), "tool streaming") {
-		t.Fatalf("Stream(tool request) error = %v", err)
-	}
 	if calls.Load() != 0 {
 		t.Fatalf("HTTP calls = %d, want zero", calls.Load())
 	}
@@ -430,6 +413,98 @@ func TestStreamMapsFinishReasons(t *testing.T) {
 	}
 }
 
+func TestStreamEmitsPartialToolArguments(t *testing.T) {
+	body := streamEvent("message_start", validStreamStart) +
+		streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_one","name":"lookup","input":{}}}`) +
+		streamEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\""}}`) +
+		streamEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"Paris\"}"}}`) +
+		streamEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		streamEvent("message_delta", streamFinishEvent("tool_use", 2)) +
+		streamEvent("message_stop", `{"type":"message_stop"}`)
+	client := newStaticStreamClientWithCapabilities(t, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}, http.StatusOK, "text/event-stream", body)
+	stream, err := client.Stream(context.Background(), toolRequest())
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	chunks, terminal := receiveAll(stream)
+	if !errors.Is(terminal, io.EOF) {
+		t.Fatalf("Recv() terminal = %v", terminal)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if len(chunks) != 5 {
+		t.Fatalf("len(chunks) = %d, want 5: %#v", len(chunks), chunks)
+	}
+	wantKinds := [][]llm.StreamEventKind{
+		{llm.StreamEventStart, llm.StreamEventToolCallStart},
+		{llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallEnd},
+		{llm.StreamEventDone},
+	}
+	for index, want := range wantKinds {
+		if len(chunks[index].Events) != len(want) {
+			t.Fatalf("chunk %d events = %#v", index, chunks[index].Events)
+		}
+		for eventIndex, kind := range want {
+			if chunks[index].Events[eventIndex].Kind != kind {
+				t.Fatalf("chunk %d event %d = %q, want %q", index, eventIndex, chunks[index].Events[eventIndex].Kind, kind)
+			}
+		}
+	}
+	if got := chunks[1].Events[0].Delta + chunks[2].Events[0].Delta; got != `{"city":"Paris"}` {
+		t.Fatalf("tool argument deltas = %q", got)
+	}
+	final := chunks[4]
+	if final.FinishReason != llm.FinishReasonToolCall || len(final.ToolCalls) != 1 || string(final.ToolCalls[0].Arguments) != `{"city":"Paris"}` {
+		t.Fatalf("final chunk = %#v", final)
+	}
+	endCall := chunks[3].Events[0].ToolCall
+	if endCall == nil || endCall.ID != "toolu_one" || endCall.Name != "lookup" || string(endCall.Arguments) != `{"city":"Paris"}` {
+		t.Fatalf("tool end event = %#v", chunks[3].Events[0])
+	}
+	endCall.Arguments[0] = '['
+	if string(final.ToolCalls[0].Arguments) != `{"city":"Paris"}` {
+		t.Fatalf("event arguments alias final tool call: %s", final.ToolCalls[0].Arguments)
+	}
+}
+
+func TestStreamRejectsMalformedToolEvents(t *testing.T) {
+	start := streamEvent("message_start", validStreamStart)
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing ID", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"lookup","input":{}}}`), want: "no ID"},
+		{name: "undeclared name", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"missing","input":{}}}`), want: "undeclared"},
+		{name: "non-object input", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"lookup","input":[]}}`), want: "JSON object"},
+		{name: "malformed completed arguments", body: start +
+			streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"lookup","input":{}}}`) +
+			streamEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{"}}`) +
+			streamEvent("content_block_stop", `{"type":"content_block_stop","index":0}`), want: "not a strict JSON object"},
+		{name: "duplicate ID", body: start +
+			streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"lookup","input":{}}}`) +
+			streamEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+			streamEvent("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call","name":"lookup","input":{}}}`), want: "repeats ID"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newStaticStreamClientWithCapabilities(t, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}, http.StatusOK, "text/event-stream", test.body)
+			stream, err := client.Stream(context.Background(), toolRequest())
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			_, terminal := receiveAll(stream)
+			requireModelError(t, terminal, llm.KindMalformedResponse, "stream")
+			if !strings.Contains(terminal.Error(), test.want) {
+				t.Fatalf("Recv() error = %v, want %q", terminal, test.want)
+			}
+			_ = stream.Close()
+		})
+	}
+}
+
 func TestStreamRejectsMalformedProtocol(t *testing.T) {
 	start := streamEvent("message_start", validStreamStart)
 	finish := streamEvent("message_delta", streamFinishEvent("end_turn", 2))
@@ -472,7 +547,7 @@ func TestStreamRejectsMalformedProtocol(t *testing.T) {
 		{name: "usage decreases", body: start + streamEvent("message_delta", streamFinishEvent("end_turn", 0)), kind: llm.KindMalformedResponse, want: "decreased"},
 		{name: "unknown stop reason", body: start + streamEvent("message_delta", streamFinishEvent("future", 2)), kind: llm.KindMalformedResponse, want: "unsupported stop reason"},
 		{name: "pause turn", body: start + streamEvent("message_delta", streamFinishEvent("pause_turn", 2)), kind: llm.KindUnsupported, want: "pause_turn"},
-		{name: "tool use", body: start + streamEvent("message_delta", streamFinishEvent("tool_use", 2)), kind: llm.KindUnsupported, want: "tool call streaming"},
+		{name: "tool use without call", body: start + streamEvent("message_delta", streamFinishEvent("tool_use", 2)), kind: llm.KindMalformedResponse, want: "has no tool calls"},
 		{name: "stop before finish", body: start + stop, kind: llm.KindMalformedResponse, want: "before a finish reason"},
 		{name: "EOF before stop", body: start + finish, kind: llm.KindMalformedResponse, want: "ended before message_stop"},
 	} {
@@ -663,7 +738,7 @@ func TestEventStreamRejectsSizeLimits(t *testing.T) {
 		{name: "event", body: strings.Repeat(": keepalive\n", maxStreamEventBytes/len(": keepalive\n")+1), want: "event exceeds"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := readEventStream(context.Background(), strings.NewReader(test.body), newStreamDecoder(""), func(llm.Chunk) bool { return true })
+			err := readEventStream(context.Background(), strings.NewReader(test.body), newStreamDecoder("", nil, nil), func(llm.Chunk) bool { return true })
 			requireModelError(t, err, llm.KindMalformedResponse, "stream")
 			if !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("readEventStream() error = %v", err)
@@ -982,9 +1057,14 @@ func receiveAll(stream llm.Stream) ([]llm.Chunk, error) {
 
 func newStaticStreamClient(t *testing.T, status int, contentType, body string) *Client {
 	t.Helper()
+	return newStaticStreamClientWithCapabilities(t, []llm.Capability{llm.CapabilityStreaming}, status, contentType, body)
+}
+
+func newStaticStreamClientWithCapabilities(t *testing.T, capabilities []llm.Capability, status int, contentType, body string) *Client {
+	t.Helper()
 	client, err := New(Config{
 		Model:        "model",
-		Capabilities: []llm.Capability{llm.CapabilityStreaming},
+		Capabilities: capabilities,
 		BaseURL:      "http://example.com/v1",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{

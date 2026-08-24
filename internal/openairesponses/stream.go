@@ -42,6 +42,8 @@ func (e *APIError) Error() string {
 	return "OpenAI provider error"
 }
 
+const maxStreamOutputItems = 1024
+
 // Stream is the OpenAI SDK stream consumed by Codec.
 type Stream = ssestream.Stream[openairesponses.ResponseStreamEventUnion]
 
@@ -62,6 +64,13 @@ func (c Codec) Produce(ctx context.Context, op, model string, params openairespo
 		outputItems:   make(map[int]jsontext.Value),
 		pendingItems:  make(map[int]outputItemIdentity),
 		toolCalls:     make(map[int]llm.ToolCall),
+		toolCallIDs:   make(map[string]int),
+		partStates:    make(map[responsePartKey]streamPartState),
+		partContent:   make(map[responsePartKey]*strings.Builder),
+		toolArguments: make(map[int]*strings.Builder),
+		toolArgsDone:  make(map[int]bool),
+		toolHadDelta:  make(map[int]bool),
+		pendingEvents: []llm.StreamEvent{{Kind: llm.StreamEventStart}},
 	}
 
 	for stream.Next() {
@@ -167,10 +176,33 @@ type streamState struct {
 	outputItems   map[int]jsontext.Value
 	pendingItems  map[int]outputItemIdentity
 	toolCalls     map[int]llm.ToolCall
+	toolCallIDs   map[string]int
+	partStates    map[responsePartKey]streamPartState
+	partContent   map[responsePartKey]*strings.Builder
+	toolArguments map[int]*strings.Builder
+	toolArgsDone  map[int]bool
+	toolHadDelta  map[int]bool
+	pendingEvents []llm.StreamEvent
+	streamedBytes int
 	providerBytes int
 	stopped       bool
 	terminal      bool
 }
+
+type responsePartKey struct {
+	outputIndex int
+	subindex    int
+	itemID      string
+	kind        string
+}
+
+type streamPartState uint8
+
+const (
+	streamPartUnseen streamPartState = iota
+	streamPartOpen
+	streamPartClosed
+)
 
 func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, emit internalstream.Emit) error {
 	raw := []byte(event.RawJSON())
@@ -180,18 +212,52 @@ func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, em
 
 	switch event.Type {
 	case "response.output_text.delta":
-		if event.Delta != "" && !emit(llm.Chunk{Content: []llm.Part{{Kind: llm.PartText, Text: event.Delta}}}) {
-			s.stopped = true
-		}
+		return s.consumePartDelta(event, "message", "text", llm.StreamEventTextStart, llm.StreamEventTextDelta, emit)
+	case "response.output_text.done":
+		return s.consumePartDone(event, "message", "text", llm.StreamEventTextStart, llm.StreamEventTextEnd, emit)
 	case "response.reasoning_summary_text.delta":
-		if event.Delta != "" && !emit(llm.Chunk{ReasoningSummary: event.Delta}) {
-			s.stopped = true
-		}
+		return s.consumePartDelta(event, "reasoning", "reasoning", llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta, emit)
+	case "response.reasoning_summary_text.done":
+		return s.consumePartDone(event, "reasoning", "reasoning", llm.StreamEventReasoningStart, llm.StreamEventReasoningEnd, emit)
+	case "response.function_call_arguments.delta":
+		return s.consumeToolArgumentDelta(event, emit)
+	case "response.function_call_arguments.done":
+		return s.consumeToolArgumentsDone(event)
 	case "response.output_item.added":
-		return s.consumeAddedOutputItem(event)
+		index, identity, err := s.consumeAddedOutputItem(event)
+		if err != nil {
+			return err
+		}
+		if identity.Type == "function_call" {
+			events := append(s.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: index, ToolCallID: identity.CallID, ToolName: identity.Name})
+			if !emit(llm.Chunk{Events: events}) {
+				s.stopped = true
+			}
+		}
 	case "response.output_item.done", "response.output_item.completed":
+		index, indexErr := s.codec.outputIndex(s.op, event, "completed")
+		if indexErr != nil {
+			return indexErr
+		}
+		_, existed := s.toolCalls[index]
+		_, wasPending := s.pendingItems[index]
 		if err := s.consumeOutputItem(event); err != nil {
 			return err
+		}
+		partEvents := s.closeOpenParts(index)
+		if len(partEvents) != 0 && !emit(llm.Chunk{Events: partEvents}) {
+			s.stopped = true
+		}
+		if call, exists := s.toolCalls[index]; exists && !existed {
+			eventCall := cloneToolCall(call)
+			events := s.takePendingEvents()
+			if !wasPending {
+				events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: index, ToolCallID: call.ID, ToolName: call.Name})
+			}
+			events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallEnd, Index: index, ToolCallID: call.ID, ToolName: call.Name, ToolCall: &eventCall})
+			if !emit(llm.Chunk{Events: events}) {
+				s.stopped = true
+			}
 		}
 	case "error":
 		return s.codec.eventError(s.op, raw)
@@ -215,6 +281,177 @@ func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, em
 			return &llm.Error{Kind: llm.KindProvider, Op: s.op, Provider: s.codec.Provider, Err: fmt.Errorf("response incomplete: %s", event.Response.IncompleteDetails.Reason)}
 		}
 	}
+	return nil
+}
+
+func (s *streamState) partKey(event openairesponses.ResponseStreamEventUnion, expectedType, kind string) (responsePartKey, error) {
+	index, err := s.codec.outputIndex(s.op, event, kind+" event")
+	if err != nil {
+		return responsePartKey{}, err
+	}
+	if !event.JSON.ItemID.Valid() || event.ItemID == "" {
+		return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event is missing item_id", kind)
+	}
+	identity, exists := s.pendingItems[index]
+	if !exists || identity.Type != expectedType || identity.ID != event.ItemID {
+		return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event does not match pending output item %d", kind, index)
+	}
+	var rawSubindex int64
+	if kind == "text" {
+		if !event.JSON.ContentIndex.Valid() {
+			return responsePartKey{}, s.codec.malformedResponse(s.op, "text event is missing content_index")
+		}
+		rawSubindex = event.ContentIndex
+	} else {
+		if !event.JSON.SummaryIndex.Valid() {
+			return responsePartKey{}, s.codec.malformedResponse(s.op, "reasoning event is missing summary_index")
+		}
+		rawSubindex = event.SummaryIndex
+	}
+	if rawSubindex < 0 || rawSubindex >= maxStreamOutputItems {
+		return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event has invalid part index %d", kind, rawSubindex)
+	}
+	return responsePartKey{outputIndex: index, subindex: int(rawSubindex), itemID: event.ItemID, kind: kind}, nil
+}
+
+func (s *streamState) consumePartDelta(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, startKind, deltaKind llm.StreamEventKind, emit internalstream.Emit) error {
+	key, err := s.partKey(event, expectedType, kind)
+	if err != nil {
+		return err
+	}
+	if s.partStates[key] == streamPartClosed {
+		return s.codec.malformedResponse(s.op, "%s delta arrived after completion", kind)
+	}
+	if event.Delta == "" {
+		return nil
+	}
+	if len(event.Delta) > s.codec.MaxProviderDataBytes-s.streamedBytes {
+		return s.codec.malformedResponse(s.op, "streamed output exceeds %d bytes", s.codec.MaxProviderDataBytes)
+	}
+	s.streamedBytes += len(event.Delta)
+	builder := s.partContent[key]
+	if builder == nil {
+		builder = new(strings.Builder)
+		s.partContent[key] = builder
+	}
+	builder.WriteString(event.Delta)
+	events := s.takePendingEvents()
+	if s.partStates[key] == streamPartUnseen {
+		if len(s.partStates) >= maxStreamOutputItems {
+			return s.codec.malformedResponse(s.op, "stream contains more than %d content parts", maxStreamOutputItems)
+		}
+		s.partStates[key] = streamPartOpen
+		events = append(events, llm.StreamEvent{Kind: startKind, Index: key.outputIndex, Subindex: key.subindex})
+	}
+	events = append(events, llm.StreamEvent{Kind: deltaKind, Index: key.outputIndex, Subindex: key.subindex, Delta: event.Delta})
+	chunk := llm.Chunk{Events: events}
+	if kind == "text" {
+		chunk.Content = []llm.Part{{Kind: llm.PartText, Text: event.Delta}}
+	} else {
+		chunk.ReasoningSummary = event.Delta
+	}
+	if !emit(chunk) {
+		s.stopped = true
+	}
+	return nil
+}
+
+func (s *streamState) consumePartDone(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, startKind, endKind llm.StreamEventKind, emit internalstream.Emit) error {
+	key, err := s.partKey(event, expectedType, kind)
+	if err != nil {
+		return err
+	}
+	if s.partStates[key] == streamPartClosed {
+		return s.codec.malformedResponse(s.op, "%s completion was repeated", kind)
+	}
+	if !event.JSON.Text.Valid() {
+		return s.codec.malformedResponse(s.op, "%s completion is missing text", kind)
+	}
+	if builder := s.partContent[key]; builder != nil && builder.String() != event.Text {
+		return s.codec.malformedResponse(s.op, "streamed %s does not match completed text", kind)
+	}
+	events := s.takePendingEvents()
+	unseen := s.partStates[key] == streamPartUnseen
+	if unseen {
+		if len(s.partStates) >= maxStreamOutputItems {
+			return s.codec.malformedResponse(s.op, "stream contains more than %d content parts", maxStreamOutputItems)
+		}
+		events = append(events, llm.StreamEvent{Kind: startKind, Index: key.outputIndex, Subindex: key.subindex})
+	}
+	s.partStates[key] = streamPartClosed
+	delete(s.partContent, key)
+	events = append(events, llm.StreamEvent{Kind: endKind, Index: key.outputIndex, Subindex: key.subindex, Content: event.Text})
+	chunk := llm.Chunk{Events: events}
+	if unseen && event.Text != "" {
+		if len(event.Text) > s.codec.MaxProviderDataBytes-s.streamedBytes {
+			return s.codec.malformedResponse(s.op, "streamed output exceeds %d bytes", s.codec.MaxProviderDataBytes)
+		}
+		s.streamedBytes += len(event.Text)
+		if kind == "text" {
+			chunk.Content = []llm.Part{{Kind: llm.PartText, Text: event.Text}}
+		} else {
+			chunk.ReasoningSummary = event.Text
+		}
+	}
+	if !emit(chunk) {
+		s.stopped = true
+	}
+	return nil
+}
+
+func (s *streamState) consumeToolArgumentDelta(event openairesponses.ResponseStreamEventUnion, emit internalstream.Emit) error {
+	index, err := s.codec.outputIndex(s.op, event, "function argument delta")
+	if err != nil {
+		return err
+	}
+	if !event.JSON.ItemID.Valid() || event.ItemID == "" || !event.JSON.Delta.Valid() {
+		return s.codec.malformedResponse(s.op, "function argument delta is missing item_id or delta")
+	}
+	identity, exists := s.pendingItems[index]
+	if !exists || identity.Type != "function_call" || identity.ID != event.ItemID {
+		return s.codec.malformedResponse(s.op, "function argument delta does not match pending call at output index %d", index)
+	}
+	builder := s.toolArguments[index]
+	if builder == nil || s.toolArgsDone[index] {
+		return s.codec.malformedResponse(s.op, "function argument delta has no open call at output index %d", index)
+	}
+	if len(event.Delta) > s.codec.MaxProviderDataBytes-s.streamedBytes {
+		return s.codec.malformedResponse(s.op, "streamed tool arguments exceed %d bytes", s.codec.MaxProviderDataBytes)
+	}
+	s.streamedBytes += len(event.Delta)
+	if event.Delta != "" {
+		s.toolHadDelta[index] = true
+		builder.WriteString(event.Delta)
+		if !emit(llm.Chunk{Events: []llm.StreamEvent{{Kind: llm.StreamEventToolCallDelta, Index: index, Delta: event.Delta, ToolCallID: identity.CallID, ToolName: identity.Name}}}) {
+			s.stopped = true
+		}
+	}
+	return nil
+}
+
+func (s *streamState) consumeToolArgumentsDone(event openairesponses.ResponseStreamEventUnion) error {
+	index, err := s.codec.outputIndex(s.op, event, "function argument completion")
+	if err != nil {
+		return err
+	}
+	if !event.JSON.ItemID.Valid() || !event.JSON.Arguments.Valid() || event.ItemID == "" {
+		return s.codec.malformedResponse(s.op, "function argument completion is missing required fields")
+	}
+	identity, exists := s.pendingItems[index]
+	builder := s.toolArguments[index]
+	if !exists || identity.Type != "function_call" || identity.ID != event.ItemID || builder == nil || event.JSON.Name.Valid() && identity.Name != event.Name {
+		return s.codec.malformedResponse(s.op, "function argument completion does not match pending call at output index %d", index)
+	}
+	if s.toolArgsDone[index] {
+		return s.codec.malformedResponse(s.op, "function argument completion was repeated at output index %d", index)
+	}
+	if s.toolHadDelta[index] && builder.String() != event.Arguments {
+		return s.codec.malformedResponse(s.op, "streamed function arguments do not match completed arguments at output index %d", index)
+	}
+	if !s.toolHadDelta[index] {
+		builder.WriteString(event.Arguments)
+	}
+	s.toolArgsDone[index] = true
 	return nil
 }
 
@@ -267,6 +504,9 @@ func (s *streamState) consumeOutputItem(event openairesponses.ResponseStreamEven
 	if item.CallID == "" || item.Name == "" {
 		return s.codec.malformedResponse(s.op, "function call at output index %d is missing call_id or name", index)
 	}
+	if err := s.reserveToolCallID(item.CallID, index); err != nil {
+		return err
+	}
 	if _, declared := s.declaredTools[item.Name]; !declared {
 		return s.codec.malformedResponse(s.op, "function call at output index %d names undeclared tool %q", index, item.Name)
 	}
@@ -274,6 +514,15 @@ func (s *streamState) consumeOutputItem(event openairesponses.ResponseStreamEven
 	if err != nil {
 		return s.codec.malformedResponse(s.op, "function call at output index %d arguments: %v", index, err)
 	}
+	if builder := s.toolArguments[index]; builder != nil && (s.toolHadDelta[index] || s.toolArgsDone[index]) && builder.String() != string(arguments) {
+		return s.codec.malformedResponse(s.op, "streamed function arguments do not match completed call at output index %d", index)
+	}
+	if s.toolArgsDone[index] && s.toolArguments[index].String() != string(arguments) {
+		return s.codec.malformedResponse(s.op, "completed function arguments changed at output index %d", index)
+	}
+	delete(s.toolArguments, index)
+	delete(s.toolArgsDone, index)
+	delete(s.toolHadDelta, index)
 	s.toolCalls[index] = llm.ToolCall{ID: item.CallID, Name: item.Name, Arguments: arguments}
 	return nil
 }
@@ -285,26 +534,43 @@ type outputItemIdentity struct {
 	Name   string `json:"name"`
 }
 
-func (s *streamState) consumeAddedOutputItem(event openairesponses.ResponseStreamEventUnion) error {
+func (s *streamState) consumeAddedOutputItem(event openairesponses.ResponseStreamEventUnion) (int, outputItemIdentity, error) {
 	index, err := s.codec.outputIndex(s.op, event, "added")
 	if err != nil {
-		return err
+		return 0, outputItemIdentity{}, err
 	}
 	raw := jsontext.Value(event.Item.RawJSON())
 	if len(raw) == 0 || raw.Kind() != jsontext.KindBeginObject {
-		return s.codec.malformedResponse(s.op, "added output item %d is missing an object", index)
+		return 0, outputItemIdentity{}, s.codec.malformedResponse(s.op, "added output item %d is missing an object", index)
 	}
 	identity, err := decodeOutputItemIdentity(raw)
 	if err != nil {
-		return s.codec.malformedResponse(s.op, "decode added output item %d identity: %v", index, err)
+		return 0, outputItemIdentity{}, s.codec.malformedResponse(s.op, "decode added output item %d identity: %v", index, err)
 	}
 	if _, exists := s.pendingItems[index]; exists {
-		return s.codec.malformedResponse(s.op, "output item %d was added more than once", index)
+		return 0, outputItemIdentity{}, s.codec.malformedResponse(s.op, "output item %d was added more than once", index)
 	}
 	if _, completed := s.outputItems[index]; completed {
-		return s.codec.malformedResponse(s.op, "output item %d was added after completion", index)
+		return 0, outputItemIdentity{}, s.codec.malformedResponse(s.op, "output item %d was added after completion", index)
+	}
+	if identity.Type == "function_call" {
+		if identity.ID == "" || identity.CallID == "" || identity.Name == "" {
+			return 0, outputItemIdentity{}, s.codec.malformedResponse(s.op, "added function call %d has incomplete identity", index)
+		}
+		if err := s.reserveToolCallID(identity.CallID, index); err != nil {
+			return 0, outputItemIdentity{}, err
+		}
+		s.toolArguments[index] = new(strings.Builder)
 	}
 	s.pendingItems[index] = identity
+	return index, identity, nil
+}
+
+func (s *streamState) reserveToolCallID(callID string, index int) error {
+	if owner, exists := s.toolCallIDs[callID]; exists && owner != index {
+		return s.codec.malformedResponse(s.op, "function call ID %q is reused at output indexes %d and %d", callID, owner, index)
+	}
+	s.toolCallIDs[callID] = index
 	return nil
 }
 
@@ -312,7 +578,7 @@ func (c Codec) outputIndex(op string, event openairesponses.ResponseStreamEventU
 	if !event.JSON.OutputIndex.Valid() {
 		return 0, c.malformedResponse(op, "%s output item is missing output_index", state)
 	}
-	if event.OutputIndex < 0 || event.OutputIndex > int64(^uint(0)>>1) {
+	if event.OutputIndex < 0 || event.OutputIndex >= maxStreamOutputItems {
 		return 0, c.malformedResponse(op, "output item has invalid index %d", event.OutputIndex)
 	}
 	return int(event.OutputIndex), nil
@@ -348,6 +614,59 @@ func functionArguments(raw jsontext.Value) (jsontext.Value, error) {
 		return nil, errors.New("must contain strict JSON")
 	}
 	return append(jsontext.Value(nil), raw...), nil
+}
+
+func (s *streamState) takePendingEvents() []llm.StreamEvent {
+	events := s.pendingEvents
+	s.pendingEvents = nil
+	return events
+}
+
+func cloneToolCall(call llm.ToolCall) llm.ToolCall {
+	call.Arguments = append(json.RawMessage(nil), call.Arguments...)
+	return call
+}
+
+func (s *streamState) closeOpenParts(outputIndex int) []llm.StreamEvent {
+	keys := make([]responsePartKey, 0)
+	for key, state := range s.partStates {
+		if key.outputIndex == outputIndex && state == streamPartOpen {
+			keys = append(keys, key)
+		}
+	}
+	slices.SortFunc(keys, func(left, right responsePartKey) int {
+		if left.subindex != right.subindex {
+			return left.subindex - right.subindex
+		}
+		return strings.Compare(left.kind, right.kind)
+	})
+	events := make([]llm.StreamEvent, 0, len(keys))
+	for _, key := range keys {
+		kind := llm.StreamEventTextEnd
+		if key.kind == "reasoning" {
+			kind = llm.StreamEventReasoningEnd
+		}
+		events = append(events, llm.StreamEvent{Kind: kind, Index: key.outputIndex, Subindex: key.subindex})
+		s.partStates[key] = streamPartClosed
+		delete(s.partContent, key)
+	}
+	return events
+}
+
+func (s *streamState) incompleteToolEndEvents() []llm.StreamEvent {
+	indexes := make([]int, 0)
+	for index, identity := range s.pendingItems {
+		if identity.Type == "function_call" {
+			indexes = append(indexes, index)
+		}
+	}
+	slices.Sort(indexes)
+	events := make([]llm.StreamEvent, 0, len(indexes))
+	for _, index := range indexes {
+		identity := s.pendingItems[index]
+		events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallEnd, Index: index, ToolCallID: identity.CallID, ToolName: identity.Name})
+	}
+	return events
 }
 
 func (s *streamState) finish(response openairesponses.Response, reason llm.FinishReason, emit internalstream.Emit) error {
@@ -390,6 +709,27 @@ func (s *streamState) finish(response openairesponses.Response, reason llm.Finis
 		model = s.defaultModel
 	}
 	s.terminal = true
+	events := s.takePendingEvents()
+	for key, state := range s.partStates {
+		if state != streamPartOpen {
+			continue
+		}
+		if reason == llm.FinishReasonStop {
+			return s.codec.malformedResponse(s.op, "%s output item %d part %d did not complete", key.kind, key.outputIndex, key.subindex)
+		}
+	}
+	if reason != llm.FinishReasonStop {
+		indexes := make([]int, 0, len(s.pendingItems))
+		for index := range s.pendingItems {
+			indexes = append(indexes, index)
+		}
+		slices.Sort(indexes)
+		for _, index := range indexes {
+			events = append(events, s.closeOpenParts(index)...)
+		}
+		events = append(events, s.incompleteToolEndEvents()...)
+	}
+	events = append(events, llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: reason})
 	emit(llm.Chunk{
 		ID:           response.ID,
 		Model:        model,
@@ -397,6 +737,7 @@ func (s *streamState) finish(response openairesponses.Response, reason llm.Finis
 		ProviderData: providerData,
 		FinishReason: reason,
 		Usage:        usage,
+		Events:       events,
 	})
 	return nil
 }
@@ -508,7 +849,7 @@ func responseUsage(response openairesponses.Response) (*llm.Usage, error) {
 	if input > int64(^uint(0)>>1) || output > int64(^uint(0)>>1) || total > int64(^uint(0)>>1) {
 		return nil, errors.New("token count exceeds int range")
 	}
-	if total != input+output {
+	if input > (1<<63-1)-output || total != input+output {
 		return nil, fmt.Errorf("total tokens %d do not equal input %d plus output %d", total, input, output)
 	}
 	return &llm.Usage{InputTokens: int(input), OutputTokens: int(output), TotalTokens: int(total)}, nil

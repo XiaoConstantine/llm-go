@@ -336,14 +336,11 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if err := c.checkCapabilities("stream", request); err != nil {
 		return nil, err
 	}
-	if requestUsesTools(request) {
-		return nil, unsupported("stream", "tool streaming is not implemented")
-	}
 	if err := checkRequest("stream", request); err != nil {
 		return nil, err
 	}
 
-	wrequest, _, err := requestToWire("stream", c.model, c.defaultMaxOutputTokens, request)
+	wrequest, priorToolIDs, err := requestToWire("stream", c.model, c.defaultMaxOutputTokens, request)
 	if err != nil {
 		return nil, err
 	}
@@ -355,8 +352,12 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if len(payload) > maxRequestBodyBytes {
 		return nil, requestError("stream", "request body exceeds %d bytes", maxRequestBodyBytes)
 	}
+	declared := make(map[string]struct{}, len(request.Tools))
+	for _, tool := range request.Tools {
+		declared[tool.Name] = struct{}{}
+	}
 	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
-		return c.produceStream(producerCtx, payload, emit)
+		return c.produceStream(producerCtx, payload, declared, priorToolIDs, emit)
 	}), nil
 }
 

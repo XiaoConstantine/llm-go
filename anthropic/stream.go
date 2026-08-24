@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -20,14 +21,15 @@ import (
 )
 
 const (
-	streamReadBufferBytes = 32 << 10
-	maxStreamEventBytes   = 4 << 20
-	streamUTF8BOM         = "\xef\xbb\xbf"
+	streamReadBufferBytes  = 32 << 10
+	maxStreamEventBytes    = 4 << 20
+	maxStreamContentBlocks = 1024
+	streamUTF8BOM          = "\xef\xbb\xbf"
 )
 
 var errStreamEmitStopped = errors.New("stream emission stopped")
 
-func (c *Client) produceStream(ctx context.Context, payload []byte, emit internalstream.Emit) (err error) {
+func (c *Client) produceStream(ctx context.Context, payload []byte, declared, priorToolIDs map[string]struct{}, emit internalstream.Emit) (err error) {
 	defer func() {
 		err = relabelProviderError(err, c.provider)
 	}()
@@ -50,7 +52,7 @@ func (c *Client) produceStream(ctx context.Context, payload []byte, emit interna
 		close(closingDone)
 	})
 
-	streamErr := readEventStream(ctx, response.Body, newStreamDecoder(response.Header.Get("Request-Id")), emit)
+	streamErr := readEventStream(ctx, response.Body, newStreamDecoder(response.Header.Get("Request-Id"), declared, priorToolIDs), emit)
 	if !stopClosing() {
 		<-closingDone
 	}
@@ -270,20 +272,29 @@ func splitStreamLines(data []byte, atEOF bool) (advance int, token []byte, err e
 }
 
 type streamDecoder struct {
-	started          bool
-	messageDeltaSeen bool
-	finished         bool
-	requestID        string
-	id               string
-	model            string
-	nextBlock        int
-	activeBlock      *streamBlock
-	usage            usageAccumulator
+	started           bool
+	messageDeltaSeen  bool
+	finished          bool
+	requestID         string
+	id                string
+	model             string
+	nextBlock         int
+	activeBlock       *streamBlock
+	usage             usageAccumulator
+	declared          map[string]struct{}
+	seenToolIDs       map[string]struct{}
+	toolCalls         []llm.ToolCall
+	toolArgumentBytes int
+	pendingEvents     []llm.StreamEvent
 }
 
 type streamBlock struct {
-	index int
-	kind  string
+	index        int
+	kind         string
+	toolID       string
+	toolName     string
+	hasToolDelta bool
+	content      strings.Builder
 }
 
 type streamEnvelope struct {
@@ -310,8 +321,11 @@ type streamContentBlockEvent struct {
 }
 
 type streamContentBlock struct {
-	Type string  `json:"type"`
-	Text *string `json:"text"`
+	Type  string           `json:"type"`
+	Text  *string          `json:"text"`
+	ID    *string          `json:"id"`
+	Name  *string          `json:"name"`
+	Input *json.RawMessage `json:"input"`
 }
 
 type streamContentDeltaEvent struct {
@@ -320,8 +334,9 @@ type streamContentDeltaEvent struct {
 }
 
 type streamDelta struct {
-	Type string  `json:"type"`
-	Text *string `json:"text"`
+	Type        string  `json:"type"`
+	Text        *string `json:"text"`
+	PartialJSON *string `json:"partial_json"`
 }
 
 type streamContentStopEvent struct {
@@ -349,8 +364,12 @@ type streamErrorEvent struct {
 	RequestID string    `json:"request_id"`
 }
 
-func newStreamDecoder(requestID string) *streamDecoder {
-	return &streamDecoder{requestID: requestID}
+func newStreamDecoder(requestID string, declared, priorToolIDs map[string]struct{}) *streamDecoder {
+	seen := make(map[string]struct{}, len(priorToolIDs))
+	for id := range priorToolIDs {
+		seen[id] = struct{}{}
+	}
+	return &streamDecoder{requestID: requestID, declared: declared, seenToolIDs: seen}
 }
 
 func (decoder *streamDecoder) consume(eventName, data string, emit internalstream.Emit) (bool, error) {
@@ -380,7 +399,7 @@ func (decoder *streamDecoder) consume(eventName, data string, emit internalstrea
 	case "content_block_delta":
 		return false, decoder.consumeContentDelta(data, emit)
 	case "content_block_stop":
-		return false, decoder.consumeContentStop(data)
+		return false, decoder.consumeContentStop(data, emit)
 	case "message_delta":
 		return false, decoder.consumeMessageDelta(data, emit)
 	case "message_stop":
@@ -433,6 +452,7 @@ func (decoder *streamDecoder) consumeMessageStart(data string) error {
 	decoder.started = true
 	decoder.id = message.ID
 	decoder.model = message.Model
+	decoder.pendingEvents = append(decoder.pendingEvents, llm.StreamEvent{Kind: llm.StreamEventStart})
 	return nil
 }
 
@@ -450,21 +470,60 @@ func (decoder *streamDecoder) consumeContentStart(data string, emit internalstre
 	if event.Index == nil || *event.Index != decoder.nextBlock {
 		return malformedStream("content_block_start index is %v, want %d", optionalIndex(event.Index), decoder.nextBlock)
 	}
+	if *event.Index >= maxStreamContentBlocks {
+		return malformedStream("content block index %d exceeds limit %d", *event.Index, maxStreamContentBlocks)
+	}
 	if event.ContentBlock == nil {
 		return malformedStream("content_block_start %d has no content block", *event.Index)
 	}
 	if event.ContentBlock.Type == "" {
 		return malformedStream("content_block_start %d has no content block type", *event.Index)
 	}
-	if event.ContentBlock.Type != "text" {
-		return unsupported("stream", fmt.Sprintf("response content block type %q is not implemented", event.ContentBlock.Type))
+
+	block := &streamBlock{index: *event.Index, kind: event.ContentBlock.Type}
+	chunk := llm.Chunk{ID: decoder.id, Model: decoder.model}
+	switch block.kind {
+	case "text":
+		if event.ContentBlock.Text == nil {
+			return malformedStream("text content block %d has no text", block.index)
+		}
+		decoder.pendingEvents = append(decoder.pendingEvents, llm.StreamEvent{Kind: llm.StreamEventTextStart, Index: block.index})
+		if *event.ContentBlock.Text != "" {
+			if err := appendStreamContent(&block.content, *event.ContentBlock.Text); err != nil {
+				return err
+			}
+			chunk.Content = []llm.Part{{Kind: llm.PartText, Text: *event.ContentBlock.Text}}
+			chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventTextDelta, Index: block.index, Delta: *event.ContentBlock.Text})
+		}
+	case "tool_use":
+		if event.ContentBlock.ID == nil || *event.ContentBlock.ID == "" {
+			return malformedStream("tool use %d has no ID", block.index)
+		}
+		if _, exists := decoder.seenToolIDs[*event.ContentBlock.ID]; exists {
+			return malformedStream("tool use %d repeats ID %q", block.index, *event.ContentBlock.ID)
+		}
+		if event.ContentBlock.Name == nil || !validToolName(*event.ContentBlock.Name) {
+			return malformedStream("tool use %d has invalid name", block.index)
+		}
+		if _, exists := decoder.declared[*event.ContentBlock.Name]; !exists {
+			return malformedStream("tool use %d names undeclared tool %q", block.index, *event.ContentBlock.Name)
+		}
+		if event.ContentBlock.Input == nil || !jsontext.Value(*event.ContentBlock.Input).IsValid() || jsontext.Value(*event.ContentBlock.Input).Kind() != jsontext.KindBeginObject {
+			return malformedStream("tool use %d input must be a strict JSON object", block.index)
+		}
+		decoder.seenToolIDs[*event.ContentBlock.ID] = struct{}{}
+		block.toolID = *event.ContentBlock.ID
+		block.toolName = *event.ContentBlock.Name
+		if err := appendStreamContent(&block.content, string(*event.ContentBlock.Input)); err != nil {
+			return err
+		}
+		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: block.index, ToolCallID: block.toolID, ToolName: block.toolName})
+	default:
+		return unsupported("stream", fmt.Sprintf("response content block type %q is not implemented", block.kind))
 	}
-	if event.ContentBlock.Text == nil {
-		return malformedStream("text content block %d has no text", *event.Index)
-	}
-	decoder.activeBlock = &streamBlock{index: *event.Index, kind: event.ContentBlock.Type}
-	if *event.ContentBlock.Text != "" {
-		if !emit(decoder.textChunk(*event.ContentBlock.Text)) {
+	decoder.activeBlock = block
+	if len(chunk.Content) != 0 || len(chunk.Events) != 0 {
+		if !emit(chunk) {
 			return errStreamEmitStopped
 		}
 	}
@@ -479,11 +538,12 @@ func (decoder *streamDecoder) consumeContentDelta(data string, emit internalstre
 	if err := jsonv2.Unmarshal([]byte(data), &event); err != nil {
 		return malformedStream("decode content_block_delta event: %w", err)
 	}
-	if decoder.activeBlock == nil {
+	block := decoder.activeBlock
+	if block == nil {
 		return malformedStream("content_block_delta arrived without an active block")
 	}
-	if event.Index == nil || *event.Index != decoder.activeBlock.index {
-		return malformedStream("content_block_delta index is %v, want %d", optionalIndex(event.Index), decoder.activeBlock.index)
+	if event.Index == nil || *event.Index != block.index {
+		return malformedStream("content_block_delta index is %v, want %d", optionalIndex(event.Index), block.index)
 	}
 	if event.Delta == nil {
 		return malformedStream("content_block_delta %d has no delta", *event.Index)
@@ -491,19 +551,45 @@ func (decoder *streamDecoder) consumeContentDelta(data string, emit internalstre
 	if event.Delta.Type == "" {
 		return malformedStream("content_block_delta %d has no delta type", *event.Index)
 	}
-	if decoder.activeBlock.kind != "text" || event.Delta.Type != "text_delta" {
-		return unsupported("stream", fmt.Sprintf("response content delta type %q is not implemented", event.Delta.Type))
+	chunk := llm.Chunk{ID: decoder.id, Model: decoder.model}
+	switch {
+	case block.kind == "text" && event.Delta.Type == "text_delta":
+		if event.Delta.Text == nil {
+			return malformedStream("text delta %d has no text", block.index)
+		}
+		if *event.Delta.Text == "" {
+			return nil
+		}
+		if err := appendStreamContent(&block.content, *event.Delta.Text); err != nil {
+			return err
+		}
+		chunk.Content = []llm.Part{{Kind: llm.PartText, Text: *event.Delta.Text}}
+		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventTextDelta, Index: block.index, Delta: *event.Delta.Text})
+	case block.kind == "tool_use" && event.Delta.Type == "input_json_delta":
+		if event.Delta.PartialJSON == nil {
+			return malformedStream("tool argument delta %d has no partial_json", block.index)
+		}
+		if *event.Delta.PartialJSON == "" {
+			return nil
+		}
+		if !block.hasToolDelta {
+			block.hasToolDelta = true
+			block.content.Reset()
+		}
+		if err := appendStreamContent(&block.content, *event.Delta.PartialJSON); err != nil {
+			return err
+		}
+		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventToolCallDelta, Index: block.index, Delta: *event.Delta.PartialJSON, ToolCallID: block.toolID, ToolName: block.toolName})
+	default:
+		return unsupported("stream", fmt.Sprintf("response content delta type %q is not implemented for %q", event.Delta.Type, block.kind))
 	}
-	if event.Delta.Text == nil {
-		return malformedStream("text delta %d has no text", *event.Index)
-	}
-	if *event.Delta.Text != "" && !emit(decoder.textChunk(*event.Delta.Text)) {
+	if !emit(chunk) {
 		return errStreamEmitStopped
 	}
 	return nil
 }
 
-func (decoder *streamDecoder) consumeContentStop(data string) error {
+func (decoder *streamDecoder) consumeContentStop(data string, emit internalstream.Emit) error {
 	if err := decoder.requireContentEvent("content_block_stop"); err != nil {
 		return err
 	}
@@ -511,14 +597,51 @@ func (decoder *streamDecoder) consumeContentStop(data string) error {
 	if err := jsonv2.Unmarshal([]byte(data), &event); err != nil {
 		return malformedStream("decode content_block_stop event: %w", err)
 	}
-	if decoder.activeBlock == nil {
+	block := decoder.activeBlock
+	if block == nil {
 		return malformedStream("content_block_stop arrived without an active block")
 	}
-	if event.Index == nil || *event.Index != decoder.activeBlock.index {
-		return malformedStream("content_block_stop index is %v, want %d", optionalIndex(event.Index), decoder.activeBlock.index)
+	if event.Index == nil || *event.Index != block.index {
+		return malformedStream("content_block_stop index is %v, want %d", optionalIndex(event.Index), block.index)
+	}
+	chunk := llm.Chunk{ID: decoder.id, Model: decoder.model}
+	switch block.kind {
+	case "text":
+		decoder.pendingEvents = append(decoder.pendingEvents, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: block.index, Content: block.content.String()})
+	case "tool_use":
+		arguments := json.RawMessage(block.content.String())
+		if !jsontext.Value(arguments).IsValid() || jsontext.Value(arguments).Kind() != jsontext.KindBeginObject {
+			return malformedStream("tool use %d arguments are not a strict JSON object", block.index)
+		}
+		if len(arguments) > maxResponseBodyBytes-decoder.toolArgumentBytes {
+			return malformedStream("streamed tool arguments exceed %d bytes", maxResponseBodyBytes)
+		}
+		decoder.toolArgumentBytes += len(arguments)
+		call := llm.ToolCall{ID: block.toolID, Name: block.toolName, Arguments: append(json.RawMessage(nil), arguments...)}
+		decoder.toolCalls = append(decoder.toolCalls, call)
+		eventCall := call
+		eventCall.Arguments = append(json.RawMessage(nil), call.Arguments...)
+		chunk.Events = []llm.StreamEvent{{Kind: llm.StreamEventToolCallEnd, Index: block.index, ToolCallID: call.ID, ToolName: call.Name, ToolCall: &eventCall}}
 	}
 	decoder.activeBlock = nil
 	decoder.nextBlock++
+	if len(chunk.Events) != 0 && !emit(chunk) {
+		return errStreamEmitStopped
+	}
+	return nil
+}
+
+func (decoder *streamDecoder) takePendingEvents() []llm.StreamEvent {
+	events := decoder.pendingEvents
+	decoder.pendingEvents = nil
+	return events
+}
+
+func appendStreamContent(builder *strings.Builder, fragment string) error {
+	if builder.Len() > maxResponseBodyBytes-len(fragment) {
+		return malformedStream("buffered stream output exceeds %d bytes", maxResponseBodyBytes)
+	}
+	builder.WriteString(fragment)
 	return nil
 }
 
@@ -556,18 +679,32 @@ func (decoder *streamDecoder) consumeMessageDelta(data string, emit internalstre
 		return err
 	}
 	if finish == llm.FinishReasonToolCall {
-		return unsupported("stream", "tool call streaming is not implemented")
+		if len(decoder.toolCalls) == 0 {
+			return malformedStream("stop reason tool_use has no tool calls")
+		}
+	} else if len(decoder.toolCalls) != 0 {
+		if finish == llm.FinishReasonLength {
+			return unsupported("stream", "truncated tool use is not representable")
+		}
+		return malformedStream("stop reason %q is inconsistent with tool use", *event.Delta.StopReason)
 	}
 	usage, err := decoder.usage.value()
 	if err != nil {
 		return malformedStream("final usage: %w", err)
 	}
 	decoder.finished = true
+	toolCalls := make([]llm.ToolCall, len(decoder.toolCalls))
+	for index, call := range decoder.toolCalls {
+		toolCalls[index] = call
+		toolCalls[index].Arguments = append(json.RawMessage(nil), call.Arguments...)
+	}
 	if !emit(llm.Chunk{
 		ID:           decoder.id,
 		Model:        decoder.model,
+		ToolCalls:    toolCalls,
 		FinishReason: finish,
 		Usage:        usage,
+		Events:       append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish}),
 	}) {
 		return errStreamEmitStopped
 	}
@@ -598,14 +735,6 @@ func (decoder *streamDecoder) requireContentEvent(name string) error {
 		return malformedStream("%s arrived after message_delta", name)
 	}
 	return nil
-}
-
-func (decoder *streamDecoder) textChunk(text string) llm.Chunk {
-	return llm.Chunk{
-		ID:      decoder.id,
-		Model:   decoder.model,
-		Content: []llm.Part{{Kind: llm.PartText, Text: text}},
-	}
 }
 
 type usageAccumulator struct {

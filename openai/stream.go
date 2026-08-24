@@ -303,8 +303,11 @@ type streamDecoder struct {
 	toolMode        streamToolMode
 	toolCalls       []*streamToolCallBuilder
 	legacyCall      streamFunctionCallBuilder
+	legacyStarted   bool
 	bufferedBytes   int
 	refusalSeen     bool
+	started         bool
+	textStarted     bool
 	finished        bool
 	usageSeen       bool
 }
@@ -321,6 +324,7 @@ type streamToolCallBuilder struct {
 	id       strings.Builder
 	callType strings.Builder
 	function streamFunctionCallBuilder
+	started  bool
 }
 
 type streamFunctionCallBuilder struct {
@@ -410,20 +414,27 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 	if choice.Delta.Role != nil && *choice.Delta.Role != string(llm.RoleAssistant) {
 		return false, malformedStream("event delta has role %q, want assistant", *choice.Delta.Role)
 	}
-	if err := d.consumeToolDelta(*choice.Delta); err != nil {
+	events, err := d.consumeToolDelta(*choice.Delta)
+	if err != nil {
 		return false, err
 	}
 
 	chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(false)}
-	if choice.Delta.Content != nil {
-		if d.format == llm.ResponseFormatJSON {
-			if err := d.buffer(&d.content, *choice.Delta.Content); err != nil {
-				return false, err
-			}
+	if !d.started {
+		d.started = true
+		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventStart})
+	}
+	chunk.Events = append(chunk.Events, events...)
+	if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+		if err := d.buffer(&d.content, *choice.Delta.Content); err != nil {
+			return false, err
 		}
-		if *choice.Delta.Content != "" {
-			chunk.Content = []llm.Part{{Text: *choice.Delta.Content}}
+		if !d.textStarted {
+			d.textStarted = true
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextStart, Index: 0})
 		}
+		chunk.Content = []llm.Part{{Text: *choice.Delta.Content}}
+		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextDelta, Index: 0, Delta: *choice.Delta.Content})
 	}
 	if choice.Delta.Refusal != nil {
 		d.refusalSeen = true
@@ -445,6 +456,20 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 		chunk.Model = d.modelForChunk(true)
 		chunk.ToolCalls = toolCalls
 		chunk.FinishReason = finish
+		if d.textStarted {
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: 0, Content: d.content.String()})
+		}
+		for index := range toolCalls {
+			call := cloneToolCallForEvent(toolCalls[index])
+			chunk.Events = append(chunk.Events, llm.StreamEvent{
+				Kind:       llm.StreamEventToolCallEnd,
+				Index:      index,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				ToolCall:   &call,
+			})
+		}
+		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish})
 		if d.format == llm.ResponseFormatJSON && finish == llm.FinishReasonStop && !d.refusalSeen &&
 			!jsontext.Value(d.content.String()).IsValid() {
 			return false, malformedStream("completed JSON response is not strict JSON")
@@ -470,7 +495,7 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 	}
 
 	if len(chunk.Content) != 0 || len(chunk.ToolCalls) != 0 || chunk.FinishReason != "" ||
-		len(chunk.ProviderData) != 0 || chunk.Usage != nil {
+		len(chunk.ProviderData) != 0 || chunk.Usage != nil || len(chunk.Events) != 0 {
 		if !emit(chunk) {
 			return false, errStreamEmitStopped
 		}
@@ -478,24 +503,25 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 	return false, nil
 }
 
-func (d *streamDecoder) consumeToolDelta(delta streamDelta) error {
+func (d *streamDecoder) consumeToolDelta(delta streamDelta) ([]llm.StreamEvent, error) {
+	var events []llm.StreamEvent
 	modern := len(delta.ToolCalls) != 0
 	legacy := delta.FunctionCall != nil
 	if modern && legacy {
-		return malformedStream("event contains both tool_calls and function_call")
+		return nil, malformedStream("event contains both tool_calls and function_call")
 	}
 	if modern {
 		if d.toolMode == streamToolModeLegacy {
-			return malformedStream("event stream mixes tool_calls and function_call")
+			return nil, malformedStream("event stream mixes tool_calls and function_call")
 		}
 		d.toolMode = streamToolModeModern
 		for _, fragment := range delta.ToolCalls {
 			if fragment.Index == nil {
-				return malformedStream("streamed tool call has no index")
+				return nil, malformedStream("streamed tool call has no index")
 			}
 			index := *fragment.Index
 			if index < 0 || index >= maxStreamToolCalls {
-				return malformedStream("streamed tool call index %d is outside [0, %d)", index, maxStreamToolCalls)
+				return nil, malformedStream("streamed tool call index %d is outside [0, %d)", index, maxStreamToolCalls)
 			}
 			if len(d.toolCalls) <= index {
 				d.toolCalls = append(d.toolCalls, make([]*streamToolCallBuilder, index-len(d.toolCalls)+1)...)
@@ -506,26 +532,42 @@ func (d *streamDecoder) consumeToolDelta(delta streamDelta) error {
 				d.toolCalls[index] = call
 			}
 			if err := d.appendFragment(&call.id, fragment.ID); err != nil {
-				return err
+				return nil, err
 			}
 			if err := d.appendFragment(&call.callType, fragment.Type); err != nil {
-				return err
+				return nil, err
 			}
 			if fragment.Function != nil {
 				if err := d.consumeFunctionDelta(&call.function, *fragment.Function); err != nil {
-					return err
+					return nil, err
 				}
+			}
+			if !call.started {
+				call.started = true
+				events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: index, ToolCallID: call.id.String(), ToolName: call.function.name.String()})
+			}
+			if fragment.Function != nil && fragment.Function.Arguments != nil && *fragment.Function.Arguments != "" {
+				events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallDelta, Index: index, Delta: *fragment.Function.Arguments, ToolCallID: call.id.String(), ToolName: call.function.name.String()})
 			}
 		}
 	}
 	if legacy {
 		if d.toolMode == streamToolModeModern {
-			return malformedStream("event stream mixes tool_calls and function_call")
+			return nil, malformedStream("event stream mixes tool_calls and function_call")
 		}
 		d.toolMode = streamToolModeLegacy
-		return d.consumeFunctionDelta(&d.legacyCall, *delta.FunctionCall)
+		if err := d.consumeFunctionDelta(&d.legacyCall, *delta.FunctionCall); err != nil {
+			return nil, err
+		}
+		if !d.legacyStarted {
+			d.legacyStarted = true
+			events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: 0, ToolName: d.legacyCall.name.String()})
+		}
+		if delta.FunctionCall.Arguments != nil && *delta.FunctionCall.Arguments != "" {
+			events = append(events, llm.StreamEvent{Kind: llm.StreamEventToolCallDelta, Index: 0, Delta: *delta.FunctionCall.Arguments, ToolName: d.legacyCall.name.String()})
+		}
 	}
-	return nil
+	return events, nil
 }
 
 func (d *streamDecoder) consumeFunctionDelta(call *streamFunctionCallBuilder, delta streamFunctionCallDelta) error {
@@ -533,6 +575,11 @@ func (d *streamDecoder) consumeFunctionDelta(call *streamFunctionCallBuilder, de
 		return err
 	}
 	return d.appendFragment(&call.arguments, delta.Arguments)
+}
+
+func cloneToolCallForEvent(call llm.ToolCall) llm.ToolCall {
+	call.Arguments = append(json.RawMessage(nil), call.Arguments...)
+	return call
 }
 
 func (d *streamDecoder) appendFragment(builder *strings.Builder, fragment *string) error {

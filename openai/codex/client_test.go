@@ -156,9 +156,13 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if requestNumber == 1 {
 			writeSSE(t, w,
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
+				`{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"item_id":"rs_1","delta":"Checking the workspace."}`,
+				`{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"item_id":"rs_1","text":"Checking the workspace."}`,
 				`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
-				`{"type":"response.reasoning_summary_text.delta","delta":"Checking the workspace."}`,
-				`{"type":"response.output_text.delta","delta":"hello"}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}`,
+				`{"type":"response.output_text.delta","output_index":1,"content_index":0,"item_id":"msg_1","delta":"hello"}`,
+				`{"type":"response.output_text.done","output_index":1,"content_index":0,"item_id":"msg_1","text":"hello"}`,
 				`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}}`,
 				`{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{\"path\":\"README.md\"}"}}`,
 				`{"type":"response.completed","response":{"id":"resp_1","model":"served-codex","status":"completed","output":[{"type":"reasoning","id":"rs_1","encrypted_content":"opaque","summary":[]}],"usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}}`,
@@ -166,7 +170,9 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 			return
 		}
 		writeSSE(t, w,
-			`{"type":"response.output_text.delta","delta":"done"}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_2","role":"assistant","status":"in_progress","content":[]}}`,
+			`{"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_2","delta":"done"}`,
+			`{"type":"response.output_text.done","output_index":0,"content_index":0,"item_id":"msg_2","text":"done"}`,
 			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_2","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}}`,
 			`{"type":"response.completed","response":{"id":"resp_2","status":"completed"}}`,
 		)
@@ -376,7 +382,7 @@ func TestGenerateIncompleteDropsUnfinishedProviderData(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		writeSSE(t, w,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"partial"}`,
+			`{"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_1","delta":"partial"}`,
 			`{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`,
 		)
 	}))
@@ -431,18 +437,59 @@ func TestStreamOrdersToolCallsByOutputIndex(t *testing.T) {
 		t.Fatalf("Stream() error = %v", err)
 	}
 	defer stream.Close()
-	chunk, err := stream.Recv()
+	var chunks []llm.Chunk
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 3 || len(chunks[0].Events) != 3 || chunks[0].Events[0].Kind != llm.StreamEventStart ||
+		chunks[0].Events[1].Kind != llm.StreamEventToolCallStart || chunks[0].Events[2].Kind != llm.StreamEventToolCallEnd ||
+		len(chunks[1].Events) != 2 || chunks[1].Events[0].Kind != llm.StreamEventToolCallStart || chunks[1].Events[1].Kind != llm.StreamEventToolCallEnd {
+		t.Fatalf("stream chunks = %#v", chunks)
+	}
+	final := chunks[2]
+	if len(final.ToolCalls) != 2 || final.ToolCalls[0].Name != "first" || final.ToolCalls[1].Name != "second" {
+		t.Fatalf("final ToolCalls = %#v", final.ToolCalls)
+	}
+	if final.FinishReason != llm.FinishReasonToolCall || len(final.Events) != 1 || final.Events[0].Kind != llm.StreamEventDone {
+		t.Fatalf("final chunk = %#v", final)
+	}
+}
+
+func TestGenerateAcceptsSubscriptionFunctionArgumentsDoneWithoutName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"","status":"in_progress"}}`,
+			`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"path\":\"README.md\"}"}`,
+			`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","arguments":"{\"path\":\"README.md\"}"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{\"path\":\"README.md\"}","status":"completed"}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","model":"model","status":"completed","output":[]}}`,
+		)
+	}))
+	defer server.Close()
+
+	client, err := New(Config{
+		Model: "model", AccessToken: "token", AccountID: "account", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityTools},
+	})
 	if err != nil {
-		t.Fatalf("Recv() error = %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
-	if len(chunk.ToolCalls) != 2 || chunk.ToolCalls[0].Name != "first" || chunk.ToolCalls[1].Name != "second" {
-		t.Fatalf("Recv().ToolCalls = %#v", chunk.ToolCalls)
+	request := textRequest("read the README")
+	request.Tools = []llm.Tool{{Name: "read", InputSchema: jsontext.Value(`{"type":"object"}`)}}
+	response, err := client.Generate(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
 	}
-	if chunk.FinishReason != llm.FinishReasonToolCall {
-		t.Fatalf("Recv().FinishReason = %q", chunk.FinishReason)
-	}
-	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
-		t.Fatalf("second Recv() error = %v, want EOF", err)
+	if len(response.Message.ToolCalls) != 1 || response.Message.ToolCalls[0].Name != "read" || string(response.Message.ToolCalls[0].Arguments) != `{"path":"README.md"}` {
+		t.Fatalf("Generate().ToolCalls = %#v", response.Message.ToolCalls)
 	}
 }
 
@@ -450,8 +497,11 @@ func TestStreamEmitsReasoningSummaryChunks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		writeSSE(t, w,
-			`{"type":"response.reasoning_summary_text.delta","delta":"Checking "}`,
-			`{"type":"response.reasoning_summary_text.delta","delta":"the workspace."}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
+			`{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"item_id":"rs_1","delta":"Checking "}`,
+			`{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"item_id":"rs_1","delta":"the workspace."}`,
+			`{"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"item_id":"rs_1","text":"Checking the workspace."}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
 			`{"type":"response.completed","response":{"status":"completed"}}`,
 		)
 	}))
@@ -476,6 +526,10 @@ func TestStreamEmitsReasoningSummaryChunks(t *testing.T) {
 		if chunk.ReasoningSummary != want || len(chunk.Content) != 0 {
 			t.Fatalf("Recv() = %#v, want reasoning summary %q only", chunk, want)
 		}
+	}
+	end, err := stream.Recv()
+	if err != nil || len(end.Events) != 1 || end.Events[0].Kind != llm.StreamEventReasoningEnd {
+		t.Fatalf("reasoning end Recv() = (%#v, %v)", end, err)
 	}
 	final, err := stream.Recv()
 	if err != nil {
@@ -692,6 +746,33 @@ func TestAccountIDFromToken(t *testing.T) {
 		if accountID, err := AccountIDFromToken(token); err == nil || accountID != "" {
 			t.Errorf("AccountIDFromToken(%q) = %q, %v, want error", token, accountID, err)
 		}
+	}
+}
+
+func TestGenerateRejectsDuplicateDoneOnlyToolCallIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{}"}}`,
+			`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_2","call_id":"call_1","name":"read","arguments":"{}"}}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		)
+	}))
+	defer server.Close()
+
+	client, err := New(Config{
+		Model: "model", AccessToken: "token", AccountID: "account", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityTools},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	request := textRequest("read")
+	request.Tools = []llm.Tool{{Name: "read", InputSchema: jsontext.Value(`{"type":"object"}`)}}
+	_, err = client.Generate(context.Background(), request)
+	var responseErr *llm.Error
+	if !errors.As(err, &responseErr) || responseErr.Kind != llm.KindMalformedResponse || !strings.Contains(err.Error(), "call_1") {
+		t.Fatalf("Generate() error = %#v, want duplicate-call malformed response", err)
 	}
 }
 

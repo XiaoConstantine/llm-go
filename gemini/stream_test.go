@@ -68,13 +68,19 @@ func TestStreamTranslatesTextAndFinalMetadata(t *testing.T) {
 	if chunkText(chunks[0]) != "hel" || chunkText(chunks[1]) != "lo" {
 		t.Fatalf("content chunks = %#v", chunks[:2])
 	}
+	if len(chunks[0].Events) != 3 || chunks[0].Events[0].Kind != llm.StreamEventStart ||
+		chunks[0].Events[1].Kind != llm.StreamEventTextStart || chunks[0].Events[2].Kind != llm.StreamEventTextDelta ||
+		len(chunks[1].Events) != 1 || chunks[1].Events[0].Kind != llm.StreamEventTextDelta {
+		t.Fatalf("content events = %#v, %#v", chunks[0].Events, chunks[1].Events)
+	}
 	for index, chunk := range chunks[:2] {
 		if chunk.ID != "" || chunk.Model != "" || chunk.FinishReason != "" || chunk.Usage != nil || len(chunk.ProviderData) != 0 {
 			t.Fatalf("content chunk %d contains premature metadata: %#v", index, chunk)
 		}
 	}
 	final := chunks[2]
-	if final.ID != "response-1" || final.Model != "served-model" || final.FinishReason != llm.FinishReasonStop {
+	if final.ID != "response-1" || final.Model != "served-model" || final.FinishReason != llm.FinishReasonStop ||
+		len(final.Events) != 2 || final.Events[0].Kind != llm.StreamEventTextEnd || final.Events[1].Kind != llm.StreamEventDone {
 		t.Fatalf("final chunk metadata = %#v", final)
 	}
 	if final.Usage == nil || *final.Usage != (llm.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}) {
@@ -105,7 +111,7 @@ func TestStreamTranslatesTextAndFinalMetadata(t *testing.T) {
 func TestStreamTranslatesToolCallAndThoughtSignature(t *testing.T) {
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(writer, `data: {"responseId":"tool-response","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call-1","name":"weather","args":{"city":"Boston"}},"thoughtSignature":"c2lnbmF0dXJl"}]},"finishReason":"STOP"}]}`+"\n\n")
+		_, _ = io.WriteString(writer, `data: {"responseId":"tool-response","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call-1","name":"weather","args":{"city":"Boston"}},"thoughtSignature":"c2lnbmF0dXJl"},{"text":"after"},{"inlineData":{"mimeType":"image/png","data":"AQ=="}}]},"finishReason":"STOP"}]}`+"\n\n")
 	}))
 	client := mustTestClient(t, server, llm.CapabilityStreaming, llm.CapabilityTools)
 	stream, err := client.Stream(context.Background(), llm.Request{
@@ -127,6 +133,9 @@ func TestStreamTranslatesToolCallAndThoughtSignature(t *testing.T) {
 	if len(chunks) != 2 || len(chunks[0].ToolCalls) != 1 {
 		t.Fatalf("chunks = %#v", chunks)
 	}
+	if len(chunks[0].Events) != 5 || chunks[0].Events[0].Kind != llm.StreamEventStart || chunks[0].Events[1].Kind != llm.StreamEventToolCallStart || chunks[0].Events[2].Kind != llm.StreamEventToolCallEnd || chunks[0].Events[2].ToolCall == nil || chunks[0].Events[3].Kind != llm.StreamEventTextStart || chunks[0].Events[4].Kind != llm.StreamEventTextDelta || chunks[0].Events[4].Delta != "after" {
+		t.Fatalf("tool call events = %#v", chunks[0].Events)
+	}
 	call := chunks[0].ToolCalls[0]
 	if call.ID != "call-1" || call.Name != "weather" {
 		t.Fatalf("tool call = %#v", call)
@@ -140,7 +149,7 @@ func TestStreamTranslatesToolCallAndThoughtSignature(t *testing.T) {
 		t.Fatalf("final chunk = %#v", final)
 	}
 	data, recognized, err := parseMessageData(final.ProviderData)
-	if err != nil || !recognized || len(data.Parts) != 1 || data.Parts[0].Kind != "tool_call" ||
+	if err != nil || !recognized || len(data.Parts) != 3 || data.Parts[0].Kind != "tool_call" || data.Parts[1].Kind != "content" || data.Parts[2].Kind != "content" ||
 		string(data.Parts[0].ThoughtSignature) != "signature" {
 		t.Fatalf("provider data = (%#v, %v, %v)", data, recognized, err)
 	}

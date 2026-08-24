@@ -39,7 +39,7 @@ func (c *Client) produceStream(
 		if err != nil {
 			return err
 		}
-		if len(chunk.Content) != 0 || len(chunk.ToolCalls) != 0 {
+		if len(chunk.Content) != 0 || len(chunk.ToolCalls) != 0 || len(chunk.Events) != 0 {
 			if !emit(chunk) {
 				return nil
 			}
@@ -74,6 +74,8 @@ type streamAccumulator struct {
 	data           []messageDataPart
 	usage          *llm.Usage
 	jsonContent    strings.Builder
+	textStarted    bool
+	pendingEvents  []llm.StreamEvent
 }
 
 func newStreamAccumulator(configuredModel string, request llm.Request) *streamAccumulator {
@@ -82,6 +84,7 @@ func newStreamAccumulator(configuredModel string, request llm.Request) *streamAc
 		format:          request.ResponseFormat,
 		declared:        declaredToolNames(request.Tools),
 		seenIDs:         priorToolCallIDs(request.Messages),
+		pendingEvents:   []llm.StreamEvent{{Kind: llm.StreamEventStart}},
 	}
 }
 
@@ -159,11 +162,37 @@ func (accumulator *streamAccumulator) consume(response *genai.GenerateContentRes
 		if err != nil {
 			return llm.Chunk{}, err
 		}
+		toolStart := accumulator.toolCallCount
 		accumulator.contentCount += len(parts.content)
 		accumulator.toolCallCount += len(parts.calls)
 		accumulator.data = append(accumulator.data, parts.data...)
 		chunk.Content = parts.content
 		chunk.ToolCalls = parts.calls
+		if len(parts.content) != 0 || len(parts.calls) != 0 {
+			chunk.Events = accumulator.takePendingEvents()
+		}
+		for _, reference := range parts.order {
+			if reference.tool {
+				call := parts.calls[reference.index]
+				itemIndex := toolStart + reference.index
+				eventCall := call
+				eventCall.Arguments = append(jsontext.Value(nil), call.Arguments...)
+				chunk.Events = append(chunk.Events,
+					llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: itemIndex, ToolCallID: call.ID, ToolName: call.Name},
+					llm.StreamEvent{Kind: llm.StreamEventToolCallEnd, Index: itemIndex, ToolCallID: call.ID, ToolName: call.Name, ToolCall: &eventCall},
+				)
+				continue
+			}
+			part := parts.content[reference.index]
+			if part.Kind != llm.PartText {
+				continue
+			}
+			if !accumulator.textStarted {
+				accumulator.textStarted = true
+				chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextStart, Index: 0})
+			}
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextDelta, Index: 0, Delta: part.Text})
+		}
 		if accumulator.format == llm.ResponseFormatJSON {
 			for _, part := range parts.content {
 				if part.Kind != llm.PartText {
@@ -214,6 +243,12 @@ func (accumulator *streamAccumulator) observeUsage(usage *llm.Usage) error {
 	return nil
 }
 
+func (accumulator *streamAccumulator) takePendingEvents() []llm.StreamEvent {
+	events := accumulator.pendingEvents
+	accumulator.pendingEvents = nil
+	return events
+}
+
 func (accumulator *streamAccumulator) finalChunk() (llm.Chunk, error) {
 	finish := llm.FinishReasonContentFilter
 	if !accumulator.blocked {
@@ -240,11 +275,17 @@ func (accumulator *streamAccumulator) finalChunk() (llm.Chunk, error) {
 	if model == "" {
 		model = accumulator.configuredModel
 	}
+	events := accumulator.takePendingEvents()
+	if accumulator.textStarted {
+		events = append(events, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: 0})
+	}
+	events = append(events, llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish})
 	return llm.Chunk{
 		ID:           accumulator.id,
 		Model:        model,
 		ProviderData: providerData,
 		FinishReason: finish,
 		Usage:        accumulator.usage,
+		Events:       events,
 	}, nil
 }
