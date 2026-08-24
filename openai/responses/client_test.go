@@ -39,8 +39,8 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 			t.Errorf("max_output_tokens/top_p = %#v/%#v", payload["max_output_tokens"], payload["top_p"])
 		}
 		reasoning, _ := payload["reasoning"].(map[string]any)
-		if reasoning["summary"] != "auto" {
-			t.Errorf("reasoning = %#v, want summary auto", payload["reasoning"])
+		if reasoning["summary"] != "auto" || reasoning["effort"] != "high" {
+			t.Errorf("reasoning = %#v, want summary auto and effort high", payload["reasoning"])
 		}
 		tools, _ := payload["tools"].([]any)
 		if len(tools) != 1 || tools[0].(map[string]any)["name"] != "read" {
@@ -70,6 +70,7 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 	response, err := client.Generate(context.Background(), llm.Request{
 		Messages:        []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}},
 		Tools:           []llm.Tool{{Name: "read", InputSchema: jsontext.Value(`{"type":"object"}`), Strict: true}},
+		ReasoningEffort: llm.ReasoningEffortHigh,
 		MaxOutputTokens: 321,
 		TopP:            &topP,
 	})

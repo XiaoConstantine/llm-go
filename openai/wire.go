@@ -14,18 +14,19 @@ import (
 )
 
 type chatRequest struct {
-	Model               string          `json:"model"`
-	Messages            []chatMessage   `json:"messages"`
-	Tools               []chatTool      `json:"tools,omitempty"`
-	Stream              bool            `json:"stream,omitzero"`
-	StreamOptions       *streamOptions  `json:"stream_options,omitempty"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
-	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
-	TopP                *float64        `json:"top_p,omitempty"`
-	FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
-	Stop                []string        `json:"stop,omitempty"`
+	Model               string              `json:"model"`
+	Messages            []chatMessage       `json:"messages"`
+	Tools               []chatTool          `json:"tools,omitempty"`
+	Stream              bool                `json:"stream,omitzero"`
+	StreamOptions       *streamOptions      `json:"stream_options,omitempty"`
+	Temperature         *float64            `json:"temperature,omitempty"`
+	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      *responseFormat     `json:"response_format,omitempty"`
+	ReasoningEffort     llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
+	TopP                *float64            `json:"top_p,omitempty"`
+	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
+	Stop                []string            `json:"stop,omitempty"`
 }
 
 type chatMessage struct {
@@ -217,6 +218,7 @@ func newChatRequestFor(op, model string, request llm.Request) (chatRequest, erro
 		FrequencyPenalty: request.FrequencyPenalty,
 		PresencePenalty:  request.PresencePenalty,
 		Stop:             append([]string(nil), request.Stop...),
+		ReasoningEffort:  request.ReasoningEffort,
 	}
 	if request.MaxOutputTokens != 0 {
 		maxTokens := request.MaxOutputTokens

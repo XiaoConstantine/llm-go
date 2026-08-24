@@ -110,9 +110,18 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		Tools:             tools,
 	}
 	if options.ReasoningSummary {
-		params.Include = []openairesponses.ResponseIncludable{openairesponses.ResponseIncludableReasoningEncryptedContent}
-		params.Reasoning = shared.ReasoningParam{Summary: shared.ReasoningSummaryAuto}
+		if request.ReasoningEffort != llm.ReasoningEffortNone {
+			params.Include = []openairesponses.ResponseIncludable{openairesponses.ResponseIncludableReasoningEncryptedContent}
+			params.Reasoning.Summary = shared.ReasoningSummaryAuto
+		}
 		params.Text.Verbosity = openairesponses.ResponseTextConfigVerbosityLow
+	}
+	if request.ReasoningEffort != llm.ReasoningEffortDefault {
+		effort := request.ReasoningEffort
+		if options.Subscription && effort == llm.ReasoningEffortMinimal {
+			effort = llm.ReasoningEffortLow
+		}
+		params.Reasoning.Effort = shared.ReasoningEffort(effort)
 	}
 	if request.Temperature != nil {
 		params.Temperature = param.NewOpt(*request.Temperature)

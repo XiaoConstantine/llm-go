@@ -115,8 +115,8 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 			t.Errorf("request model/stream/store = %v/%v/%v", payload["model"], payload["stream"], payload["store"])
 		}
 		reasoning, ok := payload["reasoning"].(map[string]any)
-		if !ok || reasoning["summary"] != "auto" {
-			t.Errorf("request reasoning = %#v, want summary auto", payload["reasoning"])
+		if !ok || reasoning["summary"] != "auto" || reasoning["effort"] != "low" {
+			t.Errorf("request reasoning = %#v, want summary auto and mapped effort low", payload["reasoning"])
 		}
 		input, ok := payload["input"].([]any)
 		if !ok {
@@ -199,7 +199,8 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 			{Role: llm.RoleSystem, Content: []llm.Part{{Text: "Use the read tool."}}},
 			{Role: llm.RoleUser, Content: []llm.Part{{Text: "Begin"}}},
 		},
-		Tools: []llm.Tool{tool},
+		Tools:           []llm.Tool{tool},
+		ReasoningEffort: llm.ReasoningEffortMinimal,
 	})
 	if err != nil {
 		t.Fatalf("Generate(first) error = %v", err)
@@ -228,7 +229,8 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: call.ID, Name: call.Name, Content: []llm.Part{{Text: "contents"}}}}},
 			{Role: llm.RoleUser, Content: []llm.Part{{Text: "Continue"}}},
 		},
-		Tools: []llm.Tool{tool},
+		Tools:           []llm.Tool{tool},
+		ReasoningEffort: llm.ReasoningEffortMinimal,
 	})
 	if err != nil {
 		t.Fatalf("Generate(second) error = %v", err)

@@ -69,6 +69,19 @@ func TestClientInfoReturnsIndependentCapabilities(t *testing.T) {
 	}
 }
 
+func TestRequestTranslatesReasoningEffort(t *testing.T) {
+	request, err := newChatRequest("model", llm.Request{
+		Messages:        []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}},
+		ReasoningEffort: llm.ReasoningEffortHigh,
+	})
+	if err != nil {
+		t.Fatalf("newChatRequest() error = %v", err)
+	}
+	if request.ReasoningEffort != llm.ReasoningEffortHigh {
+		t.Fatalf("ReasoningEffort = %q", request.ReasoningEffort)
+	}
+}
+
 func TestClientUsesConfiguredProviderIdentity(t *testing.T) {
 	client, err := New(Config{Provider: " ollama ", Model: "model"})
 	if err != nil {

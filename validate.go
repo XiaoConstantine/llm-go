@@ -30,6 +30,9 @@ func (r Request) validate() error {
 	if err := validateResponseFormat(r.ResponseFormat); err != nil {
 		return err
 	}
+	if err := validateReasoningEffort(r.ReasoningEffort); err != nil {
+		return err
+	}
 	if r.MaxOutputTokens < 0 {
 		return fmt.Errorf("max output tokens must not be negative")
 	}
@@ -68,6 +71,17 @@ func (r Request) validate() error {
 	}
 
 	return nil
+}
+
+func validateReasoningEffort(effort ReasoningEffort) error {
+	switch effort {
+	case ReasoningEffortDefault, ReasoningEffortNone, ReasoningEffortMinimal,
+		ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh,
+		ReasoningEffortXHigh, ReasoningEffortMax:
+		return nil
+	default:
+		return fmt.Errorf("reasoning effort %q is invalid", effort)
+	}
 }
 
 func validateTools(tools []Tool) error {

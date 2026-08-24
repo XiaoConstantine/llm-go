@@ -119,6 +119,22 @@ const (
 	ResponseFormatJSON
 )
 
+// ReasoningEffort controls how much internal reasoning a capable model uses.
+// The zero value leaves the provider's default unchanged. Providers may map an
+// effort to the nearest level supported by the configured model.
+type ReasoningEffort string
+
+const (
+	ReasoningEffortDefault ReasoningEffort = ""
+	ReasoningEffortNone    ReasoningEffort = "none"
+	ReasoningEffortMinimal ReasoningEffort = "minimal"
+	ReasoningEffortLow     ReasoningEffort = "low"
+	ReasoningEffortMedium  ReasoningEffort = "medium"
+	ReasoningEffortHigh    ReasoningEffort = "high"
+	ReasoningEffortXHigh   ReasoningEffort = "xhigh"
+	ReasoningEffortMax     ReasoningEffort = "max"
+)
+
 // Request describes one generation operation. Messages must not be empty.
 // MaxOutputTokens set to zero and nil sampling or penalty fields ask the
 // provider to use its default. An empty Tools or Stop list means none.
@@ -127,6 +143,7 @@ type Request struct {
 	Messages         []Message
 	Tools            []Tool
 	ResponseFormat   ResponseFormat
+	ReasoningEffort  ReasoningEffort
 	MaxOutputTokens  int
 	Temperature      *float64
 	TopP             *float64

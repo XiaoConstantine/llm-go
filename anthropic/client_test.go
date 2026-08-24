@@ -114,6 +114,18 @@ func TestClientUsesConfiguredProviderIdentity(t *testing.T) {
 	}
 }
 
+func TestRequestRejectsReasoningEffort(t *testing.T) {
+	request := llm.Request{
+		Messages:        []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}},
+		ReasoningEffort: llm.ReasoningEffortHigh,
+	}
+	err := checkRequest("generate", request)
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported {
+		t.Fatalf("checkRequest() error = %#v", err)
+	}
+}
+
 func TestRelabelProviderErrorPreservesJoinedCauses(t *testing.T) {
 	closeErr := errors.New("close failed")
 	err := relabelProviderError(errors.Join(malformedStream("bad event"), closeErr), "gateway")

@@ -58,6 +58,16 @@ func TestRequestValidateAllowsUnansweredToolCall(t *testing.T) {
 	}
 }
 
+func TestRequestValidateReasoningEffort(t *testing.T) {
+	request := Request{
+		Messages:        []Message{{Role: RoleUser, Content: []Part{{Text: "hello"}}}},
+		ReasoningEffort: ReasoningEffort("extreme"),
+	}
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "reasoning effort") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestRequestValidateToolHistory(t *testing.T) {
 	tests := []struct {
 		name     string

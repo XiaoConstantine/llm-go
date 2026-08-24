@@ -83,6 +83,9 @@ type errorEnvelope struct {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if request.ReasoningEffort != llm.ReasoningEffortDefault {
+		return unsupported(op, "reasoning effort is not implemented")
+	}
 	if request.PresencePenalty != nil || request.FrequencyPenalty != nil {
 		return unsupported(op, "presence and frequency penalties are not supported")
 	}

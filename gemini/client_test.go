@@ -80,6 +80,20 @@ func TestInfoCopiesCapabilitiesAndRelabelsProvider(t *testing.T) {
 	requireModelError(t, err, llm.KindInvalidRequest, "validate", "")
 }
 
+func TestRequestTranslatesReasoningEffort(t *testing.T) {
+	request := llm.Request{
+		Messages:        []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}},
+		ReasoningEffort: llm.ReasoningEffortXHigh,
+	}
+	_, config, err := requestToSDK("generate", request)
+	if err != nil {
+		t.Fatalf("requestToSDK() error = %v", err)
+	}
+	if config.ThinkingConfig == nil || config.ThinkingConfig.ThinkingLevel != "HIGH" || !config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("ThinkingConfig = %#v", config.ThinkingConfig)
+	}
+}
+
 func TestGenerateTranslatesMultimodalToolsAndResponse(t *testing.T) {
 	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
 	t.Setenv("GOOGLE_GEMINI_BASE_URL", "http://ambient.invalid")

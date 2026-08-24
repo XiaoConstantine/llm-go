@@ -191,6 +191,16 @@ func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.Gene
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		generationConfig.ResponseMIMEType = "application/json"
 	}
+	if request.ReasoningEffort == llm.ReasoningEffortNone {
+		budget := int32(0)
+		generationConfig.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: &budget}
+	} else if request.ReasoningEffort != llm.ReasoningEffortDefault {
+		level := genai.ThinkingLevel(strings.ToUpper(string(request.ReasoningEffort)))
+		if request.ReasoningEffort == llm.ReasoningEffortXHigh || request.ReasoningEffort == llm.ReasoningEffortMax {
+			level = genai.ThinkingLevelHigh
+		}
+		generationConfig.ThinkingConfig = &genai.ThinkingConfig{IncludeThoughts: true, ThinkingLevel: level}
+	}
 
 	if len(request.Tools) != 0 {
 		declarations := make([]*genai.FunctionDeclaration, len(request.Tools))
