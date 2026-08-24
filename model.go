@@ -26,9 +26,9 @@ type Generator interface {
 }
 
 // Chunk contains new output from a generation stream. To assemble a Response,
-// append Content and ToolCalls in chunk order, retain any nonempty ID, Model,
-// and FinishReason, use the single nonempty ProviderData, and use the last
-// non-nil Usage. The assembled message has RoleAssistant.
+// append Content, ToolCalls, and ReasoningSummary in chunk order, retain any
+// nonempty ID, Model, and FinishReason, use the single nonempty ProviderData,
+// and use the last non-nil Usage. The assembled message has RoleAssistant.
 //
 // Text parts may be fragments; other parts and ToolCalls must be complete
 // values. Nonempty ID and Model values must not change between chunks. A
@@ -36,13 +36,14 @@ type Generator interface {
 // complete value and appear in at most one chunk. Usage, when present, is
 // cumulative for the request.
 type Chunk struct {
-	ID           string
-	Model        string
-	Content      []Part
-	ToolCalls    []ToolCall
-	ProviderData json.RawMessage
-	FinishReason FinishReason
-	Usage        *Usage
+	ID               string
+	Model            string
+	Content          []Part
+	ToolCalls        []ToolCall
+	ReasoningSummary string
+	ProviderData     json.RawMessage
+	FinishReason     FinishReason
+	Usage            *Usage
 }
 
 // Stream is a sequence of generation chunks. Callers must close every Stream,

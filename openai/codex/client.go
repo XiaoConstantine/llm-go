@@ -389,6 +389,7 @@ func mergeChunk(response *llm.Response, chunk llm.Chunk) {
 	}
 	response.Message.Content = append(response.Message.Content, chunk.Content...)
 	response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
+	response.ReasoningSummary += chunk.ReasoningSummary
 	if len(chunk.ProviderData) != 0 {
 		response.Message.ProviderData = append(response.Message.ProviderData[:0], chunk.ProviderData...)
 	}

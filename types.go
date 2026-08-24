@@ -159,11 +159,15 @@ type Usage struct {
 
 // Response is the result of a generation operation.
 type Response struct {
-	ID           string
-	Model        string
-	Message      Message
-	FinishReason FinishReason
-	Usage        *Usage
+	ID      string
+	Model   string
+	Message Message
+	// ReasoningSummary is provider-generated explanatory text about the model's
+	// reasoning. It is empty when the provider omits a summary and is separate
+	// from the assistant message returned by Text.
+	ReasoningSummary string
+	FinishReason     FinishReason
+	Usage            *Usage
 }
 
 // Text returns the concatenation of the response message's text parts.

@@ -114,6 +114,10 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 		if payload["model"] != "gpt-codex" || payload["stream"] != true || payload["store"] != false {
 			t.Errorf("request model/stream/store = %v/%v/%v", payload["model"], payload["stream"], payload["store"])
 		}
+		reasoning, ok := payload["reasoning"].(map[string]any)
+		if !ok || reasoning["summary"] != "auto" {
+			t.Errorf("request reasoning = %#v, want summary auto", payload["reasoning"])
+		}
 		input, ok := payload["input"].([]any)
 		if !ok {
 			t.Errorf("request input = %#v, want array", payload["input"])
@@ -153,6 +157,7 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 		if requestNumber == 1 {
 			writeSSE(t, w,
 				`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
+				`{"type":"response.reasoning_summary_text.delta","delta":"Checking the workspace."}`,
 				`{"type":"response.output_text.delta","delta":"hello"}`,
 				`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}}`,
 				`{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{\"path\":\"README.md\"}"}}`,
@@ -199,7 +204,7 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate(first) error = %v", err)
 	}
-	if first.ID != "resp_1" || first.Model != "served-codex" || first.Text() != "hello" || first.FinishReason != llm.FinishReasonToolCall {
+	if first.ID != "resp_1" || first.Model != "served-codex" || first.Text() != "hello" || first.ReasoningSummary != "Checking the workspace." || first.FinishReason != llm.FinishReasonToolCall {
 		t.Fatalf("Generate(first) = %#v", first)
 	}
 	if first.Usage == nil || *first.Usage != (llm.Usage{InputTokens: 10, OutputTokens: 4, TotalTokens: 14}) {
@@ -436,6 +441,49 @@ func TestStreamOrdersToolCallsByOutputIndex(t *testing.T) {
 	}
 	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
 		t.Fatalf("second Recv() error = %v, want EOF", err)
+	}
+}
+
+func TestStreamEmitsReasoningSummaryChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w,
+			`{"type":"response.reasoning_summary_text.delta","delta":"Checking "}`,
+			`{"type":"response.reasoning_summary_text.delta","delta":"the workspace."}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		)
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		Model: "model", AccessToken: "token", AccountID: "account", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityStreaming},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stream, err := client.Stream(context.Background(), textRequest("hello"))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	for _, want := range []string{"Checking ", "the workspace."} {
+		chunk, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if chunk.ReasoningSummary != want || len(chunk.Content) != 0 {
+			t.Fatalf("Recv() = %#v, want reasoning summary %q only", chunk, want)
+		}
+	}
+	final, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("final Recv() error = %v", err)
+	}
+	if final.FinishReason != llm.FinishReasonStop {
+		t.Fatalf("final Recv().FinishReason = %q, want stop", final.FinishReason)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal Recv() error = %v, want EOF", err)
 	}
 }
 

@@ -119,6 +119,10 @@ func requestToWire(op, model string, request llm.Request) (openairesponses.Respo
 		Input:             openairesponses.ResponseNewParamsInputUnion{OfInputItemList: input},
 		Include:           []openairesponses.ResponseIncludable{openairesponses.ResponseIncludableReasoningEncryptedContent},
 		ParallelToolCalls: param.NewOpt(true),
+		// Codex only emits displayable reasoning summaries when requested.
+		Reasoning: shared.ReasoningParam{
+			Summary: shared.ReasoningSummaryAuto,
+		},
 		Text: openairesponses.ResponseTextConfigParam{
 			Verbosity: openairesponses.ResponseTextConfigVerbosityLow,
 		},

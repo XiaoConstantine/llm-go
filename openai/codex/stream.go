@@ -392,6 +392,10 @@ func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, em
 		if event.Delta != "" && !emit(llm.Chunk{Content: []llm.Part{{Kind: llm.PartText, Text: event.Delta}}}) {
 			s.stopped = true
 		}
+	case "response.reasoning_summary_text.delta":
+		if event.Delta != "" && !emit(llm.Chunk{ReasoningSummary: event.Delta}) {
+			s.stopped = true
+		}
 	case "response.output_item.added":
 		return s.consumeAddedOutputItem(event)
 	case "response.output_item.done", "response.output_item.completed":
