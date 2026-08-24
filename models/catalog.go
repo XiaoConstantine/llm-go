@@ -111,6 +111,14 @@ func normalizeModel(model llm.Model) (llm.Model, error) {
 	if model.ContextWindow != 0 && model.MaxOutputTokens > model.ContextWindow {
 		return llm.Model{}, fmt.Errorf("max output tokens must not exceed context window")
 	}
+	if model.Cost != nil {
+		if err := model.Cost.Validate(); err != nil {
+			return llm.Model{}, fmt.Errorf("cost: %w", err)
+		}
+		cost := *model.Cost
+		cost.Tiers = append([]llm.ModelCostTier(nil), model.Cost.Tiers...)
+		model.Cost = &cost
+	}
 
 	capabilities := make([]llm.Capability, 0, len(model.Capabilities)+1)
 	seen := make(map[llm.Capability]struct{}, len(model.Capabilities)+1)
@@ -137,6 +145,11 @@ func normalizeModel(model llm.Model) (llm.Model, error) {
 
 func cloneModel(model llm.Model) llm.Model {
 	model.Capabilities = append([]llm.Capability(nil), model.Capabilities...)
+	if model.Cost != nil {
+		cost := *model.Cost
+		cost.Tiers = append([]llm.ModelCostTier(nil), model.Cost.Tiers...)
+		model.Cost = &cost
+	}
 	return model
 }
 

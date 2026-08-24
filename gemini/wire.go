@@ -806,6 +806,7 @@ func usageFromSDK(op string, usage *genai.GenerateContentResponseUsageMetadata) 
 		usage.ToolUsePromptTokenCount,
 		usage.CandidatesTokenCount,
 		usage.ThoughtsTokenCount,
+		usage.CachedContentTokenCount,
 		usage.TotalTokenCount,
 	}
 	for _, value := range values {
@@ -815,13 +816,16 @@ func usageFromSDK(op string, usage *genai.GenerateContentResponseUsageMetadata) 
 	}
 	input := int64(values[0]) + int64(values[1])
 	output := int64(values[2]) + int64(values[3])
-	if input+output != int64(values[4]) {
+	cacheRead := int64(values[4])
+	if cacheRead > int64(values[0]) || input+output != int64(values[5]) {
 		return nil, malformedResponseFor(op, "response has inconsistent token usage")
 	}
 	return &llm.Usage{
-		InputTokens:  int(input),
-		OutputTokens: int(output),
-		TotalTokens:  int(values[4]),
+		InputTokens:     int(input - cacheRead),
+		OutputTokens:    int(output),
+		CacheReadTokens: int(cacheRead),
+		ReasoningTokens: int(values[3]),
+		TotalTokens:     int(values[5]),
 	}, nil
 }
 

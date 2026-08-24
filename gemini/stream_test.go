@@ -35,8 +35,8 @@ func TestStreamTranslatesTextAndFinalMetadata(t *testing.T) {
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(writer, strings.Join([]string{
-			`data: {"responseId":"response-1","modelVersion":"served-model","candidates":[{"content":{"role":"model","parts":[{"text":"hel"}]} }],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}` + "\n\n",
-			`data: {"responseId":"response-1","modelVersion":"served-model","candidates":[{"content":{"role":"model","parts":[{"text":"lo","thoughtSignature":"c2ln"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":2,"thoughtsTokenCount":1,"totalTokenCount":5}}` + "\n\n",
+			`data: {"responseId":"response-1","modelVersion":"served-model","candidates":[{"content":{"role":"model","parts":[{"text":"hel"}]} }],"usageMetadata":{"promptTokenCount":2,"cachedContentTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":3}}` + "\n\n",
+			`data: {"responseId":"response-1","modelVersion":"served-model","candidates":[{"content":{"role":"model","parts":[{"text":"lo","thoughtSignature":"c2ln"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"cachedContentTokenCount":1,"candidatesTokenCount":2,"thoughtsTokenCount":1,"totalTokenCount":5}}` + "\n\n",
 		}, ""))
 	}))
 
@@ -83,7 +83,7 @@ func TestStreamTranslatesTextAndFinalMetadata(t *testing.T) {
 		len(final.Events) != 2 || final.Events[0].Kind != llm.StreamEventTextEnd || final.Events[1].Kind != llm.StreamEventDone {
 		t.Fatalf("final chunk metadata = %#v", final)
 	}
-	if final.Usage == nil || *final.Usage != (llm.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}) {
+	if final.Usage == nil || *final.Usage != (llm.Usage{InputTokens: 1, OutputTokens: 3, CacheReadTokens: 1, ReasoningTokens: 1, TotalTokens: 5}) {
 		t.Fatalf("final usage = %#v", final.Usage)
 	}
 	data, recognized, err := parseMessageData(final.ProviderData)

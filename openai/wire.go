@@ -100,9 +100,22 @@ type responseMessage struct {
 }
 
 type responseUsage struct {
-	PromptTokens     *int `json:"prompt_tokens"`
-	CompletionTokens *int `json:"completion_tokens"`
-	TotalTokens      *int `json:"total_tokens"`
+	PromptTokens            *int                    `json:"prompt_tokens"`
+	CompletionTokens        *int                    `json:"completion_tokens"`
+	TotalTokens             *int                    `json:"total_tokens"`
+	PromptTokensDetails     *promptTokenDetails     `json:"prompt_tokens_details"`
+	CompletionTokensDetails *completionTokenDetails `json:"completion_tokens_details"`
+	PromptCacheHitTokens    *int                    `json:"prompt_cache_hit_tokens"`
+	CachedTokens            *int                    `json:"cached_tokens"`
+}
+
+type promptTokenDetails struct {
+	CachedTokens     *int `json:"cached_tokens"`
+	CacheWriteTokens *int `json:"cache_write_tokens"`
+}
+
+type completionTokenDetails struct {
+	ReasoningTokens *int `json:"reasoning_tokens"`
 }
 
 type errorEnvelope struct {
@@ -588,9 +601,39 @@ func usageFromWire(usage *responseUsage) (*llm.Usage, error) {
 		*usage.PromptTokens != *usage.TotalTokens-*usage.CompletionTokens {
 		return nil, fmt.Errorf("inconsistent token usage")
 	}
+	cacheRead := 0
+	cacheWrite := 0
+	hasCacheRead := false
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.CachedTokens != nil {
+			cacheRead = *usage.PromptTokensDetails.CachedTokens
+			hasCacheRead = true
+		}
+		if usage.PromptTokensDetails.CacheWriteTokens != nil {
+			cacheWrite = *usage.PromptTokensDetails.CacheWriteTokens
+		}
+	}
+	if !hasCacheRead && usage.PromptCacheHitTokens != nil {
+		cacheRead = *usage.PromptCacheHitTokens
+		hasCacheRead = true
+	}
+	if !hasCacheRead && usage.CachedTokens != nil {
+		cacheRead = *usage.CachedTokens
+	}
+	reasoning := 0
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoning = *usage.CompletionTokensDetails.ReasoningTokens
+	}
+	if cacheRead < 0 || cacheWrite < 0 || reasoning < 0 || cacheRead > *usage.PromptTokens ||
+		cacheWrite > *usage.PromptTokens-cacheRead || reasoning > *usage.CompletionTokens {
+		return nil, fmt.Errorf("inconsistent token usage details")
+	}
 	return &llm.Usage{
-		InputTokens:  *usage.PromptTokens,
-		OutputTokens: *usage.CompletionTokens,
-		TotalTokens:  *usage.TotalTokens,
+		InputTokens:      *usage.PromptTokens - cacheRead - cacheWrite,
+		OutputTokens:     *usage.CompletionTokens,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: cacheWrite,
+		ReasoningTokens:  reasoning,
+		TotalTokens:      *usage.TotalTokens,
 	}, nil
 }

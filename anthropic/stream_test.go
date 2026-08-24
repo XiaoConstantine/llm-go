@@ -37,7 +37,7 @@ func TestStreamTranslatesTextResponse(t *testing.T) {
 			": heartbeat\n\n",
 			"event: message_start\n",
 			"data: {\"type\":\"message_start\",\n",
-			"data: \"message\":{\"id\":\"msg_stream\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-served\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":2,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}\n\n",
+			"data: \"message\":{\"id\":\"msg_stream\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-served\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":2,\"cache_creation\":{\"ephemeral_1h_input_tokens\":1},\"cache_read_input_tokens\":3,\"output_tokens\":1}}}\n\n",
 			"event: ping\n",
 			"data: {\"type\":\"ping\"}\n\n",
 			"event: future_metadata\n",
@@ -55,7 +55,7 @@ func TestStreamTranslatesTextResponse(t *testing.T) {
 			"event: content_block_stop\n",
 			"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
 			"event: message_delta\n",
-			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5,\"output_tokens_details\":{\"thinking_tokens\":2}}}\n\n",
 			"event: message_stop\n",
 			"data: {\"type\":\"message_stop\"}\n\n",
 		}, ""))
@@ -108,7 +108,7 @@ func TestStreamTranslatesTextResponse(t *testing.T) {
 	if text.String() != "hello!" || finish != llm.FinishReasonStop {
 		t.Fatalf("assembled response = (%q, %q)", text.String(), finish)
 	}
-	if usage == nil || *usage != (llm.Usage{InputTokens: 15, OutputTokens: 5, TotalTokens: 20}) {
+	if usage == nil || *usage != (llm.Usage{InputTokens: 10, OutputTokens: 5, CacheReadTokens: 3, CacheWriteTokens: 2, CacheWrite1hTokens: 1, ReasoningTokens: 2, TotalTokens: 20}) {
 		t.Fatalf("assembled usage = %#v", usage)
 	}
 
@@ -545,6 +545,7 @@ func TestStreamRejectsMalformedProtocol(t *testing.T) {
 		{name: "finish without delta usage", body: start + streamEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`), kind: llm.KindMalformedResponse, want: "without cumulative output usage"},
 		{name: "finish with empty delta usage", body: start + streamEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}`), kind: llm.KindMalformedResponse, want: "without cumulative output usage"},
 		{name: "usage decreases", body: start + streamEvent("message_delta", streamFinishEvent("end_turn", 0)), kind: llm.KindMalformedResponse, want: "decreased"},
+		{name: "thinking exceeds output", body: start + streamEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2,"output_tokens_details":{"thinking_tokens":3}}}`), kind: llm.KindMalformedResponse, want: "thinking tokens exceed"},
 		{name: "unknown stop reason", body: start + streamEvent("message_delta", streamFinishEvent("future", 2)), kind: llm.KindMalformedResponse, want: "unsupported stop reason"},
 		{name: "pause turn", body: start + streamEvent("message_delta", streamFinishEvent("pause_turn", 2)), kind: llm.KindUnsupported, want: "pause_turn"},
 		{name: "tool use without call", body: start + streamEvent("message_delta", streamFinishEvent("tool_use", 2)), kind: llm.KindMalformedResponse, want: "has no tool calls"},

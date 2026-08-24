@@ -71,10 +71,20 @@ type responseBlock struct {
 }
 
 type responseUsage struct {
-	InputTokens              *int `json:"input_tokens"`
-	OutputTokens             *int `json:"output_tokens"`
-	CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int  `json:"cache_read_input_tokens"`
+	InputTokens              *int                    `json:"input_tokens"`
+	OutputTokens             *int                    `json:"output_tokens"`
+	CacheCreationInputTokens int                     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                     `json:"cache_read_input_tokens"`
+	CacheCreation            *cacheCreationBreakdown `json:"cache_creation"`
+	OutputTokensDetails      *outputTokenDetails     `json:"output_tokens_details"`
+}
+
+type cacheCreationBreakdown struct {
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+}
+
+type outputTokenDetails struct {
+	ThinkingTokens *int `json:"thinking_tokens"`
 }
 
 type errorEnvelope struct {
@@ -454,29 +464,49 @@ func usageFromWire(usage *responseUsage) (*llm.Usage, error) {
 	if usage == nil || usage.InputTokens == nil || usage.OutputTokens == nil {
 		return nil, malformedResponse("response has incomplete usage")
 	}
+	cacheWrite1h := 0
+	if usage.CacheCreation != nil {
+		cacheWrite1h = usage.CacheCreation.Ephemeral1hInputTokens
+	}
+	reasoning := 0
+	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ThinkingTokens != nil {
+		reasoning = *usage.OutputTokensDetails.ThinkingTokens
+	}
 	values := []int{
 		*usage.InputTokens,
 		usage.CacheCreationInputTokens,
 		usage.CacheReadInputTokens,
+		cacheWrite1h,
 		*usage.OutputTokens,
+		reasoning,
 	}
 	for _, value := range values {
 		if value < 0 {
 			return nil, malformedResponse("response has negative token usage")
 		}
 	}
-	inputTokens, ok := addInts(values[0], values[1], values[2])
+	if cacheWrite1h > usage.CacheCreationInputTokens {
+		return nil, malformedResponse("response one-hour cache-write tokens exceed cache-write tokens")
+	}
+	if reasoning > *usage.OutputTokens {
+		return nil, malformedResponse("response thinking tokens exceed output tokens")
+	}
+	inputUsage, ok := addInts(values[0], values[1], values[2])
 	if !ok {
 		return nil, malformedResponse("response token usage overflows int")
 	}
-	totalTokens, ok := addInts(inputTokens, values[3])
+	totalTokens, ok := addInts(inputUsage, values[4])
 	if !ok {
 		return nil, malformedResponse("response token usage overflows int")
 	}
 	return &llm.Usage{
-		InputTokens:  inputTokens,
-		OutputTokens: values[3],
-		TotalTokens:  totalTokens,
+		InputTokens:        values[0],
+		OutputTokens:       values[4],
+		CacheReadTokens:    values[2],
+		CacheWriteTokens:   values[1],
+		CacheWrite1hTokens: values[3],
+		ReasoningTokens:    values[5],
+		TotalTokens:        totalTokens,
 	}, nil
 }
 

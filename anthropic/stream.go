@@ -353,10 +353,12 @@ type streamMessageDelta struct {
 }
 
 type streamUsage struct {
-	InputTokens              *int `json:"input_tokens"`
-	OutputTokens             *int `json:"output_tokens"`
-	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	InputTokens              *int                    `json:"input_tokens"`
+	OutputTokens             *int                    `json:"output_tokens"`
+	CacheCreationInputTokens *int                    `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     *int                    `json:"cache_read_input_tokens"`
+	CacheCreation            *cacheCreationBreakdown `json:"cache_creation"`
+	OutputTokensDetails      *outputTokenDetails     `json:"output_tokens_details"`
 }
 
 type streamErrorEvent struct {
@@ -742,10 +744,14 @@ type usageAccumulator struct {
 	outputTokens             int
 	cacheCreationInputTokens int
 	cacheReadInputTokens     int
+	cacheWrite1hInputTokens  int
+	reasoningTokens          int
 	hasInput                 bool
 	hasOutput                bool
 	hasCacheCreation         bool
 	hasCacheRead             bool
+	hasCacheWrite1h          bool
+	hasReasoning             bool
 }
 
 func (usage *usageAccumulator) merge(update *streamUsage) error {
@@ -759,8 +765,21 @@ func (usage *usageAccumulator) merge(update *streamUsage) error {
 		&usage.cacheCreationInputTokens, &usage.hasCacheCreation); err != nil {
 		return err
 	}
-	return mergeTokenCount("cache read input tokens", update.CacheReadInputTokens,
-		&usage.cacheReadInputTokens, &usage.hasCacheRead)
+	if err := mergeTokenCount("cache read input tokens", update.CacheReadInputTokens,
+		&usage.cacheReadInputTokens, &usage.hasCacheRead); err != nil {
+		return err
+	}
+	if update.CacheCreation != nil {
+		if err := mergeTokenCount("one-hour cache-write input tokens", &update.CacheCreation.Ephemeral1hInputTokens,
+			&usage.cacheWrite1hInputTokens, &usage.hasCacheWrite1h); err != nil {
+			return err
+		}
+	}
+	if update.OutputTokensDetails != nil {
+		return mergeTokenCount("thinking tokens", update.OutputTokensDetails.ThinkingTokens,
+			&usage.reasoningTokens, &usage.hasReasoning)
+	}
+	return nil
 }
 
 func mergeTokenCount(name string, update *int, current *int, seen *bool) error {
@@ -782,18 +801,28 @@ func (usage *usageAccumulator) value() (*llm.Usage, error) {
 	if !usage.hasInput || !usage.hasOutput {
 		return nil, errors.New("token counts are incomplete")
 	}
-	inputTokens, ok := addInts(usage.inputTokens, usage.cacheCreationInputTokens, usage.cacheReadInputTokens)
+	if usage.cacheWrite1hInputTokens > usage.cacheCreationInputTokens {
+		return nil, errors.New("one-hour cache-write tokens exceed cache-write tokens")
+	}
+	if usage.reasoningTokens > usage.outputTokens {
+		return nil, errors.New("thinking tokens exceed output tokens")
+	}
+	inputUsage, ok := addInts(usage.inputTokens, usage.cacheCreationInputTokens, usage.cacheReadInputTokens)
 	if !ok {
 		return nil, errors.New("input token count overflows int")
 	}
-	totalTokens, ok := addInts(inputTokens, usage.outputTokens)
+	totalTokens, ok := addInts(inputUsage, usage.outputTokens)
 	if !ok {
 		return nil, errors.New("total token count overflows int")
 	}
 	return &llm.Usage{
-		InputTokens:  inputTokens,
-		OutputTokens: usage.outputTokens,
-		TotalTokens:  totalTokens,
+		InputTokens:        usage.inputTokens,
+		OutputTokens:       usage.outputTokens,
+		CacheReadTokens:    usage.cacheReadInputTokens,
+		CacheWriteTokens:   usage.cacheCreationInputTokens,
+		CacheWrite1hTokens: usage.cacheWrite1hInputTokens,
+		ReasoningTokens:    usage.reasoningTokens,
+		TotalTokens:        totalTokens,
 	}, nil
 }
 

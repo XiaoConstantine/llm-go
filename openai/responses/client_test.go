@@ -57,7 +57,7 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 			`{"type":"response.output_text.delta","output_index":1,"content_index":0,"item_id":"msg_1","delta":"hello"}`,
 			`{"type":"response.output_text.done","output_index":1,"content_index":0,"item_id":"msg_1","text":"hello"}`,
 			`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}}`,
-			`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.6-test","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.6-test","status":"completed","output":[],"usage":{"input_tokens":2,"input_tokens_details":{"cached_tokens":1,"cache_write_tokens":0},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":5}}}`,
 		)
 	}))
 	defer server.Close()
@@ -86,7 +86,7 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 	if response.ID != "resp_1" || response.Text() != "hello" || response.ReasoningSummary != "Checking." || response.FinishReason != llm.FinishReasonStop {
 		t.Fatalf("Generate() = %#v", response)
 	}
-	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}) {
+	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 1, OutputTokens: 3, CacheReadTokens: 1, ReasoningTokens: 2, TotalTokens: 5}) {
 		t.Fatalf("Usage = %#v", response.Usage)
 	}
 }

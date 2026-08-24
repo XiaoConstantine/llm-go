@@ -177,6 +177,11 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 	if strings.TrimSpace(info.Model) == "" {
 		return nil, resolveError(provider, "model name must not be empty")
 	}
+	if info.Cost != nil {
+		if err := info.Cost.Validate(); err != nil {
+			return nil, resolveError(provider, fmt.Sprintf("model cost: %v", err))
+		}
+	}
 	if c == nil {
 		return nil, resolveError(provider, "provider collection is nil")
 	}
@@ -200,7 +205,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 		if err != nil {
 			return nil, err
 		}
-		return generator, nil
+		return withPricing(generator, info), nil
 	case OpenAIChatCompletions:
 		generator, err := openai.New(openai.Config{
 			Provider:     config.id,
@@ -214,7 +219,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 		if err != nil {
 			return nil, err
 		}
-		return generator, nil
+		return withPricing(generator, info), nil
 	case OpenAICodexResponses:
 		var resolver openaicodex.CredentialResolver
 		if config.resolveCredentials != nil {
@@ -240,7 +245,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 		if err != nil {
 			return nil, err
 		}
-		return generator, nil
+		return withPricing(generator, info), nil
 	case AnthropicMessages:
 		generator, err := anthropic.New(anthropic.Config{
 			Provider:     config.id,
@@ -254,7 +259,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 		if err != nil {
 			return nil, err
 		}
-		return generator, nil
+		return withPricing(generator, info), nil
 	case GeminiGenerateContent:
 		generator, err := gemini.New(gemini.Config{
 			Provider:     config.id,
@@ -268,7 +273,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 		if err != nil {
 			return nil, err
 		}
-		return generator, nil
+		return withPricing(generator, info), nil
 	default:
 		panic("models: invalid configured API")
 	}

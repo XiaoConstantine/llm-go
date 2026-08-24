@@ -139,6 +139,7 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 		Name:         "Local Model",
 		API:          llm.APIOpenAIChatCompletions,
 		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+		Cost:         &llm.ModelCost{Input: 1, Output: 2},
 	})
 	if err != nil {
 		t.Fatalf("NewCatalog() error = %v", err)
@@ -152,7 +153,7 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 		t.Fatalf("GeneratorFor() error = %v", err)
 	}
 	info := generator.Info()
-	if info.Provider != model.Provider || info.Model != model.ID || !slices.Equal(info.Capabilities, model.Capabilities) {
+	if info.Provider != model.Provider || info.Model != model.ID || !slices.Equal(info.Capabilities, model.Capabilities) || info.Cost == nil || info.Cost.Input != 1 {
 		t.Fatalf("GeneratorFor().Info() = %#v, want model %#v", info, model)
 	}
 
@@ -306,6 +307,7 @@ func TestGeneratorRejectsInvalidIdentity(t *testing.T) {
 		{name: "empty provider", info: llm.ModelInfo{Model: "model"}, want: "provider must not be empty"},
 		{name: "empty model", info: llm.ModelInfo{Provider: "openai"}, provider: "openai", want: "model name must not be empty"},
 		{name: "unknown provider", info: llm.ModelInfo{Provider: "anthropic", Model: "model"}, provider: "anthropic", want: "not configured"},
+		{name: "invalid cost", info: llm.ModelInfo{Provider: "openai", Model: "model", Cost: &llm.ModelCost{Input: -1}}, provider: "openai", want: "model cost"},
 	}
 
 	for _, test := range tests {

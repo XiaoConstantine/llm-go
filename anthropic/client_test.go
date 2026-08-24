@@ -209,8 +209,10 @@ func TestGenerateTranslatesTextRequestAndResponse(t *testing.T) {
 			"usage":{
 				"input_tokens":10,
 				"cache_creation_input_tokens":2,
+				"cache_creation":{"ephemeral_1h_input_tokens":1},
 				"cache_read_input_tokens":3,
-				"output_tokens":4
+				"output_tokens":4,
+				"output_tokens_details":{"thinking_tokens":2}
 			}
 		}`)
 	}))
@@ -249,7 +251,7 @@ func TestGenerateTranslatesTextRequestAndResponse(t *testing.T) {
 	if response.Message.Role != llm.RoleAssistant || len(response.Message.Content) != 2 {
 		t.Fatalf("response message = %#v", response.Message)
 	}
-	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 15, OutputTokens: 4, TotalTokens: 19}) {
+	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 10, OutputTokens: 4, CacheReadTokens: 3, CacheWriteTokens: 2, CacheWrite1hTokens: 1, ReasoningTokens: 2, TotalTokens: 19}) {
 		t.Fatalf("response usage = %#v", response.Usage)
 	}
 
@@ -612,6 +614,7 @@ func TestGenerateRejectsMalformedResponse(t *testing.T) {
 		{name: "incomplete usage", body: strings.Replace(validResponse, `"input_tokens":3,`, "", 1), want: "incomplete usage"},
 		{name: "negative usage", body: strings.Replace(validResponse, `"input_tokens":3`, `"input_tokens":-1`, 1), want: "negative token usage"},
 		{name: "negative cache usage", body: strings.Replace(validResponse, `"input_tokens":3`, `"input_tokens":3,"cache_read_input_tokens":-1`, 1), want: "negative token usage"},
+		{name: "thinking exceeds output", body: strings.Replace(validResponse, `"output_tokens":2`, `"output_tokens":2,"output_tokens_details":{"thinking_tokens":3}`, 1), want: "thinking tokens exceed"},
 		{name: "usage overflow", body: strings.Replace(validResponse, `"input_tokens":3,"output_tokens":2`, fmt.Sprintf(`"input_tokens":%d,"output_tokens":1`, maxInt), 1), want: "overflows int"},
 	}
 

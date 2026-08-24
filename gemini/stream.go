@@ -235,6 +235,10 @@ func (accumulator *streamAccumulator) observeUsage(usage *llm.Usage) error {
 	if accumulator.usage != nil &&
 		(usage.InputTokens < accumulator.usage.InputTokens ||
 			usage.OutputTokens < accumulator.usage.OutputTokens ||
+			usage.CacheReadTokens < accumulator.usage.CacheReadTokens ||
+			usage.CacheWriteTokens < accumulator.usage.CacheWriteTokens ||
+			usage.CacheWrite1hTokens < accumulator.usage.CacheWrite1hTokens ||
+			usage.ReasoningTokens < accumulator.usage.ReasoningTokens ||
 			usage.TotalTokens < accumulator.usage.TotalTokens) {
 		return malformedResponseFor("stream", "response token usage decreased")
 	}

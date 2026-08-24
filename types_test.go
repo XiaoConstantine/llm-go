@@ -33,11 +33,17 @@ func TestModelInfoOwnsCapabilities(t *testing.T) {
 		Provider:     "provider",
 		ID:           "model",
 		Capabilities: []Capability{CapabilityGeneration, CapabilityStreaming},
+		Cost:         &ModelCost{Input: 1, Tiers: []ModelCostTier{{InputTokensAbove: 1_000, Input: 2}}},
 	}
 	info := model.Info()
 	info.Capabilities[0] = CapabilityAudio
+	info.Cost.Input = 99
+	info.Cost.Tiers[0].Input = 99
 	if model.Capabilities[0] != CapabilityGeneration {
 		t.Fatalf("Model.Info() returned model-owned capabilities: %v", model.Capabilities)
+	}
+	if model.Cost.Input != 1 || model.Cost.Tiers[0].Input != 2 {
+		t.Fatalf("Model.Info() returned model-owned cost: %#v", model.Cost)
 	}
 	if info.Provider != model.Provider || info.Model != model.ID {
 		t.Fatalf("Model.Info() = %#v, want provider %q model %q", info, model.Provider, model.ID)

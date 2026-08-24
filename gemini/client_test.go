@@ -118,7 +118,7 @@ func TestGenerateTranslatesMultimodalToolsAndResponse(t *testing.T) {
 				{"inlineData":{"mimeType":"image/png","data":"aW1hZ2U="}},
 				{"inlineData":{"mimeType":"audio/wav","data":"YXVkaW8="}}
 			]},"finishReason":"STOP"}],
-			"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"thoughtsTokenCount":1,"totalTokenCount":7}
+			"usageMetadata":{"promptTokenCount":4,"cachedContentTokenCount":2,"candidatesTokenCount":2,"thoughtsTokenCount":1,"totalTokenCount":7}
 		}`)
 	}))
 
@@ -195,7 +195,7 @@ func TestGenerateTranslatesMultimodalToolsAndResponse(t *testing.T) {
 	if len(response.Message.ProviderData) == 0 {
 		t.Fatal("Generate() ProviderData is empty")
 	}
-	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 4, OutputTokens: 3, TotalTokens: 7}) {
+	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 2, OutputTokens: 3, CacheReadTokens: 2, ReasoningTokens: 1, TotalTokens: 7}) {
 		t.Fatalf("Generate() usage = %#v", response.Usage)
 	}
 }
@@ -363,6 +363,19 @@ func TestGenerateRejectsMalformedAndNonStrictJSONResponses(t *testing.T) {
 		server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(writer, `{"candidates":{}}`)
+		}))
+		client := mustTestClient(t, server)
+		response, err := client.Generate(context.Background(), textRequest("hello"))
+		if response != nil {
+			t.Fatalf("Generate() response = %#v, want nil", response)
+		}
+		requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
+	})
+
+	t.Run("cached tokens exceed prompt tokens", func(t *testing.T) {
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"toolUsePromptTokenCount":3,"cachedContentTokenCount":4,"candidatesTokenCount":1,"totalTokenCount":6}}`)
 		}))
 		client := mustTestClient(t, server)
 		response, err := client.Generate(context.Background(), textRequest("hello"))

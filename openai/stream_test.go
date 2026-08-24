@@ -45,7 +45,7 @@ func TestStreamTranslatesTextCompletion(t *testing.T) {
 			"data: {\"id\":\"chat-1\",\"model\":\"served-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}]}\n\n",
 			"data: {\"id\":\"chat-1\",\"model\":\"served-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n",
 			"data: {\"id\":\"chat-1\",\"model\":\"served-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-			"data: {\"id\":\"chat-1\",\"model\":\"served-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n",
+			"data: {\"id\":\"chat-1\",\"model\":\"served-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens_details\":{\"reasoning_tokens\":1}}}\n\n",
 			"data: [DONE]\n\n",
 		}, ""))
 	}))
@@ -98,7 +98,7 @@ func TestStreamTranslatesTextCompletion(t *testing.T) {
 	if text.String() != "hello" || finish != llm.FinishReasonStop {
 		t.Fatalf("assembled output = (%q, %q), want (hello, stop)", text.String(), finish)
 	}
-	if usage == nil || *usage != (llm.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}) {
+	if usage == nil || *usage != (llm.Usage{InputTokens: 1, OutputTokens: 1, CacheReadTokens: 1, ReasoningTokens: 1, TotalTokens: 3}) {
 		t.Fatalf("assembled usage = %#v", usage)
 	}
 	assertStreamEventKinds(t, chunks, [][]llm.StreamEventKind{

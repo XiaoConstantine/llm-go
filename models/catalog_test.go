@@ -58,28 +58,37 @@ func TestCatalogNormalizesAndLooksUpModels(t *testing.T) {
 
 func TestCatalogOwnsModelStorage(t *testing.T) {
 	capabilities := []llm.Capability{llm.CapabilityStreaming}
+	tiers := []llm.ModelCostTier{{InputTokensAbove: 1_000, Input: 2}}
 	catalog, err := NewCatalog(llm.Model{
 		Provider:     "openai",
 		ID:           "gpt-test",
 		API:          llm.APIOpenAIResponses,
 		Capabilities: capabilities,
+		Cost:         &llm.ModelCost{Input: 1, Tiers: tiers},
 	})
 	if err != nil {
 		t.Fatalf("NewCatalog() error = %v", err)
 	}
 	capabilities[0] = llm.CapabilityAudio
+	tiers[0].Input = 99
 
 	first, _ := catalog.Model("openai", "gpt-test")
 	first.Capabilities[0] = llm.CapabilityAudio
+	first.Cost.Input = 99
+	first.Cost.Tiers[0].Input = 99
 	listed := catalog.Models("openai")
 	listed[0].Capabilities[0] = llm.CapabilityAudio
+	listed[0].Cost.Tiers[0].Input = 99
 
 	second, _ := catalog.Model("openai", "gpt-test")
 	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityStreaming}
 	if !slices.Equal(second.Capabilities, want) {
 		t.Fatalf("second Capabilities = %v, want %v", second.Capabilities, want)
 	}
-	if listedAgain := catalog.Models("openai"); len(listedAgain) != 1 || !slices.Equal(listedAgain[0].Capabilities, want) {
+	if second.Cost == nil || second.Cost.Input != 1 || second.Cost.Tiers[0].Input != 2 {
+		t.Fatalf("second Cost = %#v", second.Cost)
+	}
+	if listedAgain := catalog.Models("openai"); len(listedAgain) != 1 || !slices.Equal(listedAgain[0].Capabilities, want) || listedAgain[0].Cost.Tiers[0].Input != 2 {
 		t.Fatalf("second Models() = %#v, want capabilities %v", listedAgain, want)
 	}
 }
@@ -99,6 +108,7 @@ func TestNewCatalogRejectsInvalidModels(t *testing.T) {
 		{name: "negative output", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", MaxOutputTokens: -1}}, provider: "provider", want: "max output tokens"},
 		{name: "output exceeds context", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", ContextWindow: 10, MaxOutputTokens: 11}}, provider: "provider", want: "must not exceed"},
 		{name: "unknown capability", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", Capabilities: []llm.Capability{"future"}}}, provider: "provider", want: "is invalid"},
+		{name: "invalid cost", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", Cost: &llm.ModelCost{Input: -1}}}, provider: "provider", want: "cost"},
 		{name: "duplicate", models: []llm.Model{valid, valid}, provider: "provider", want: "more than once"},
 	}
 

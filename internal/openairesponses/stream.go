@@ -843,16 +843,41 @@ func responseUsage(response openairesponses.Response) (*llm.Usage, error) {
 	input := response.Usage.InputTokens
 	output := response.Usage.OutputTokens
 	total := response.Usage.TotalTokens
-	if input < 0 || output < 0 || total < 0 {
+	cacheRead := int64(0)
+	cacheWrite := int64(0)
+	reasoning := int64(0)
+	if response.Usage.JSON.InputTokensDetails.Valid() {
+		if response.Usage.InputTokensDetails.JSON.CachedTokens.Valid() {
+			cacheRead = response.Usage.InputTokensDetails.CachedTokens
+		}
+		if response.Usage.InputTokensDetails.JSON.CacheWriteTokens.Valid() {
+			cacheWrite = response.Usage.InputTokensDetails.CacheWriteTokens
+		}
+	}
+	if response.Usage.JSON.OutputTokensDetails.Valid() && response.Usage.OutputTokensDetails.JSON.ReasoningTokens.Valid() {
+		reasoning = response.Usage.OutputTokensDetails.ReasoningTokens
+	}
+	if input < 0 || output < 0 || total < 0 || cacheRead < 0 || cacheWrite < 0 || reasoning < 0 {
 		return nil, errors.New("token counts must not be negative")
 	}
-	if input > int64(^uint(0)>>1) || output > int64(^uint(0)>>1) || total > int64(^uint(0)>>1) {
+	if input > int64(^uint(0)>>1) || output > int64(^uint(0)>>1) || total > int64(^uint(0)>>1) ||
+		cacheRead > int64(^uint(0)>>1) || cacheWrite > int64(^uint(0)>>1) || reasoning > int64(^uint(0)>>1) {
 		return nil, errors.New("token count exceeds int range")
+	}
+	if cacheRead > input || cacheWrite > input-cacheRead || reasoning > output {
+		return nil, errors.New("token usage details are inconsistent")
 	}
 	if input > (1<<63-1)-output || total != input+output {
 		return nil, fmt.Errorf("total tokens %d do not equal input %d plus output %d", total, input, output)
 	}
-	return &llm.Usage{InputTokens: int(input), OutputTokens: int(output), TotalTokens: int(total)}, nil
+	return &llm.Usage{
+		InputTokens:      int(input - cacheRead - cacheWrite),
+		OutputTokens:     int(output),
+		CacheReadTokens:  int(cacheRead),
+		CacheWriteTokens: int(cacheWrite),
+		ReasoningTokens:  int(reasoning),
+		TotalTokens:      int(total),
+	}, nil
 }
 
 func (c Codec) eventError(op string, raw []byte) error {

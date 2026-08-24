@@ -3,8 +3,9 @@
 //
 // Applications configure provider protocols and credentials once, then resolve
 // llm.Generator values from llm.ModelInfo. Catalog stores immutable model
-// metadata for lookup independently of credentials. CredentialStore defines
-// concurrency-safe credential persistence, while CredentialManager coalesces
+// metadata and optional per-million-token pricing independently of credentials;
+// generators resolved from priced models attach category costs to usage.
+// CredentialStore defines concurrency-safe persistence, while CredentialManager coalesces
 // provider OAuth refreshes. The concrete provider packages remain available
 // for protocol-specific configuration that this package does not expose.
 package models

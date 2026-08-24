@@ -146,7 +146,7 @@ func TestGenerateTranslatesChatCompletion(t *testing.T) {
 				}]},
 				"finish_reason":"tool_calls"
 			}],
-			"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}
+			"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"completion_tokens_details":{"reasoning_tokens":4}}
 		}`)
 	}))
 
@@ -214,7 +214,7 @@ func TestGenerateTranslatesChatCompletion(t *testing.T) {
 	if response.FinishReason != llm.FinishReasonToolCall {
 		t.Fatalf("FinishReason = %q, want %q", response.FinishReason, llm.FinishReasonToolCall)
 	}
-	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}) {
+	if response.Usage == nil || *response.Usage != (llm.Usage{InputTokens: 6, OutputTokens: 7, CacheReadTokens: 3, CacheWriteTokens: 2, ReasoningTokens: 4, TotalTokens: 18}) {
 		t.Fatalf("Usage = %#v", response.Usage)
 	}
 	if got := response.Message.ToolCalls; len(got) != 1 || got[0].ID != "call-out" ||

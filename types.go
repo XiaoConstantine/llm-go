@@ -167,11 +167,29 @@ const (
 	FinishReasonContentFilter FinishReason = "content_filter"
 )
 
-// Usage reports token counts when a provider supplies them.
+// Usage reports token counts when a provider supplies them. InputTokens excludes
+// cache reads and writes; TotalTokens is the sum of input, output, cache-read,
+// and cache-write tokens. ReasoningTokens is a subset of OutputTokens.
+// CacheWrite1hTokens is a subset of CacheWriteTokens. Cost is nil when no
+// pricing metadata was configured.
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
+	InputTokens        int
+	OutputTokens       int
+	CacheReadTokens    int
+	CacheWriteTokens   int
+	CacheWrite1hTokens int
+	ReasoningTokens    int
+	TotalTokens        int
+	Cost               *UsageCost
+}
+
+// UsageCost reports cost in US dollars for each token category.
+type UsageCost struct {
+	Input      float64
+	Output     float64
+	CacheRead  float64
+	CacheWrite float64
+	Total      float64
 }
 
 // Response is the result of a generation operation.
@@ -210,11 +228,32 @@ const (
 	CapabilityAudio Capability = "audio"
 )
 
-// ModelInfo describes a configured model.
+// ModelCost contains prices in US dollars per million tokens. Tiers apply the
+// highest threshold exceeded by total input usage to the entire request.
+type ModelCost struct {
+	Input      float64
+	Output     float64
+	CacheRead  float64
+	CacheWrite float64
+	Tiers      []ModelCostTier
+}
+
+// ModelCostTier overrides all rates when total input usage is greater than
+// InputTokensAbove.
+type ModelCostTier struct {
+	InputTokensAbove int
+	Input            float64
+	Output           float64
+	CacheRead        float64
+	CacheWrite       float64
+}
+
+// ModelInfo describes a configured model. Cost is nil when pricing is unknown.
 type ModelInfo struct {
 	Provider     string
 	Model        string
 	Capabilities []Capability
+	Cost         *ModelCost
 }
 
 // API identifies a provider wire protocol. Unknown nonempty values are valid so
@@ -240,6 +279,7 @@ type Model struct {
 	Capabilities    []Capability
 	ContextWindow   int
 	MaxOutputTokens int
+	Cost            *ModelCost
 }
 
 // Info returns the provider-neutral configuration used to construct a
@@ -249,5 +289,6 @@ func (m Model) Info() ModelInfo {
 		Provider:     m.Provider,
 		Model:        m.ID,
 		Capabilities: append([]Capability(nil), m.Capabilities...),
+		Cost:         cloneModelCost(m.Cost),
 	}
 }
