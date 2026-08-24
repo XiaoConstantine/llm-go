@@ -216,3 +216,38 @@ type ModelInfo struct {
 	Model        string
 	Capabilities []Capability
 }
+
+// API identifies a provider wire protocol. Unknown nonempty values are valid so
+// applications can describe protocols implemented outside this module.
+type API string
+
+const (
+	APIAnthropicMessages     API = "anthropic-messages"
+	APIOpenAIChatCompletions API = "openai-chat-completions"
+	APIOpenAIResponses       API = "openai-responses"
+	APIOpenAICodexResponses  API = "openai-codex-responses"
+	APIGeminiGenerateContent API = "gemini-generate-content"
+)
+
+// Model describes one catalog entry. Name is a human-readable display name and
+// defaults conceptually to ID when empty. ContextWindow and MaxOutputTokens are
+// zero when unknown.
+type Model struct {
+	Provider        string
+	ID              string
+	Name            string
+	API             API
+	Capabilities    []Capability
+	ContextWindow   int
+	MaxOutputTokens int
+}
+
+// Info returns the provider-neutral configuration used to construct a
+// Generator. The returned capability slice is owned by the caller.
+func (m Model) Info() ModelInfo {
+	return ModelInfo{
+		Provider:     m.Provider,
+		Model:        m.ID,
+		Capabilities: append([]Capability(nil), m.Capabilities...),
+	}
+}

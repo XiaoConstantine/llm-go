@@ -145,6 +145,27 @@ func validateCredentials(provider string, api API, config ProviderConfig) error 
 	return nil
 }
 
+// GeneratorFor constructs a provider-neutral generator from a catalog model.
+// The model's API must match its configured provider protocol.
+func (c *Collection) GeneratorFor(model llm.Model) (llm.Generator, error) {
+	normalized, err := normalizeModel(model)
+	if err != nil {
+		return nil, resolveError(strings.TrimSpace(model.Provider), err.Error())
+	}
+	if c == nil {
+		return nil, resolveError(normalized.Provider, "provider collection is nil")
+	}
+	config, exists := c.providers[normalized.Provider]
+	if !exists {
+		return nil, resolveError(normalized.Provider, "provider is not configured")
+	}
+	if string(normalized.API) != string(config.api) {
+		return nil, resolveError(normalized.Provider,
+			fmt.Sprintf("model API %q does not match configured API %q", normalized.API, config.api))
+	}
+	return c.Generator(normalized.Info())
+}
+
 // Generator constructs a provider-neutral generator for info. Provider and
 // Model are required. Capabilities are validated by the selected protocol
 // implementation.

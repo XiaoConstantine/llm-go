@@ -128,6 +128,45 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 	}
 }
 
+func TestGeneratorForCatalogModel(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: "openai-compatible", API: OpenAIChatCompletions})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	catalog, err := NewCatalog(llm.Model{
+		Provider:     "openai-compatible",
+		ID:           "local-model",
+		Name:         "Local Model",
+		API:          llm.APIOpenAIChatCompletions,
+		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+	})
+	if err != nil {
+		t.Fatalf("NewCatalog() error = %v", err)
+	}
+	model, ok := catalog.Model("openai-compatible", "local-model")
+	if !ok {
+		t.Fatal("Catalog.Model() did not find local-model")
+	}
+	generator, err := collection.GeneratorFor(model)
+	if err != nil {
+		t.Fatalf("GeneratorFor() error = %v", err)
+	}
+	info := generator.Info()
+	if info.Provider != model.Provider || info.Model != model.ID || !slices.Equal(info.Capabilities, model.Capabilities) {
+		t.Fatalf("GeneratorFor().Info() = %#v, want model %#v", info, model)
+	}
+
+	model.API = llm.APIAnthropicMessages
+	generator, err = collection.GeneratorFor(model)
+	if generator != nil {
+		t.Fatalf("GeneratorFor(mismatched API) = %#v, want nil", generator)
+	}
+	modelErr := requireModelError(t, err, llm.KindInvalidRequest, "resolve", "openai-compatible")
+	if !strings.Contains(modelErr.Error(), "does not match") {
+		t.Fatalf("GeneratorFor(mismatched API) error = %q", modelErr)
+	}
+}
+
 func TestGeneratorSupportsOpenAICodexSubscription(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	rejectedTokens := make(chan string, 1)

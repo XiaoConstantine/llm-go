@@ -7,7 +7,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/models"
 )
 
-func Example() {
+func ExampleCollection() {
 	collection, err := models.New(models.ProviderConfig{
 		ID:     "openai",
 		API:    models.OpenAIResponses,
@@ -29,4 +29,23 @@ func Example() {
 	info := generator.Info()
 	fmt.Println(info.Provider, info.Model)
 	// Output: openai gpt-model
+}
+
+func ExampleCatalog() {
+	catalog, err := models.NewCatalog(llm.Model{
+		Provider:        "openai",
+		ID:              "gpt-model",
+		Name:            "GPT Model",
+		API:             llm.APIOpenAIResponses,
+		Capabilities:    []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+		ContextWindow:   128_000,
+		MaxOutputTokens: 16_384,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	info, ok := catalog.Model("openai", "gpt-model")
+	fmt.Println(ok, info.Name, info.ContextWindow)
+	// Output: true GPT Model 128000
 }

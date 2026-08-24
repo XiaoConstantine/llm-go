@@ -28,6 +28,22 @@ func TestToolMessageText(t *testing.T) {
 	}
 }
 
+func TestModelInfoOwnsCapabilities(t *testing.T) {
+	model := Model{
+		Provider:     "provider",
+		ID:           "model",
+		Capabilities: []Capability{CapabilityGeneration, CapabilityStreaming},
+	}
+	info := model.Info()
+	info.Capabilities[0] = CapabilityAudio
+	if model.Capabilities[0] != CapabilityGeneration {
+		t.Fatalf("Model.Info() returned model-owned capabilities: %v", model.Capabilities)
+	}
+	if info.Provider != model.Provider || info.Model != model.ID {
+		t.Fatalf("Model.Info() = %#v, want provider %q model %q", info, model.Provider, model.ID)
+	}
+}
+
 func TestResponseText(t *testing.T) {
 	response := Response{Message: Message{Content: []Part{{Text: "ok"}}}}
 
