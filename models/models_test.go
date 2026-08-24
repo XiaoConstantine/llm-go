@@ -54,7 +54,8 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 
 func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 	collection, err := New(
-		ProviderConfig{ID: " openai ", API: OpenAIChatCompletions},
+		ProviderConfig{ID: " openai ", API: OpenAIResponses, APIKey: "key"},
+		ProviderConfig{ID: "openai-compatible", API: OpenAIChatCompletions},
 		ProviderConfig{ID: "openai-codex", API: OpenAICodexResponses, Credentials: Credentials{AccessToken: "token", AccountID: "account"}},
 		ProviderConfig{ID: "anthropic-gateway", API: AnthropicMessages},
 		ProviderConfig{ID: "google", API: GeminiGenerateContent, APIKey: "key"},
@@ -72,6 +73,14 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 			info: llm.ModelInfo{
 				Provider:     "openai",
 				Model:        " gpt-model ",
+				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+			},
+		},
+		{
+			name: "OpenAI compatible",
+			info: llm.ModelInfo{
+				Provider:     "openai-compatible",
+				Model:        " local-model ",
 				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
 			},
 		},
@@ -220,6 +229,7 @@ func TestGeneratorReturnsNilOnProviderConfigurationError(t *testing.T) {
 		contains string
 	}{
 		{name: "OpenAI", config: ProviderConfig{ID: "openai", API: OpenAIChatCompletions, BaseURL: ":"}, model: "gpt", contains: "base URL"},
+		{name: "OpenAI Responses", config: ProviderConfig{ID: "openai-responses", API: OpenAIResponses}, model: "gpt", contains: "API key"},
 		{name: "OpenAI Codex", config: ProviderConfig{ID: "openai-codex", API: OpenAICodexResponses}, model: "gpt-codex", contains: "access token"},
 		{name: "Anthropic", config: ProviderConfig{ID: "anthropic", API: AnthropicMessages, BaseURL: ":"}, model: "claude", contains: "base URL"},
 		{name: "Gemini", config: ProviderConfig{ID: "google", API: GeminiGenerateContent}, model: "gemini", contains: "API key"},

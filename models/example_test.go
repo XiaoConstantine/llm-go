@@ -9,8 +9,9 @@ import (
 
 func Example() {
 	collection, err := models.New(models.ProviderConfig{
-		ID:  "openai",
-		API: models.OpenAIChatCompletions,
+		ID:     "openai",
+		API:    models.OpenAIResponses,
+		APIKey: "key",
 	})
 	if err != nil {
 		panic(err)

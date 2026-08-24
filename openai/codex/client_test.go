@@ -55,7 +55,7 @@ func TestInfoCopiesCapabilitiesAndRelabelsProvider(t *testing.T) {
 	client, err := New(Config{
 		Provider:     "gateway",
 		Model:        "gpt-codex",
-		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityStreaming},
+		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityStreaming},
 		AccessToken:  testAccessToken("account"),
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func TestInfoCopiesCapabilitiesAndRelabelsProvider(t *testing.T) {
 	if info.Provider != "gateway" || info.Model != "gpt-codex" {
 		t.Fatalf("Info() = %#v", info)
 	}
-	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools}
+	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision}
 	if fmt.Sprint(info.Capabilities) != fmt.Sprint(want) {
 		t.Fatalf("Info().Capabilities = %v, want %v", info.Capabilities, want)
 	}
@@ -557,6 +557,105 @@ func TestGenerateRejectsMalformedProviderDataBeforeCredentials(t *testing.T) {
 	}
 	if resolutions.Load() != 0 {
 		t.Fatalf("credential resolutions = %d, want 0", resolutions.Load())
+	}
+}
+
+func TestGenerateChecksImageSupportBeforeCredentials(t *testing.T) {
+	var resolutions atomic.Int32
+	resolver := func(context.Context, string) (Credentials, error) {
+		resolutions.Add(1)
+		return Credentials{AccessToken: "token", AccountID: "account"}, nil
+	}
+	image := llm.Part{Kind: llm.PartImage, Data: []byte{1, 2, 3}, MediaType: "image/png"}
+	tests := []struct {
+		name         string
+		capabilities []llm.Capability
+		messages     []llm.Message
+		want         string
+	}{
+		{name: "vision capability", messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{image}}}, want: "vision capability"},
+		{name: "system image", capabilities: []llm.Capability{llm.CapabilityVision}, messages: []llm.Message{{Role: llm.RoleSystem, Content: []llm.Part{image}}}, want: "only in user messages"},
+		{name: "audio", messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte{1}, MediaType: "audio/wav"}}}}, want: "audio message content"},
+		{
+			name: "tool result image", capabilities: []llm.Capability{llm.CapabilityVision, llm.CapabilityTools},
+			messages: []llm.Message{
+				{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "read", Arguments: jsontext.Value(`{}`)}}},
+				{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "call", Name: "read", Content: []llm.Part{image}}}},
+			},
+			want: "binary tool results",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New(Config{Model: "model", ResolveCredentials: resolver, Capabilities: test.capabilities})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			response, err := client.Generate(context.Background(), llm.Request{Messages: test.messages})
+			if response != nil || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Generate() = (%#v, %v), want error containing %q", response, err, test.want)
+			}
+			requireModelError(t, err, llm.KindUnsupported, "generate")
+		})
+	}
+	if resolutions.Load() != 0 {
+		t.Fatalf("credential resolutions = %d, want 0", resolutions.Load())
+	}
+}
+
+func TestRequestToWireMapsUserImage(t *testing.T) {
+	params, err := requestToWire("generate", "model", llm.Request{Messages: []llm.Message{{
+		Role: llm.RoleUser,
+		Content: []llm.Part{
+			{Kind: llm.PartText, Text: "describe this"},
+			{Kind: llm.PartImage, Data: []byte{1, 2, 3}, MediaType: "image/png; name=image.png"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("requestToWire() error = %v", err)
+	}
+	body, err := jsonv2.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var payload map[string]any
+	if err := jsonv2.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	input := payload["input"].([]any)
+	content := input[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 || content[0].(map[string]any)["type"] != "input_text" || content[0].(map[string]any)["text"] != "describe this" {
+		t.Fatalf("request content = %#v", content)
+	}
+	image := content[1].(map[string]any)
+	if image["type"] != "input_image" || image["detail"] != "auto" || image["image_url"] != "data:image/png;base64,AQID" {
+		t.Fatalf("request image = %#v", image)
+	}
+
+	params, err = requestToWire("generate", "model", llm.Request{Messages: []llm.Message{{
+		Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartImage, Data: []byte{4}, MediaType: "image/jpeg"}},
+	}}})
+	if err != nil {
+		t.Fatalf("requestToWire(image only) error = %v", err)
+	}
+	body, err = jsonv2.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal image-only params: %v", err)
+	}
+	if err := jsonv2.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode image-only params: %v", err)
+	}
+	input = payload["input"].([]any)
+	content = input[0].(map[string]any)["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "input_image" {
+		t.Fatalf("image-only request content = %#v", content)
+	}
+
+	_, err = requestToWire("generate", "model", llm.Request{Messages: []llm.Message{{
+		Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartImage, Data: []byte{1}, MediaType: "image/svg+xml"}},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("requestToWire(SVG) error = %v, want unsupported media type", err)
 	}
 }
 

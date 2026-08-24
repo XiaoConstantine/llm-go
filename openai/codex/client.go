@@ -44,7 +44,7 @@ type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (C
 //
 // BaseURL defaults to https://chatgpt.com/backend-api. Capabilities opts the
 // configured model into optional protocol features; generation is always
-// enabled, while streaming and tools must be listed explicitly. A non-nil
+// enabled, while streaming, tools, and vision must be listed explicitly. A non-nil
 // HTTPClient and custom Headers are used as supplied without being mutated.
 // Authorization, ChatGPT-Account-ID, OpenAI-Beta, Originator, Content-Type,
 // Accept, and User-Agent are owned by Client and overwrite custom values. A nil
@@ -158,7 +158,7 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
 	for _, capability := range configured {
 		switch capability {
-		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools:
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision:
 		default:
 			return nil, configError("capability %q is not implemented", capability)
 		}
@@ -284,11 +284,23 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	usesTools := len(request.Tools) != 0
+	usesImages := false
 	for _, message := range request.Messages {
 		usesTools = usesTools || len(message.ToolCalls) != 0 || len(message.ToolResults) != 0
+		for _, part := range message.Content {
+			usesImages = usesImages || part.Kind == llm.PartImage
+		}
+		for _, result := range message.ToolResults {
+			for _, part := range result.Content {
+				usesImages = usesImages || part.Kind == llm.PartImage
+			}
+		}
 	}
 	if usesTools && !c.hasCapability(llm.CapabilityTools) {
 		return unsupported(op, "configured model does not declare tool capability")
+	}
+	if usesImages && !c.hasCapability(llm.CapabilityVision) {
+		return unsupported(op, "configured model does not declare vision capability")
 	}
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		return unsupported(op, "JSON response format is not implemented")
@@ -314,8 +326,14 @@ func checkRequest(op string, request llm.Request) error {
 	}
 	for i, message := range request.Messages {
 		for _, part := range message.Content {
-			if part.Kind != llm.PartText {
-				return unsupported(op, "binary message content is not implemented")
+			switch part.Kind {
+			case llm.PartText:
+			case llm.PartImage:
+				if message.Role != llm.RoleUser {
+					return unsupported(op, "image content is supported only in user messages")
+				}
+			default:
+				return unsupported(op, "audio message content is not implemented")
 			}
 		}
 		for _, result := range message.ToolResults {

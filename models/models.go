@@ -12,12 +12,15 @@ import (
 	"github.com/XiaoConstantine/llm-go/gemini"
 	"github.com/XiaoConstantine/llm-go/openai"
 	openaicodex "github.com/XiaoConstantine/llm-go/openai/codex"
+	openairesponses "github.com/XiaoConstantine/llm-go/openai/responses"
 )
 
 // API identifies a provider wire protocol.
 type API string
 
 const (
+	// OpenAIResponses selects OpenAI's Responses API.
+	OpenAIResponses API = "openai-responses"
 	// OpenAIChatCompletions selects the OpenAI-compatible Chat Completions API.
 	OpenAIChatCompletions API = "openai-chat-completions"
 	// OpenAICodexResponses selects the ChatGPT subscription Codex Responses API.
@@ -98,7 +101,7 @@ func New(configs ...ProviderConfig) (*Collection, error) {
 
 		api := API(strings.TrimSpace(string(config.API)))
 		switch api {
-		case OpenAIChatCompletions, OpenAICodexResponses, AnthropicMessages, GeminiGenerateContent:
+		case OpenAIResponses, OpenAIChatCompletions, OpenAICodexResponses, AnthropicMessages, GeminiGenerateContent:
 		case "":
 			return nil, configureError(id, "API must not be empty")
 		default:
@@ -163,6 +166,20 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 	}
 
 	switch config.api {
+	case OpenAIResponses:
+		generator, err := openairesponses.New(openairesponses.Config{
+			Provider:     config.id,
+			Model:        info.Model,
+			Capabilities: info.Capabilities,
+			APIKey:       config.apiKey,
+			BaseURL:      config.baseURL,
+			HTTPClient:   config.httpClient,
+			Headers:      config.headers,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return generator, nil
 	case OpenAIChatCompletions:
 		generator, err := openai.New(openai.Config{
 			Provider:     config.id,
