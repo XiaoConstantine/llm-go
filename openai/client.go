@@ -47,9 +47,9 @@ const (
 // BaseURL defaults to https://api.openai.com/v1. APIKey is optional so the
 // client can be used with compatible servers that do not authenticate.
 // Capabilities opts the configured model into optional protocol features;
-// generation is always enabled, while streaming, tools, JSON mode, and vision
-// must be listed explicitly. A non-nil HTTPClient and custom Headers are used
-// as supplied, without being mutated by Client. A nil HTTPClient uses
+// generation is always enabled, while streaming, tools, JSON mode, vision, and
+// audio input must be listed explicitly. A non-nil HTTPClient and custom
+// Headers are used as supplied, without being mutated by Client. A nil HTTPClient uses
 // [http.DefaultClient], which has no overall request timeout; callers should use
 // context deadlines or configure a client timeout. Content-Type is always
 // application/json.
@@ -215,7 +215,7 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 	for _, capability := range configured {
 		switch capability {
 		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools,
-			llm.CapabilityJSON, llm.CapabilityVision:
+			llm.CapabilityJSON, llm.CapabilityVision, llm.CapabilityAudio:
 		default:
 			return nil, configError("capability %q is not implemented", capability)
 		}
@@ -684,8 +684,8 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if hasImage && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(op, "configured model does not declare vision capability")
 	}
-	if hasAudio {
-		return unsupported(op, "audio content is not supported")
+	if hasAudio && !c.hasCapability(llm.CapabilityAudio) {
+		return unsupported(op, "configured model does not declare audio capability")
 	}
 	if hasToolImage && c.compatibility.ToolResultImageFallback != llm.CompatibilityEnabled {
 		return unsupported(op, "image tool results require the explicit synthetic-user compatibility fallback")
@@ -746,6 +746,9 @@ func checkRequest(op string, request llm.Request) error {
 		for _, part := range message.Content {
 			if part.Kind == llm.PartImage && message.Role != llm.RoleUser {
 				return unsupported(op, "image content is supported only in user messages")
+			}
+			if part.Kind == llm.PartAudio && message.Role != llm.RoleUser {
+				return unsupported(op, "audio content is supported only in user messages")
 			}
 		}
 		for _, result := range message.ToolResults {

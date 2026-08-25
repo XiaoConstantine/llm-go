@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"strings"
@@ -62,6 +63,7 @@ type contentPart struct {
 	Type         string            `json:"type"`
 	Text         *string           `json:"text,omitzero"`
 	ImageURL     *imageURL         `json:"image_url,omitempty"`
+	InputAudio   *inputAudio       `json:"input_audio,omitempty"`
 	CacheControl *chatCacheControl `json:"cache_control,omitempty"`
 }
 
@@ -72,6 +74,11 @@ type chatCacheControl struct {
 
 type imageURL struct {
 	URL string `json:"url"`
+}
+
+type inputAudio struct {
+	Data   string `json:"data"`
+	Format string `json:"format"`
 }
 
 type chatTool struct {
@@ -582,7 +589,7 @@ func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
 		return messages, nil
 	}
 
-	content, err := contentToWire(e.op, message.Content)
+	content, err := contentToWire(e.op, message.Role, message.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -668,7 +675,7 @@ func (e *messageEncoder) resultID(result llm.ToolResult) (string, error) {
 	return callID, nil
 }
 
-func contentToWire(op string, parts []llm.Part) (any, error) {
+func contentToWire(op string, role llm.Role, parts []llm.Part) (any, error) {
 	hasBinary := false
 	for _, part := range parts {
 		if part.Kind != llm.PartText {
@@ -696,11 +703,41 @@ func contentToWire(op string, parts []llm.Part) (any, error) {
 				ImageURL: &imageURL{URL: "data:" + mediaType + ";base64," +
 					base64.StdEncoding.EncodeToString(part.Data)},
 			}
+		case llm.PartAudio:
+			if role != llm.RoleUser {
+				return nil, unsupported(op, "audio content is supported only in user messages")
+			}
+			format, err := openAIAudioFormat(part.MediaType)
+			if err != nil {
+				return nil, requestError(op, "audio media type %q: %v", part.MediaType, err)
+			}
+			content[i] = contentPart{
+				Type: "input_audio",
+				InputAudio: &inputAudio{
+					Data:   base64.StdEncoding.EncodeToString(part.Data),
+					Format: format,
+				},
+			}
 		default:
 			return nil, unsupported(op, "content kind is not supported")
 		}
 	}
 	return content, nil
+}
+
+func openAIAudioFormat(rawMediaType string) (string, error) {
+	mediaType, _, err := mime.ParseMediaType(rawMediaType)
+	if err != nil {
+		return "", errors.New("is invalid")
+	}
+	switch strings.ToLower(mediaType) {
+	case "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave":
+		return "wav", nil
+	case "audio/mpeg", "audio/mp3":
+		return "mp3", nil
+	default:
+		return "", errors.New("is not supported; use WAV or MP3")
+	}
 }
 
 func textContent(parts []llm.Part) string {

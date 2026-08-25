@@ -77,6 +77,7 @@ func TestChatCacheControlAnthropicSkipsNonCacheableParts(t *testing.T) {
 		nil,
 		{{Type: "image_url"}},
 		{{Type: "image_url", ImageURL: &imageURL{}}},
+		{{Type: "input_audio", InputAudio: &inputAudio{Data: "audio", Format: "wav"}}},
 	} {
 		message := chatMessage{Role: string(llm.RoleUser), Content: content}
 		if addAnthropicCacheControlToContent(&message, &chatCacheControl{Type: "ephemeral"}) {

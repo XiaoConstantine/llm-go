@@ -31,7 +31,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		{name: "relative base URL", config: Config{Model: "model", BaseURL: "/v1"}, want: "scheme must be http or https"},
 		{name: "unsupported scheme", config: Config{Model: "model", BaseURL: "file:///v1"}, want: "scheme must be http or https"},
 		{name: "query", config: Config{Model: "model", BaseURL: "https://example.com/v1?q=1"}, want: "must not contain a query"},
-		{name: "unsupported capability", config: Config{Model: "model", Capabilities: []llm.Capability{llm.CapabilityAudio}}, want: "is not implemented"},
+		{name: "unsupported capability", config: Config{Model: "model", Capabilities: []llm.Capability{"future"}}, want: "is not implemented"},
 	}
 
 	for _, test := range tests {
@@ -56,7 +56,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 func TestClientInfoReturnsIndependentCapabilities(t *testing.T) {
 	client, err := New(Config{
 		Model:        " test-model ",
-		Capabilities: []llm.Capability{llm.CapabilityVision, llm.CapabilityGeneration, llm.CapabilityVision},
+		Capabilities: []llm.Capability{llm.CapabilityVision, llm.CapabilityAudio, llm.CapabilityGeneration, llm.CapabilityVision},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -66,7 +66,7 @@ func TestClientInfoReturnsIndependentCapabilities(t *testing.T) {
 	if first.Provider != "openai" || first.Model != "test-model" {
 		t.Fatalf("Info() = %#v", first)
 	}
-	if got, want := first.Capabilities, []llm.Capability{llm.CapabilityGeneration, llm.CapabilityVision}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if got, want := first.Capabilities, []llm.Capability{llm.CapabilityGeneration, llm.CapabilityVision, llm.CapabilityAudio}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Capabilities = %#v, want %#v", got, want)
 	}
 	first.Capabilities[0] = llm.CapabilityAudio
@@ -86,6 +86,97 @@ func TestRequestTranslatesReasoningEffort(t *testing.T) {
 	}
 	if request.ReasoningEffort != llm.ReasoningEffortHigh {
 		t.Fatalf("ReasoningEffort = %q", request.ReasoningEffort)
+	}
+}
+
+func TestRequestTranslatesAudioInput(t *testing.T) {
+	request, err := newChatRequest("model", llm.Request{Messages: []llm.Message{{
+		Role: llm.RoleUser,
+		Content: []llm.Part{
+			{Text: "listen"},
+			{Kind: llm.PartAudio, Data: []byte("wav"), MediaType: "audio/wav"},
+			{Kind: llm.PartAudio, Data: []byte("mp3"), MediaType: "audio/mpeg; codecs=mp3"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("newChatRequest() error = %v", err)
+	}
+	content, ok := request.Messages[0].Content.([]contentPart)
+	if !ok || len(content) != 3 {
+		t.Fatalf("message content = %#v", request.Messages[0].Content)
+	}
+	if content[0].Type != "text" || content[0].Text == nil || *content[0].Text != "listen" {
+		t.Fatalf("text content = %#v", content[0])
+	}
+	if content[1].Type != "input_audio" || content[1].InputAudio == nil ||
+		content[1].InputAudio.Data != "d2F2" || content[1].InputAudio.Format != "wav" {
+		t.Fatalf("WAV content = %#v", content[1])
+	}
+	if content[2].Type != "input_audio" || content[2].InputAudio == nil ||
+		content[2].InputAudio.Data != "bXAz" || content[2].InputAudio.Format != "mp3" {
+		t.Fatalf("MP3 content = %#v", content[2])
+	}
+	encoded, err := jsonv2.Marshal(&request)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"type":"input_audio","input_audio":{"data":"d2F2","format":"wav"}`) ||
+		!strings.Contains(string(encoded), `"type":"input_audio","input_audio":{"data":"bXAz","format":"mp3"}`) {
+		t.Fatalf("encoded request = %s", encoded)
+	}
+}
+
+func TestAudioInputValidationBeforeIO(t *testing.T) {
+	var calls atomic.Int64
+	client, err := New(Config{
+		Model:        "model",
+		Capabilities: []llm.Capability{llm.CapabilityAudio},
+		BaseURL:      "http://example.com/v1",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return nil, errors.New("unexpected request")
+		})},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		message llm.Message
+		kind    llm.ErrorKind
+		want    string
+	}{
+		{
+			name: "assistant audio",
+			message: llm.Message{Role: llm.RoleAssistant, Content: []llm.Part{{
+				Kind: llm.PartAudio, Data: []byte("audio"), MediaType: "audio/wav",
+			}}},
+			kind: llm.KindUnsupported,
+			want: "only in user messages",
+		},
+		{
+			name: "unsupported format",
+			message: llm.Message{Role: llm.RoleUser, Content: []llm.Part{{
+				Kind: llm.PartAudio, Data: []byte("audio"), MediaType: "audio/flac",
+			}}},
+			kind: llm.KindInvalidRequest,
+			want: "use WAV or MP3",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{test.message}})
+			if response != nil {
+				t.Fatalf("Generate() response = %#v, want nil", response)
+			}
+			requireModelError(t, err, test.kind, "generate")
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Generate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("HTTP calls = %d, want zero", calls.Load())
 	}
 }
 
@@ -726,6 +817,14 @@ func TestGenerateRequiresConfiguredCapabilities(t *testing.T) {
 				Content: []llm.Part{{Kind: llm.PartImage, Data: []byte("image"), MediaType: "image/png"}},
 			}}},
 			want: "vision capability",
+		},
+		{
+			name: "audio",
+			request: llm.Request{Messages: []llm.Message{{
+				Role:    llm.RoleUser,
+				Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte("audio"), MediaType: "audio/wav"}},
+			}}},
+			want: "audio capability",
 		},
 	}
 

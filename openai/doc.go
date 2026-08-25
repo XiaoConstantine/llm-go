@@ -1,5 +1,5 @@
 // Package openai implements OpenAI-compatible Chat Completions using llm's
 // neutral contracts. It supports generation, streaming, function tools, JSON
-// mode, and image input. For OpenAI's native Responses API, use the
-// openai/responses subpackage. This package does not implement audio input.
+// mode, image input, and WAV or MP3 audio input. For OpenAI's native Responses
+// API, use the openai/responses subpackage. Audio output is not implemented.
 package openai
