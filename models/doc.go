@@ -5,7 +5,8 @@
 // llm.Generator values from llm.ModelInfo. Catalog stores immutable model
 // metadata, protocol compatibility, and optional per-million-token pricing
 // independently of credentials; resolved generators apply model compatibility
-// and attach category costs to usage.
+// and attach category costs to usage. BuiltinCatalog provides generated,
+// validated metadata from the versioned source in models/catalogsource.
 // Built-in profiles configure OpenRouter, Groq, DeepSeek, xAI, Cerebras, and
 // Fireworks endpoints and protocol compatibility. CredentialStore defines
 // concurrency-safe persistence, while CredentialManager coalesces provider OAuth

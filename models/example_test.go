@@ -49,6 +49,12 @@ func ExampleBuiltinProvider() {
 	// Output: deepseek https://api.deepseek.com
 }
 
+func ExampleBuiltinCatalog() {
+	model, ok := models.BuiltinCatalog().Model(models.ProviderDeepSeek, "deepseek-v4-flash")
+	fmt.Println(ok, model.Name, model.ContextWindow, model.Reasoning)
+	// Output: true DeepSeek V4 Flash 1000000 true
+}
+
 func ExampleCatalog() {
 	catalog, err := models.NewCatalog(llm.Model{
 		Provider:        "openai",
