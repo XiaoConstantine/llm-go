@@ -265,7 +265,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		{name: "empty collection", wantError: "at least one provider"},
 		{name: "empty ID", configs: []ProviderConfig{{API: OpenAIChatCompletions}}, wantError: "ID must not be empty"},
 		{name: "empty API", configs: []ProviderConfig{{ID: "openai"}}, provider: "openai", wantError: "API must not be empty"},
-		{name: "unsupported API", configs: []ProviderConfig{{ID: "custom", API: "future-api"}}, provider: "custom", wantError: "not supported"},
+		{name: "unsupported API", configs: []ProviderConfig{{ID: "custom", API: "future-api"}}, provider: "custom", wantError: "not registered"},
 		{name: "Codex API key", configs: []ProviderConfig{{ID: "openai-codex", API: OpenAICodexResponses, APIKey: "key"}}, provider: "openai-codex", wantError: "APIKey is not used"},
 		{name: "token on API-key protocol", configs: []ProviderConfig{{ID: "openai", API: OpenAIChatCompletions, Credentials: Credentials{AccessToken: "token"}}}, provider: "openai", wantError: "token-based protocols"},
 		{name: "ambiguous Codex credentials", configs: []ProviderConfig{{ID: "openai-codex", API: OpenAICodexResponses, Credentials: Credentials{AccessToken: "token"}, ResolveCredentials: func(context.Context, string) (Credentials, error) { return Credentials{}, nil }}}, provider: "openai-codex", wantError: "must be empty"},
@@ -371,18 +371,31 @@ func TestGeneratorSelectsConfiguredAPI(t *testing.T) {
 	}
 }
 
+func TestGeneratorRejectsMismatchedModelAPI(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: "provider", API: OpenAIChatCompletions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "provider", Model: "model", API: llm.APIOpenAIResponses})
+	if generator != nil || err == nil || !strings.Contains(err.Error(), "is not enabled for provider") {
+		t.Fatalf("Generator() = %#v, %v", generator, err)
+	}
+}
+
 func TestGeneratorForCatalogModel(t *testing.T) {
 	collection, err := New(ProviderConfig{ID: "openai-compatible", API: OpenAIChatCompletions})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	catalog, err := NewCatalog(llm.Model{
-		Provider:     "openai-compatible",
-		ID:           "local-model",
-		Name:         "Local Model",
-		API:          llm.APIOpenAIChatCompletions,
-		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
-		Cost:         &llm.ModelCost{Input: 1, Output: 2},
+		Provider:        "openai-compatible",
+		ID:              "local-model",
+		Name:            "Local Model",
+		API:             llm.APIOpenAIChatCompletions,
+		Capabilities:    []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+		ContextWindow:   32_000,
+		MaxOutputTokens: 4_000,
+		Cost:            &llm.ModelCost{Input: 1, Output: 2},
 		Compatibility: &llm.ModelCompatibility{OpenAIChat: &llm.OpenAIChatCompatibility{
 			StrictTools: llm.CompatibilityEnabled,
 		}},
@@ -399,8 +412,8 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 		t.Fatalf("GeneratorFor() error = %v", err)
 	}
 	info := generator.Info()
-	if info.Provider != model.Provider || info.Model != model.ID || !slices.Equal(info.Capabilities, model.Capabilities) || info.Cost == nil || info.Cost.Input != 1 ||
-		info.Compatibility == nil || info.Compatibility.OpenAIChat == nil || info.Compatibility.OpenAIChat.StrictTools != llm.CompatibilityEnabled {
+	if info.Provider != model.Provider || info.Model != model.ID || info.API != model.API || info.ContextWindow != model.ContextWindow || info.MaxOutputTokens != model.MaxOutputTokens ||
+		!slices.Equal(info.Capabilities, model.Capabilities) || info.Cost == nil || info.Cost.Input != 1 || info.Compatibility == nil || info.Compatibility.OpenAIChat == nil || info.Compatibility.OpenAIChat.StrictTools != llm.CompatibilityEnabled {
 		t.Fatalf("GeneratorFor().Info() = %#v, want model %#v", info, model)
 	}
 
@@ -416,7 +429,7 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 		t.Fatalf("GeneratorFor(mismatched API) = %#v, want nil", generator)
 	}
 	modelErr := requireModelError(t, err, llm.KindInvalidRequest, "resolve", "openai-compatible")
-	if !strings.Contains(modelErr.Error(), "does not match") {
+	if !strings.Contains(modelErr.Error(), "is not enabled") {
 		t.Fatalf("GeneratorFor(mismatched API) error = %q", modelErr)
 	}
 }

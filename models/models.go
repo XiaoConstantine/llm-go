@@ -5,14 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
-	"github.com/XiaoConstantine/llm-go/anthropic"
-	"github.com/XiaoConstantine/llm-go/gemini"
-	"github.com/XiaoConstantine/llm-go/openai"
-	openaicodex "github.com/XiaoConstantine/llm-go/openai/codex"
-	openairesponses "github.com/XiaoConstantine/llm-go/openai/responses"
 )
 
 // API identifies a provider wire protocol.
@@ -63,11 +59,32 @@ type ProviderConfig struct {
 	BaseURL            string
 	HTTPClient         *http.Client
 	Headers            http.Header
+	// AdditionalAPIs explicitly enables model-selected protocols for this
+	// provider. Its storage is copied by Collection construction.
+	AdditionalAPIs []ProviderAPIConfig
+}
+
+// ProviderAPIConfig configures one additional protocol route for a provider.
+// Zero-valued connection and credential fields do not inherit from the default
+// route; configure each route explicitly.
+type ProviderAPIConfig struct {
+	API                llm.API
+	APIKey             string
+	Credentials        Credentials
+	ResolveCredentials CredentialResolver
+	BaseURL            string
+	HTTPClient         *http.Client
+	Headers            http.Header
 }
 
 type providerConfig struct {
-	id                 string
-	api                API
+	id         string
+	defaultAPI llm.API
+	routes     map[llm.API]providerRoute
+}
+
+type providerRoute struct {
+	api                llm.API
 	apiKey             string
 	credentials        Credentials
 	resolveCredentials CredentialResolver
@@ -82,24 +99,33 @@ type providerConfig struct {
 type Collection struct {
 	providers   map[string]providerConfig
 	credentials *CredentialManager
+	registry    *FactoryRegistry
 }
 
 // New constructs a Collection. At least one provider is required. Provider IDs
 // must be unique after surrounding whitespace is removed.
 func New(configs ...ProviderConfig) (*Collection, error) {
-	return NewWithCredentialManager(nil, configs...)
+	return NewWithCredentialManagerAndRegistry(nil, defaultFactoryRegistry(), configs...)
 }
 
-// NewWithCredentialManager constructs a Collection that resolves stored API-key
-// or OAuth credentials when a generator is created. Explicit ProviderConfig
-// credentials take precedence over the manager. Manager-backed credentials are
-// resolved again for every provider request, so a long-lived generator observes
-// API-key rotation and coalesced OAuth refreshes.
+// NewWithRegistry constructs a Collection using registry and no managed credentials.
+func NewWithRegistry(registry *FactoryRegistry, configs ...ProviderConfig) (*Collection, error) {
+	return NewWithCredentialManagerAndRegistry(nil, registry, configs...)
+}
+
+// NewWithCredentialManager constructs a Collection with the default registry.
 func NewWithCredentialManager(manager *CredentialManager, configs ...ProviderConfig) (*Collection, error) {
+	return NewWithCredentialManagerAndRegistry(manager, defaultFactoryRegistry(), configs...)
+}
+
+// NewWithCredentialManagerAndRegistry constructs an immutable Collection.
+func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *FactoryRegistry, configs ...ProviderConfig) (*Collection, error) {
+	if registry == nil {
+		return nil, configureError("", "factory registry must not be nil")
+	}
 	if len(configs) == 0 {
 		return nil, configureError("", "at least one provider is required")
 	}
-
 	providers := make(map[string]providerConfig, len(configs))
 	for index, config := range configs {
 		id := strings.TrimSpace(config.ID)
@@ -109,32 +135,45 @@ func NewWithCredentialManager(manager *CredentialManager, configs ...ProviderCon
 		if _, exists := providers[id]; exists {
 			return nil, configureError(id, "provider ID is configured more than once")
 		}
-
-		api := API(strings.TrimSpace(string(config.API)))
-		switch api {
-		case OpenAIResponses, OpenAIChatCompletions, OpenAICodexResponses, AnthropicMessages, GeminiGenerateContent:
-		case "":
+		defaultAPI := llm.API(strings.TrimSpace(string(config.API)))
+		if defaultAPI == "" {
 			return nil, configureError(id, "API must not be empty")
-		default:
-			return nil, configureError(id, "API %q is not supported", api)
 		}
-		if err := validateCredentials(id, api, config); err != nil {
+		routes := make(map[llm.API]providerRoute, len(config.AdditionalAPIs)+1)
+		defaultRoute := providerRoute{api: defaultAPI, apiKey: config.APIKey, credentials: config.Credentials,
+			resolveCredentials: config.ResolveCredentials, baseURL: config.BaseURL, httpClient: config.HTTPClient, headers: config.Headers.Clone()}
+		if err := validateRoute(id, defaultRoute, registry); err != nil {
 			return nil, err
 		}
-
-		providers[id] = providerConfig{
-			id:                 id,
-			api:                api,
-			apiKey:             config.APIKey,
-			credentials:        config.Credentials,
-			resolveCredentials: config.ResolveCredentials,
-			baseURL:            config.BaseURL,
-			httpClient:         config.HTTPClient,
-			headers:            config.Headers.Clone(),
+		routes[defaultAPI] = defaultRoute
+		for routeIndex, additional := range config.AdditionalAPIs {
+			api := llm.API(strings.TrimSpace(string(additional.API)))
+			if api == "" {
+				return nil, configureError(id, "AdditionalAPIs[%d].API must not be empty", routeIndex)
+			}
+			if _, exists := routes[api]; exists {
+				return nil, configureError(id, "API %q is configured more than once", api)
+			}
+			route := providerRoute{api: api, apiKey: additional.APIKey, credentials: additional.Credentials,
+				resolveCredentials: additional.ResolveCredentials, baseURL: additional.BaseURL,
+				httpClient: additional.HTTPClient, headers: additional.Headers.Clone()}
+			if err := validateRoute(id, route, registry); err != nil {
+				return nil, err
+			}
+			routes[api] = route
 		}
+		providers[id] = providerConfig{id: id, defaultAPI: defaultAPI, routes: routes}
 	}
+	return &Collection{providers: providers, credentials: manager, registry: registry}, nil
+}
 
-	return &Collection{providers: providers, credentials: manager}, nil
+func validateRoute(provider string, route providerRoute, registry *FactoryRegistry) error {
+	if _, exists := registry.factory(route.api); !exists {
+		return configureError(provider, "API %q is not registered", route.api)
+	}
+	config := ProviderConfig{ID: provider, API: API(route.api), APIKey: route.apiKey, Credentials: route.credentials,
+		ResolveCredentials: route.resolveCredentials, BaseURL: route.baseURL, HTTPClient: route.httpClient, Headers: route.headers}
+	return validateCredentials(provider, API(route.api), config)
 }
 
 func validateCredentials(provider string, api API, config ProviderConfig) error {
@@ -158,10 +197,25 @@ func validateCredentials(provider string, api API, config ProviderConfig) error 
 			return nil
 		}
 	}
+	if !builtinAPI(llm.API(api)) {
+		if config.ResolveCredentials != nil && (config.Credentials.AccessToken != "" || config.Credentials.AccountID != "") {
+			return configureError(provider, "Credentials must be empty when ResolveCredentials is set")
+		}
+		return nil
+	}
 	if hasTokenCredentials {
 		return configureError(provider, "Credentials and ResolveCredentials are only supported by token-based protocols (Codex and Anthropic OAuth)")
 	}
 	return nil
+}
+
+func builtinAPI(api llm.API) bool {
+	switch api {
+	case llm.APIOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses, llm.APIAnthropicMessages, llm.APIGeminiGenerateContent:
+		return true
+	default:
+		return false
+	}
 }
 
 // GeneratorFor constructs a provider-neutral generator from a catalog model.
@@ -178,9 +232,8 @@ func (c *Collection) GeneratorFor(model llm.Model) (llm.Generator, error) {
 	if !exists {
 		return nil, resolveError(normalized.Provider, "provider is not configured")
 	}
-	if string(normalized.API) != string(config.api) {
-		return nil, resolveError(normalized.Provider,
-			fmt.Sprintf("model API %q does not match configured API %q", normalized.API, config.api))
+	if _, exists := config.routes[normalized.API]; !exists {
+		return nil, resolveError(normalized.Provider, fmt.Sprintf("model API %q is not enabled for provider", normalized.API))
 	}
 	return c.Generator(normalized.Info())
 }
@@ -199,187 +252,201 @@ func (c *Collection) GeneratorContext(ctx context.Context, info llm.ModelInfo) (
 	if provider == "" {
 		return nil, resolveError("", "model provider must not be empty")
 	}
-	if strings.TrimSpace(info.Model) == "" {
+	model := strings.TrimSpace(info.Model)
+	if model == "" {
 		return nil, resolveError(provider, "model name must not be empty")
+	}
+	if ctx == nil {
+		return nil, resolveError(provider, "context must not be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if info.ContextWindow < 0 || info.MaxOutputTokens < 0 || info.ContextWindow != 0 && info.MaxOutputTokens > info.ContextWindow {
+		return nil, resolveError(provider, "model token limits are invalid")
 	}
 	if info.Cost != nil {
 		if err := info.Cost.Validate(); err != nil {
 			return nil, resolveError(provider, fmt.Sprintf("model cost: %v", err))
 		}
 	}
-	if c == nil {
-		return nil, resolveError(provider, "provider collection is nil")
+	if c == nil || c.registry == nil {
+		return nil, resolveError(provider, "provider collection is nil or uninitialized")
 	}
-
 	config, exists := c.providers[provider]
 	if !exists {
 		return nil, resolveError(provider, "provider is not configured")
 	}
-	var err error
-	config, err = c.resolveCredential(ctx, config)
+	api := info.API
+	if api == "" {
+		api = config.defaultAPI
+	}
+	route, exists := config.routes[api]
+	if !exists {
+		return nil, resolveError(provider, fmt.Sprintf("model API %q is not enabled for provider", api))
+	}
+	factory, exists := c.registry.factory(api)
+	if !exists {
+		return nil, resolveError(provider, fmt.Sprintf("model API %q is not registered", api))
+	}
+	normalizedModel, err := normalizeModel(llm.Model{Provider: provider, ID: model, API: api,
+		Capabilities: info.Capabilities, ContextWindow: info.ContextWindow, MaxOutputTokens: info.MaxOutputTokens,
+		Reasoning: info.Reasoning, Cost: info.Cost, Compatibility: info.Compatibility})
+	if err != nil {
+		return nil, resolveError(provider, fmt.Sprintf("model metadata: %v", err))
+	}
+	ownedInfo := normalizedModel.Info()
+	resolved, credentialResolver, err := c.resolveCredential(ctx, provider, route)
 	if err != nil {
 		return nil, err
 	}
-	if err := info.Compatibility.Validate(llm.API(config.api)); err != nil {
-		return nil, resolveError(provider, fmt.Sprintf("model compatibility: %v", err))
+	factoryConfig := GeneratorFactoryConfig{
+		Provider: provider, API: api, Model: cloneModelInfo(ownedInfo), APIKey: resolved.apiKey,
+		Credentials: resolved.credentials, ResolveCredentials: resolved.resolveCredentials,
+		ResolveCredential: credentialResolver, BaseURL: resolved.baseURL, HTTPClient: resolved.httpClient,
+		Headers: resolved.headers.Clone(),
 	}
+	generator, err := callGeneratorFactory(ctx, factory, factoryConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if nilInterface(generator) {
+		return nil, resolveError(provider, fmt.Sprintf("factory for API %q returned a nil generator", api))
+	}
+	actual, err := callGeneratorInfo(provider, api, generator)
+	if err != nil {
+		return nil, err
+	}
+	if actual.Provider != provider || actual.Model != model || actual.API != api {
+		return nil, resolveError(provider, fmt.Sprintf("factory for API %q returned inconsistent Info (provider=%q model=%q API=%q)", api, actual.Provider, actual.Model, actual.API))
+	}
+	return withPricingInfo(generator, ownedInfo, actual), nil
+}
 
-	switch config.api {
-	case OpenAIResponses:
-		responsesConfig := openairesponses.Config{
-			Provider:     config.id,
-			Model:        info.Model,
-			Capabilities: info.Capabilities,
-			APIKey:       config.apiKey,
-			BaseURL:      config.baseURL,
-			HTTPClient:   config.httpClient,
-			Headers:      config.headers,
+func callGeneratorFactory(ctx context.Context, factory GeneratorFactory, config GeneratorFactoryConfig) (generator llm.Generator, err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			generator = nil
+			err = &llm.Error{Kind: llm.KindProvider, Op: "factory", Provider: config.Provider,
+				Err: fmt.Errorf("generator factory for API %q panicked: %v", config.API, value)}
 		}
-		var generator llm.Generator
-		var err error
-		if compatibility := openAIResponsesCompatibility(config.id, info.Compatibility); compatibility != nil {
-			generator, err = openairesponses.NewWithCompatibility(responsesConfig, compatibility)
-		} else {
-			generator, err = openairesponses.NewWithOptions(responsesConfig, openairesponses.Options{EncryptedReasoning: config.id == ProviderXAI})
+	}()
+	return factory(ctx, config)
+}
+
+func callGeneratorInfo(provider string, api llm.API, generator llm.Generator) (info llm.ModelInfo, err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			err = &llm.Error{Kind: llm.KindProvider, Op: "factory", Provider: provider,
+				Err: fmt.Errorf("generator Info for API %q panicked: %v", api, value)}
 		}
-		if err != nil {
-			return nil, err
-		}
-		return withPricing(generator, info), nil
-	case OpenAIChatCompletions:
-		maxTokensField := openai.MaxTokensFieldCompletion
-		if config.id == ProviderDeepSeek {
-			maxTokensField = openai.MaxTokensFieldLegacy
-		}
-		var modelCompatibility *llm.OpenAIChatCompatibility
-		if info.Compatibility != nil && info.Compatibility.OpenAIChat != nil {
-			compatibility := *info.Compatibility.OpenAIChat
-			if compatibility.MaxTokensField == "" {
-				compatibility.MaxTokensField = maxTokensField
-			}
-			modelCompatibility = &compatibility
-		}
-		var generator llm.Generator
-		var err error
-		openAIConfig := openai.Config{
-			Provider:     config.id,
-			Model:        info.Model,
-			Capabilities: info.Capabilities,
-			APIKey:       config.apiKey,
-			BaseURL:      config.baseURL,
-			HTTPClient:   config.httpClient,
-			Headers:      config.headers,
-		}
-		if modelCompatibility != nil {
-			generator, err = openai.NewWithCompatibility(openAIConfig, modelCompatibility)
-		} else {
-			generator, err = openai.NewWithOptions(openAIConfig, openai.Options{MaxTokensField: maxTokensField})
-		}
-		if err != nil {
-			return nil, err
-		}
-		return withPricing(generator, info), nil
-	case OpenAICodexResponses:
-		var resolver openaicodex.CredentialResolver
-		if config.resolveCredentials != nil {
-			resolver = func(ctx context.Context, rejectedAccessToken string) (openaicodex.Credentials, error) {
-				credentials, err := config.resolveCredentials(ctx, rejectedAccessToken)
-				return openaicodex.Credentials{
-					AccessToken: credentials.AccessToken,
-					AccountID:   credentials.AccountID,
-				}, err
-			}
-		}
-		codexConfig := openaicodex.Config{
-			Provider:           config.id,
-			Model:              info.Model,
-			Capabilities:       info.Capabilities,
-			AccessToken:        config.credentials.AccessToken,
-			AccountID:          config.credentials.AccountID,
-			ResolveCredentials: resolver,
-			BaseURL:            config.baseURL,
-			HTTPClient:         config.httpClient,
-			Headers:            config.headers,
-		}
-		var generator llm.Generator
-		var err error
-		if info.Compatibility != nil && info.Compatibility.OpenAIResponses != nil {
-			compatibility := *info.Compatibility.OpenAIResponses
-			generator, err = openaicodex.NewWithCompatibility(codexConfig, &compatibility)
-		} else {
-			generator, err = openaicodex.New(codexConfig)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return withPricing(generator, info), nil
-	case AnthropicMessages:
-		generator, err := anthropic.NewWithOptions(anthropic.Config{
-			Provider:     config.id,
-			Model:        info.Model,
-			Capabilities: info.Capabilities,
-			APIKey:       config.apiKey,
-			AccessToken:  config.credentials.AccessToken,
-			BaseURL:      config.baseURL,
-			HTTPClient:   config.httpClient,
-			Headers:      config.headers,
-		}, anthropic.Options{ModelCompatibility: anthropicCompatibility(info.Compatibility)})
-		if err != nil {
-			return nil, err
-		}
-		return withPricing(generator, info), nil
-	case GeminiGenerateContent:
-		generator, err := gemini.New(gemini.Config{
-			Provider:     config.id,
-			Model:        info.Model,
-			Capabilities: info.Capabilities,
-			APIKey:       config.apiKey,
-			BaseURL:      config.baseURL,
-			HTTPClient:   config.httpClient,
-			Headers:      config.headers,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return withPricing(generator, info), nil
+	}()
+	return generator.Info(), nil
+}
+
+func cloneModelInfo(info llm.ModelInfo) llm.ModelInfo {
+	info.Capabilities = append([]llm.Capability(nil), info.Capabilities...)
+	if info.Cost != nil {
+		cost := *info.Cost
+		cost.Tiers = append([]llm.ModelCostTier(nil), cost.Tiers...)
+		info.Cost = &cost
+	}
+	info.Compatibility = cloneCompatibility(info.Compatibility)
+	return info
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
 	default:
-		panic("models: invalid configured API")
+		return false
 	}
 }
 
-func (c *Collection) resolveCredential(ctx context.Context, config providerConfig) (providerConfig, error) {
-	if c.credentials == nil || config.apiKey != "" || config.credentials.AccessToken != "" || config.resolveCredentials != nil {
-		return config, nil
+func (c *Collection) resolveCredential(ctx context.Context, provider string, route providerRoute) (providerRoute, FactoryCredentialResolver, error) {
+	resolver := c.factoryCredentialResolver(provider, route)
+	if c.credentials == nil || route.apiKey != "" || route.credentials.AccessToken != "" || route.resolveCredentials != nil {
+		return route, resolver, nil
 	}
-	credential, found, err := c.credentials.Resolve(ctx, config.id)
+	credential, found, err := c.credentials.Resolve(ctx, provider)
 	if err != nil {
-		return providerConfig{}, resolveError(config.id, fmt.Sprintf("resolve credential: %v", err))
+		return providerRoute{}, nil, resolveError(provider, fmt.Sprintf("resolve credential: %v", err))
 	}
 	if !found {
-		return config, nil
+		return route, resolver, nil
 	}
 	switch credential.Type {
 	case CredentialAPIKey:
-		if config.api == OpenAICodexResponses {
-			return providerConfig{}, resolveError(config.id, "Codex requires an OAuth credential")
+		if route.api == llm.APIOpenAICodexResponses {
+			return providerRoute{}, nil, resolveError(provider, "Codex requires an OAuth credential")
 		}
-		config.apiKey = credential.APIKey
-		config.httpClient = c.managedCredentialHTTPClient(config, CredentialAPIKey)
+		route.apiKey = credential.APIKey
+		if builtinAPI(route.api) {
+			route.httpClient = c.managedCredentialHTTPClient(provider, route, CredentialAPIKey)
+		}
 	case CredentialOAuth:
-		switch config.api {
-		case OpenAICodexResponses:
-			config.resolveCredentials = c.managedCodexCredentialResolver(config.id)
-			config.credentials = Credentials{}
-		case AnthropicMessages:
-			config.credentials = Credentials{AccessToken: credential.AccessToken, AccountID: credential.AccountID}
-			config.httpClient = c.managedCredentialHTTPClient(config, CredentialOAuth)
+		switch route.api {
+		case llm.APIOpenAICodexResponses:
+			route.resolveCredentials = c.managedCodexCredentialResolver(provider)
+			route.credentials = Credentials{}
+		case llm.APIAnthropicMessages:
+			route.credentials = Credentials{AccessToken: credential.AccessToken, AccountID: credential.AccountID}
+			route.httpClient = c.managedCredentialHTTPClient(provider, route, CredentialOAuth)
 		default:
-			return providerConfig{}, resolveError(config.id, fmt.Sprintf("OAuth credentials are not supported by API %q", config.api))
+			if builtinAPI(route.api) {
+				return providerRoute{}, nil, resolveError(provider, fmt.Sprintf("OAuth credentials are not supported by API %q", route.api))
+			}
+			route.credentials = Credentials{AccessToken: credential.AccessToken, AccountID: credential.AccountID}
 		}
 	default:
-		return providerConfig{}, resolveError(config.id, fmt.Sprintf("credential type %q is not supported", credential.Type))
+		return providerRoute{}, nil, resolveError(provider, fmt.Sprintf("credential type %q is not supported", credential.Type))
 	}
-	return config, nil
+	return route, resolver, nil
+}
+
+func (c *Collection) factoryCredentialResolver(provider string, route providerRoute) FactoryCredentialResolver {
+	if c.credentials != nil && route.apiKey == "" && route.credentials.AccessToken == "" && route.resolveCredentials == nil {
+		return func(ctx context.Context) (StoredCredential, bool, error) {
+			credential, found, err := c.credentials.Resolve(ctx, provider)
+			return cloneStoredCredential(credential), found, err
+		}
+	}
+	if route.apiKey != "" {
+		credential := StoredCredential{Type: CredentialAPIKey, APIKey: route.apiKey}
+		return func(ctx context.Context) (StoredCredential, bool, error) {
+			if err := ctx.Err(); err != nil {
+				return StoredCredential{}, false, err
+			}
+			return credential, true, nil
+		}
+	}
+	if route.credentials.AccessToken != "" {
+		credential := StoredCredential{Type: CredentialOAuth, AccessToken: route.credentials.AccessToken, AccountID: route.credentials.AccountID}
+		return func(ctx context.Context) (StoredCredential, bool, error) {
+			if err := ctx.Err(); err != nil {
+				return StoredCredential{}, false, err
+			}
+			return credential, true, nil
+		}
+	}
+	if route.resolveCredentials != nil {
+		return func(ctx context.Context) (StoredCredential, bool, error) {
+			credential, err := route.resolveCredentials(ctx, "")
+			if err != nil {
+				return StoredCredential{}, false, err
+			}
+			return StoredCredential{Type: CredentialOAuth, AccessToken: credential.AccessToken, AccountID: credential.AccountID}, true, nil
+		}
+	}
+	return nil
 }
 
 func (c *Collection) managedCodexCredentialResolver(provider string) CredentialResolver {
@@ -399,12 +466,12 @@ type managedCredentialTransport struct {
 	base     http.RoundTripper
 	manager  *CredentialManager
 	provider string
-	api      API
+	api      llm.API
 	kind     CredentialType
 }
 
-func (c *Collection) managedCredentialHTTPClient(config providerConfig, kind CredentialType) *http.Client {
-	base := config.httpClient
+func (c *Collection) managedCredentialHTTPClient(provider string, route providerRoute, kind CredentialType) *http.Client {
+	base := route.httpClient
 	if base == nil {
 		base = http.DefaultClient
 	}
@@ -413,7 +480,7 @@ func (c *Collection) managedCredentialHTTPClient(config providerConfig, kind Cre
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	clone.Transport = &managedCredentialTransport{base: transport, manager: c.credentials, provider: config.id, api: config.api, kind: kind}
+	clone.Transport = &managedCredentialTransport{base: transport, manager: c.credentials, provider: provider, api: route.api, kind: kind}
 	return &clone
 }
 
@@ -430,10 +497,10 @@ func (t *managedCredentialTransport) RoundTrip(request *http.Request) (*http.Res
 	switch t.kind {
 	case CredentialAPIKey:
 		switch t.api {
-		case AnthropicMessages:
+		case llm.APIAnthropicMessages:
 			clone.Header.Del("Authorization")
 			clone.Header.Set("X-Api-Key", credential.APIKey)
-		case GeminiGenerateContent:
+		case llm.APIGeminiGenerateContent:
 			for name := range clone.Header {
 				if strings.EqualFold(name, "X-Goog-Api-Key") {
 					delete(clone.Header, name)

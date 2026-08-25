@@ -16,17 +16,26 @@ type pricedGenerator struct {
 }
 
 func withPricing(generator llm.Generator, info llm.ModelInfo) llm.Generator {
-	if info.Cost == nil && info.Compatibility == nil && !info.Reasoning {
+	if info.Cost == nil && info.Compatibility == nil && !info.Reasoning && info.API == "" && info.ContextWindow == 0 && info.MaxOutputTokens == 0 {
 		return generator
 	}
+	return withPricingInfo(generator, info, generator.Info())
+}
+
+func withPricingInfo(generator llm.Generator, info, actual llm.ModelInfo) llm.Generator {
 	var cost *llm.ModelCost
 	if info.Cost != nil {
 		value := *info.Cost
 		value.Tiers = append([]llm.ModelCostTier(nil), info.Cost.Tiers...)
 		cost = &value
 	}
-	configured := generator.Info()
-	configured.Capabilities = append([]llm.Capability(nil), configured.Capabilities...)
+	configured := cloneModelInfo(actual)
+	configured.Capabilities = append([]llm.Capability(nil), info.Capabilities...)
+	if info.API != "" {
+		configured.API = info.API
+	}
+	configured.ContextWindow = info.ContextWindow
+	configured.MaxOutputTokens = info.MaxOutputTokens
 	configured.Reasoning = info.Reasoning
 	configured.Cost = cost
 	configured.Compatibility = cloneCompatibility(info.Compatibility)

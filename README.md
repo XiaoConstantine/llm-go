@@ -71,6 +71,21 @@ These helpers are opt-in and do not change provider defaults.
 Tool inputs use JSON Schema 2020-12 by default, support declared drafts and
 local references offline, and use Go/RE2-compatible patterns.
 
+### Custom protocols and dynamic catalogs
+
+`models.NewFactoryRegistry` creates an immutable registry containing the five
+built-in protocol factories plus caller registrations. `ProviderConfig.API`
+remains the default route when `ModelInfo.API` is empty; `AdditionalAPIs`
+explicitly enables mixed-protocol models for the same provider. Factories receive
+owned construction snapshots and an optional live credential resolver.
+
+`models.CatalogManager` keeps `Catalog` immutable while atomically publishing a
+static baseline plus validated provider overlays. `Refresh` restores persisted
+state before conditional fetches, supports ETag/Last-Modified, force and
+provider-selective refresh, and `NoNetwork` restore-only operation. `Available`
+uses `CredentialManager` and optional secret-free provider filters. Refreshes run
+only when called; the manager owns no permanent goroutines and needs no Close.
+
 ### Built-in provider profiles
 
 `models.BuiltinProvider` supplies the protocol and default endpoint for these

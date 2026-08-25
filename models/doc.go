@@ -5,7 +5,11 @@
 // llm.Generator values from llm.ModelInfo. Catalog stores immutable model
 // metadata, protocol compatibility, and optional per-million-token pricing
 // independently of credentials; resolved generators apply model compatibility
-// and attach category costs to usage. BuiltinCatalog provides generated,
+// and attach category costs to usage. FactoryRegistry supports immutable custom
+// API registration and explicitly configured mixed-protocol provider routes.
+// CatalogManager atomically publishes validated immutable snapshots from static
+// baselines, persisted provider overlays, and conditional provider sources.
+// BuiltinCatalog provides generated,
 // validated metadata from the versioned source in models/catalogsource.
 // Built-in profiles configure OpenRouter, Groq, DeepSeek, xAI, Cerebras, and
 // Fireworks endpoints and protocol compatibility. CredentialStore defines
