@@ -2,25 +2,48 @@ package codex
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
+	"github.com/gorilla/websocket"
 	openaioption "github.com/openai/openai-go/v3/option"
 	openairesponses "github.com/openai/openai-go/v3/responses"
 )
 
 const (
-	defaultProvider      = "openai-codex"
-	defaultBaseURL       = "https://chatgpt.com/backend-api"
-	defaultOriginator    = "llm-go"
-	maxErrorBodyBytes    = 1 << 20
-	maxProviderDataBytes = 16 << 20
+	defaultProvider              = "openai-codex"
+	defaultBaseURL               = "https://chatgpt.com/backend-api"
+	defaultOriginator            = "llm-go"
+	maxErrorBodyBytes            = 1 << 20
+	maxProviderDataBytes         = 16 << 20
+	defaultWebSocketIdleLifetime = 5 * time.Minute
+	defaultWebSocketMaximumAge   = 55 * time.Minute
+	defaultWebSocketConnectTime  = 15 * time.Second
+	defaultWebSocketMaxSessions  = 64
+)
+
+// TransportMode selects the Codex Responses transport.
+type TransportMode string
+
+const (
+	// TransportSSE preserves the original HTTP event-stream transport and is the default.
+	TransportSSE TransportMode = "sse"
+	// TransportWebSocket uses WebSocket but always sends full canonical context.
+	TransportWebSocket TransportMode = "websocket"
+	// TransportWebSocketCached enables verified connection-scoped continuation deltas.
+	TransportWebSocketCached TransportMode = "websocket-cached"
+	// TransportAuto uses cached WebSocket and falls back to SSE only when the
+	// WebSocket connection cannot be established before response.create is sent.
+	TransportAuto TransportMode = "auto"
 )
 
 // Credentials authorize one request against a ChatGPT subscription. AccountID
@@ -47,12 +70,16 @@ type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (C
 // configured model into optional protocol features; generation is always
 // enabled, while streaming, tools, vision, and audio must be listed explicitly.
 // Audio capability is model-gated and enables user-message WAV, MP3/MPEG,
-// M4A/MP4, WebM, and Ogg inputs up to 50 MiB each. A non-nil HTTPClient and
-// custom Headers are used as supplied without being mutated.
+// M4A/MP4, WebM, and Ogg inputs up to 50 MiB each. HTTPClient owns the SSE
+// transport. WebSocketDialer, when non-nil, explicitly owns WebSocket dialing;
+// otherwise Client best-effort copies settings from a concrete *http.Transport
+// and cannot adapt arbitrary RoundTripper wrappers. Custom Headers are copied.
 // Authorization, ChatGPT-Account-ID, OpenAI-Beta, Originator, Content-Type,
-// Accept, and User-Agent are owned by Client and overwrite custom values. A nil
-// HTTPClient uses [http.DefaultClient], so callers should use context deadlines
-// when an unbounded request is not acceptable.
+// Accept, and User-Agent are owned by Client and overwrite custom values. SSE
+// uses [http.DefaultClient] when HTTPClient is nil, so callers should use context
+// deadlines when an unbounded request is not acceptable. Transport defaults to SSE,
+// preserving the original behavior. Strict WebSocket modes never fall back to
+// SSE; Auto falls back only for a pre-send connection failure.
 type Config struct {
 	Provider           string
 	Model              string
@@ -62,13 +89,31 @@ type Config struct {
 	ResolveCredentials CredentialResolver
 	BaseURL            string
 	HTTPClient         *http.Client
-	Headers            http.Header
-	Originator         string
+	// WebSocketDialer overrides WebSocket dialing. Client copies the dialer,
+	// its TLS configuration, and ordinary option slices during construction.
+	// Callback, pool, certificate, key, root, cache, and jar objects referenced
+	// by the dialer must be concurrency-safe and must not be mutated during use.
+	WebSocketDialer *websocket.Dialer
+	Headers         http.Header
+	Originator      string
+	// Transport defaults to TransportSSE.
+	Transport TransportMode
+	// WebSocketIdleTime bounds how long an unused session socket is retained.
+	// Zero selects five minutes.
+	WebSocketIdleTime time.Duration
+	// WebSocketMaxAge bounds total session socket lifetime. Zero selects 55 minutes.
+	WebSocketMaxAge time.Duration
+	// WebSocketConnectTimeout bounds the handshake. Zero selects 15 seconds.
+	WebSocketConnectTimeout time.Duration
+	// WebSocketMaxSessions bounds retained session sockets. Zero selects 64;
+	// negative values are invalid. Busy sockets are never evicted.
+	WebSocketMaxSessions int
 }
 
-// Client is an immutable ChatGPT subscription Codex client. It is safe for
-// concurrent use when its credential resolver and HTTP client are safe for
-// concurrent use.
+// Client is a concurrency-safe ChatGPT subscription Codex client. Its
+// configuration is immutable; WebSocket modes maintain an internal session
+// connection cache. The credential resolver and HTTP client must also be safe
+// for concurrent use.
 type Client struct {
 	provider                string
 	model                   string
@@ -79,6 +124,14 @@ type Client struct {
 	responses               openairesponses.ResponseService
 	compatibility           llm.OpenAIResponsesCompatibility
 	compatibilityConfigured bool
+	transport               TransportMode
+	webSocketURL            string
+	webSocketIdleTime       time.Duration
+	webSocketMaxAge         time.Duration
+	webSocketConnectTimeout time.Duration
+	webSocketMaxSessions    int
+	webSocketDialer         websocket.Dialer
+	webSockets              webSocketCache
 }
 
 // New constructs a Client from config using subscription protocol defaults.
@@ -126,11 +179,17 @@ func newClient(config Config, configuredCompatibility *llm.OpenAIResponsesCompat
 	if err != nil {
 		return nil, err
 	}
-
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	transport, idleTime, maxAge, connectTimeout, maxSessions, err := configureTransport(config)
+	if err != nil {
+		return nil, err
 	}
+	webSocketURL, err := responseWebSocketURL(sdkBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	webSocketDialer := configureWebSocketDialer(config.HTTPClient, config.WebSocketDialer)
+
+	httpClient := requestmeta.WrapClient(config.HTTPClient)
 	originator := strings.TrimSpace(config.Originator)
 	if originator == "" {
 		originator = defaultOriginator
@@ -145,6 +204,14 @@ func newClient(config Config, configuredCompatibility *llm.OpenAIResponsesCompat
 		originator:              originator,
 		compatibility:           compatibility,
 		compatibilityConfigured: configuredCompatibility != nil,
+		transport:               transport,
+		webSocketURL:            webSocketURL,
+		webSocketIdleTime:       idleTime,
+		webSocketMaxAge:         maxAge,
+		webSocketConnectTimeout: connectTimeout,
+		webSocketMaxSessions:    maxSessions,
+		webSocketDialer:         webSocketDialer,
+		webSockets:              newWebSocketCache(),
 		responses: openairesponses.NewResponseService(
 			openaioption.WithMaxRetries(0),
 			openaioption.WithHTTPClient(httpClient),
@@ -232,10 +299,100 @@ func responseServiceBaseURL(raw string) (string, error) {
 	return parsed.String(), nil
 }
 
+func configureTransport(config Config) (TransportMode, time.Duration, time.Duration, time.Duration, int, error) {
+	transport := config.Transport
+	if transport == "" {
+		transport = TransportSSE
+	}
+	switch transport {
+	case TransportSSE, TransportWebSocket, TransportWebSocketCached, TransportAuto:
+	default:
+		return "", 0, 0, 0, 0, configError("transport %q is not supported", transport)
+	}
+	idleTime := config.WebSocketIdleTime
+	if idleTime == 0 {
+		idleTime = defaultWebSocketIdleLifetime
+	}
+	maxAge := config.WebSocketMaxAge
+	if maxAge == 0 {
+		maxAge = defaultWebSocketMaximumAge
+	}
+	connectTimeout := config.WebSocketConnectTimeout
+	if connectTimeout == 0 {
+		connectTimeout = defaultWebSocketConnectTime
+	}
+	if idleTime < 0 || maxAge < 0 || connectTimeout < 0 {
+		return "", 0, 0, 0, 0, configError("WebSocket durations must not be negative")
+	}
+	maxSessions := config.WebSocketMaxSessions
+	if maxSessions < 0 {
+		return "", 0, 0, 0, 0, configError("WebSocketMaxSessions must not be negative")
+	}
+	if maxSessions == 0 {
+		maxSessions = defaultWebSocketMaxSessions
+	}
+	return transport, idleTime, maxAge, connectTimeout, maxSessions, nil
+}
+
+func responseWebSocketURL(serviceBaseURL string) (string, error) {
+	parsed, err := url.Parse(serviceBaseURL)
+	if err != nil {
+		return "", configError("invalid WebSocket base URL: %w", err)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/responses"
+	switch parsed.Scheme {
+	case "https":
+		parsed.Scheme = "wss"
+	case "http":
+		parsed.Scheme = "ws"
+	default:
+		return "", configError("WebSocket base URL scheme must be http or https")
+	}
+	return parsed.String(), nil
+}
+
+func configureWebSocketDialer(client *http.Client, configured *websocket.Dialer) websocket.Dialer {
+	if configured != nil {
+		dialer := *configured
+		if configured.TLSClientConfig != nil {
+			dialer.TLSClientConfig = cloneTLSConfig(configured.TLSClientConfig)
+		}
+		dialer.Subprotocols = append([]string(nil), configured.Subprotocols...)
+		return dialer
+	}
+	dialer := *websocket.DefaultDialer
+	if client == nil {
+		return dialer
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		return dialer
+	}
+	dialer.Proxy = transport.Proxy
+	dialer.NetDialContext = transport.DialContext
+	dialer.TLSClientConfig = nil
+	if transport.TLSClientConfig != nil {
+		dialer.TLSClientConfig = cloneTLSConfig(transport.TLSClientConfig)
+	}
+	return dialer
+}
+
+func cloneTLSConfig(config *tls.Config) *tls.Config {
+	if config == nil {
+		return nil
+	}
+	clone := config.Clone()
+	clone.NextProtos = append([]string(nil), config.NextProtos...)
+	clone.CipherSuites = append([]uint16(nil), config.CipherSuites...)
+	clone.CurvePreferences = append([]tls.CurveID(nil), config.CurvePreferences...)
+	return clone
+}
+
 func cloneHeader(header http.Header) http.Header {
 	clone := make(http.Header, len(header))
 	for key, values := range header {
-		clone[key] = append([]string(nil), values...)
+		canonical := http.CanonicalHeaderKey(key)
+		clone[canonical] = append(clone[canonical], values...)
 	}
 	return clone
 }
@@ -246,6 +403,7 @@ func (c *Client) Info() llm.ModelInfo {
 	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
+		API:          llm.APIOpenAICodexResponses,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
 	if c.compatibilityConfigured {
@@ -275,6 +433,9 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err != nil {
 		return nil, err
 	}
+	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err != nil {
+		return nil, malformedResponse("generate", "validate tool call arguments: %v", err)
+	}
 	return response, nil
 }
 
@@ -288,9 +449,10 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if err != nil {
 		return nil, err
 	}
-	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
+	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return relabelProviderError(c.produce(producerCtx, "stream", params, request.SessionID, emit), c.provider)
-	}), nil
+	})
+	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
 }
 
 func (c *Client) prepare(ctx context.Context, op string, request llm.Request, requireStreaming bool) (openairesponses.ResponseNewParams, error) {
@@ -311,7 +473,7 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 	}
 	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
 		for index, tool := range request.Tools {
-			if tool.Strict {
+			if tool.RequiresStrict() {
 				return openairesponses.ResponseNewParams{}, unsupported(op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
 			}
 		}
@@ -495,6 +657,9 @@ func contextErr(ctx context.Context) error {
 func relabelProviderError(err error, provider string) error {
 	if err == nil || provider == defaultProvider {
 		return err
+	}
+	if connectFailure, ok := err.(*webSocketConnectFailure); ok {
+		return &webSocketConnectFailure{err: relabelProviderError(connectFailure.err, provider)}
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		causes := joined.Unwrap()

@@ -50,12 +50,27 @@ type Stream = ssestream.Stream[openairesponses.ResponseStreamEventUnion]
 // OpenStream starts one Responses API event stream.
 type OpenStream func(context.Context, string, openairesponses.ResponseNewParams) (*Stream, error)
 
+// EventStream is a decoded Responses event source. The OpenAI SSE stream and
+// provider-specific transports such as Codex WebSocket implement this contract.
+type EventStream interface {
+	Next() bool
+	Current() openairesponses.ResponseStreamEventUnion
+	Err() error
+	Close() error
+}
+
 // Produce decodes one Responses API event stream into neutral chunks.
 func (c Codec) Produce(ctx context.Context, op, model string, params openairesponses.ResponseNewParams, open OpenStream, emit internalstream.Emit) error {
 	stream, err := open(ctx, op, params)
 	if err != nil {
 		return err
 	}
+	return c.ProduceEvents(ctx, op, model, params, stream, emit)
+}
+
+// ProduceEvents decodes an already-open decoded Responses event source through
+// the same validation and chunk state machine used by SSE.
+func (c Codec) ProduceEvents(ctx context.Context, op, model string, params openairesponses.ResponseNewParams, stream EventStream, emit internalstream.Emit) error {
 	state := streamState{
 		codec:         c,
 		op:            op,
@@ -88,7 +103,7 @@ func (c Codec) Produce(ctx context.Context, op, model string, params openairespo
 			return c.closeStream(op, stream, nil)
 		}
 	}
-	err = stream.Err()
+	err := stream.Err()
 	if contextErr := ContextError(ctx); contextErr != nil {
 		err = contextErr
 	} else if err != nil {
@@ -100,6 +115,10 @@ func (c Codec) Produce(ctx context.Context, op, model string, params openairespo
 }
 
 func (c Codec) streamReadError(op string, err error) error {
+	var modelErr *llm.Error
+	if errors.As(err, &modelErr) {
+		return err
+	}
 	var providerEvent *ssestream.StreamError
 	if errors.As(err, &providerEvent) {
 		return c.eventError(op, providerEvent.Event.Data)
@@ -112,7 +131,7 @@ func (c Codec) streamReadError(op string, err error) error {
 	return c.transportError(op, fmt.Errorf("read event stream: %w", err))
 }
 
-func (c Codec) closeStream(op string, stream *Stream, err error) error {
+func (c Codec) closeStream(op string, stream EventStream, err error) error {
 	if closeErr := stream.Close(); closeErr != nil {
 		closeErr = c.transportError(op, fmt.Errorf("close event stream: %w", closeErr))
 		if err != nil {

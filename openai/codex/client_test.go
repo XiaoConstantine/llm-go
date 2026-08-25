@@ -33,6 +33,9 @@ func TestNewValidatesConfig(t *testing.T) {
 		{name: "relative URL", config: Config{Model: "model", AccessToken: testAccessToken("account"), BaseURL: "/api"}, want: "scheme must be http or https"},
 		{name: "URL credentials", config: Config{Model: "model", AccessToken: testAccessToken("account"), BaseURL: "https://user@example.com"}, want: "user information"},
 		{name: "URL query", config: Config{Model: "model", AccessToken: testAccessToken("account"), BaseURL: "https://example.com?x=1"}, want: "query or fragment"},
+		{name: "invalid transport", config: Config{Model: "model", AccessToken: testAccessToken("account"), Transport: "other"}, want: "transport"},
+		{name: "negative WebSocket duration", config: Config{Model: "model", AccessToken: testAccessToken("account"), WebSocketIdleTime: -time.Second}, want: "must not be negative"},
+		{name: "negative WebSocket sessions", config: Config{Model: "model", AccessToken: testAccessToken("account"), WebSocketMaxSessions: -1}, want: "WebSocketMaxSessions"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

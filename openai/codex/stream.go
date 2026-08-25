@@ -27,6 +27,21 @@ type APIError = internalresponses.APIError
 type sdkResponseStream = ssestream.Stream[openairesponses.ResponseStreamEventUnion]
 
 func (c *Client) produce(ctx context.Context, op string, params openairesponses.ResponseNewParams, sessionID string, emit internalstream.Emit) error {
+	if c.transport == TransportSSE {
+		return c.produceSSE(ctx, op, params, sessionID, emit)
+	}
+	err := c.produceWebSocket(ctx, op, params, sessionID, emit)
+	if c.transport != TransportAuto || err == nil {
+		return err
+	}
+	var connectFailure *webSocketConnectFailure
+	if !errors.As(err, &connectFailure) || contextErr(ctx) != nil {
+		return err
+	}
+	return c.produceSSE(ctx, op, params, sessionID, emit)
+}
+
+func (c *Client) produceSSE(ctx context.Context, op string, params openairesponses.ResponseNewParams, sessionID string, emit internalstream.Emit) error {
 	open := func(ctx context.Context, op string, params openairesponses.ResponseNewParams) (*sdkResponseStream, error) {
 		return c.openStream(ctx, op, params, sessionID)
 	}
@@ -193,6 +208,7 @@ func responseError(op string, response *http.Response, body []byte, tooLarge boo
 		Provider:   defaultProvider,
 		HTTPStatus: response.StatusCode,
 		RetryAfter: retryAfter(response.Header.Get("Retry-After")),
+		Retryable:  retryableHint(response.Header.Get("X-Should-Retry")),
 		Err:        apiErr,
 	}
 }
@@ -265,6 +281,19 @@ func isContextLimitError(apiErr *APIError) bool {
 	return strings.Contains(detail, "context_length_exceeded") ||
 		strings.Contains(detail, "maximum context length") ||
 		strings.Contains(detail, "context window")
+}
+
+func retryableHint(value string) *bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true":
+		value := true
+		return &value
+	case "false":
+		value := false
+		return &value
+	default:
+		return nil
+	}
 }
 
 func retryAfter(value string) time.Duration {

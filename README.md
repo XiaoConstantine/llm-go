@@ -56,6 +56,23 @@ session-affinity controls where a provider mapping is verified. Both may be set;
 `CacheRetentionNone` disables cache-key emission while preserving session
 affinity. Unsupported mappings fail before provider I/O.
 
+### Codex transport modes
+
+`openai/codex.Config.Transport` supports these modes; the default remains SSE.
+
+| Mode | Behavior |
+| --- | --- |
+| `TransportSSE` | Original HTTP event stream |
+| `TransportWebSocket` | Transient socket with full context; never falls back to SSE |
+| `TransportWebSocketCached` | Session socket with verified incremental context; never falls back to SSE |
+| `TransportAuto` | Cached WebSocket when possible; SSE fallback only when connect or handshake fails before `response.create` |
+
+Cached sockets require `Request.SessionID`, are isolated by client, session,
+account, and credential. `WebSocketMaxSessions` defaults to 64; busy overflow and
+requests with per-attempt headers use transient sockets. Use `WebSocketDialer`
+for WebSocket-specific proxy, mTLS, or custom dialing. `Client.Close` is
+idempotent and closes all owned sockets and timers.
+
 ### Portable orchestration helpers
 
 These helpers are opt-in and do not change provider defaults.
