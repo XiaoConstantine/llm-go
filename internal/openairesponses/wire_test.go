@@ -49,3 +49,22 @@ func TestExplicitPromptCacheWireSemantics(t *testing.T) {
 		})
 	}
 }
+
+func TestPreferredToolStrictnessFollowsRequestOptions(t *testing.T) {
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "tool", InputSchema: []byte(`{"type":"object"}`), Strictness: llm.ToolStrictPrefer}}}
+	codec := Codec{Provider: "provider"}
+	unsupported, err := codec.Request("generate", "model", request, RequestOptions{StrictTools: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsupported.Tools[0].OfFunction.Strict.Value {
+		t.Fatal("unsupported prefer emitted strict")
+	}
+	supported, err := codec.Request("generate", "model", request, RequestOptions{StrictTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !supported.Tools[0].OfFunction.Strict.Value {
+		t.Fatal("supported prefer omitted strict")
+	}
+}

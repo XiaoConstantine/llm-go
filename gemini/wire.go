@@ -227,7 +227,7 @@ func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.Gene
 				Description:          tool.Description,
 				ParametersJsonSchema: schema,
 			}
-			strict = strict || tool.Strict
+			strict = strict || tool.StrictEnabled(true)
 		}
 		generationConfig.Tools = []*genai.Tool{{FunctionDeclarations: declarations}}
 		if strict {

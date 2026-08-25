@@ -35,6 +35,7 @@ type RequestOptions struct {
 	EncryptedReasoning  bool
 	JSONObjectOutput    bool
 	NamedToolChoice     bool
+	StrictTools         bool
 	ExplicitPromptCache bool
 	InputAudio          *InputAudioOptions
 }
@@ -116,7 +117,7 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		if err := jsonv2.Unmarshal(tool.InputSchema, &schema); err != nil {
 			return openairesponses.ResponseNewParams{}, c.requestError(op, "decode tool %d input schema: %v", i, err)
 		}
-		wireTool := openairesponses.ToolParamOfFunction(tool.Name, schema, tool.Strict)
+		wireTool := openairesponses.ToolParamOfFunction(tool.Name, schema, tool.StrictEnabled(options.StrictTools))
 		wireTool.OfFunction.Description = param.NewOpt(tool.Description)
 		tools = append(tools, wireTool)
 	}

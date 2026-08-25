@@ -69,13 +69,15 @@ func (k ErrorKind) String() string {
 // source when known. HTTPStatus is zero when unavailable; provider-native codes
 // remain available through Err. RetryAfter is positive when a provider advised
 // a delay. Err retains the underlying cause, including context cancellation and
-// deadline errors.
+// deadline errors. Retryable is nil when the provider supplied no explicit
+// retry hint; non-nil true or false takes precedence over generic classification.
 type Error struct {
 	Kind       ErrorKind
 	Op         string
 	Provider   string
 	HTTPStatus int
 	RetryAfter time.Duration
+	Retryable  *bool
 	Err        error
 }
 

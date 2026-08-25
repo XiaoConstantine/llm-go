@@ -90,6 +90,14 @@ func TestRequestValidatesToolChoiceAndCacheControls(t *testing.T) {
 	}
 }
 
+func TestModelInfoIncludesProtocolAndTokenLimits(t *testing.T) {
+	model := Model{Provider: "provider", ID: "model", API: APIOpenAIResponses, ContextWindow: 128_000, MaxOutputTokens: 16_384}
+	info := model.Info()
+	if info.API != model.API || info.ContextWindow != model.ContextWindow || info.MaxOutputTokens != model.MaxOutputTokens {
+		t.Fatalf("Model.Info() = %#v", info)
+	}
+}
+
 func TestResponseText(t *testing.T) {
 	response := Response{Message: Message{Content: []Part{{Text: "ok"}}}}
 

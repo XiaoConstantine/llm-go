@@ -18,6 +18,7 @@ import (
 	jsonv2 "encoding/json/v2"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaisdk "github.com/openai/openai-go/v3"
 	openaioption "github.com/openai/openai-go/v3/option"
@@ -183,10 +184,7 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 	}
 	headers.Set("Content-Type", "application/json")
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := requestmeta.WrapClient(config.HTTPClient)
 
 	// NewClient reads OPENAI_* variables and v3.52.0 exposes no public option
 	// for disabling those defaults. Execute only needs Options, so construct an
@@ -272,6 +270,7 @@ func (c *Client) Info() llm.ModelInfo {
 	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
+		API:          llm.APIOpenAIChatCompletions,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
 	if c.compatibilityConfigured {
@@ -342,6 +341,9 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
+	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err != nil {
+		return nil, malformedResponse("validate tool call arguments: %v", err)
+	}
 	return response, nil
 }
 
@@ -385,9 +387,10 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	}
 	format := request.ResponseFormat
 	declaredTools := declaredToolNames(request.Tools)
-	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
+	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produceStream(producerCtx, format, declaredTools, payload, request.SessionID, emit)
-	}), nil
+	})
+	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
 }
 
 func (c *Client) executeRaw(ctx context.Context, path string, payload []byte, headers http.Header) (*http.Response, error, error) {
@@ -505,6 +508,7 @@ func responseError(op string, response *http.Response, body []byte, tooLarge boo
 		Provider:   "openai",
 		HTTPStatus: response.StatusCode,
 		RetryAfter: retryAfter(response.Header.Get("Retry-After")),
+		Retryable:  retryableHint(response.Header.Get("X-Should-Retry")),
 		Err:        apiErr,
 	}
 }
@@ -581,6 +585,19 @@ func isContextLimitError(apiErr *APIError) bool {
 		strings.Contains(detail, "context window")
 }
 
+func retryableHint(value string) *bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true":
+		value := true
+		return &value
+	case "false":
+		value := false
+		return &value
+	default:
+		return nil
+	}
+}
+
 func retryAfter(value string) time.Duration {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -612,7 +629,7 @@ func (c *Client) checkCompatibility(op string, request llm.Request) error {
 	}
 	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
 		for index, tool := range request.Tools {
-			if tool.Strict {
+			if tool.RequiresStrict() {
 				return unsupported(op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
 			}
 		}

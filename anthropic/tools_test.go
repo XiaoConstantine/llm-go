@@ -233,7 +233,7 @@ func TestGenerateToolPreflightAndNoIO(t *testing.T) {
 		{name: "long definition name", request: llm.Request{Messages: textRequest("hello").Messages, Tools: []llm.Tool{{Name: strings.Repeat("a", 65), InputSchema: []byte(`{}`)}}}, contains: "must contain 1-64"},
 		{name: "boolean schema", request: llm.Request{Messages: textRequest("hello").Messages, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`true`)}}}, contains: "must be a JSON object"},
 		{name: "missing schema type", request: llm.Request{Messages: textRequest("hello").Messages, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{}`)}}}, contains: `must declare top-level type "object"`},
-		{name: "null schema type", request: llm.Request{Messages: textRequest("hello").Messages, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":null}`)}}}, contains: `must declare top-level type "object"`},
+		{name: "null schema type", request: llm.Request{Messages: textRequest("hello").Messages, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":null}`)}}}, contains: `not valid against metaschema`},
 		{name: "non-object schema type", request: llm.Request{Messages: textRequest("hello").Messages, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":"array"}`)}}}, contains: `must declare top-level type "object"`},
 		{name: "undeclared history", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}, {Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{toolCall("call", "missing")}}, {Role: llm.RoleTool, ToolResults: []llm.ToolResult{toolResult("call", "missing")}}}, Tools: []llm.Tool{validTool}}, contains: "undeclared tool"},
 		{name: "non-object arguments", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}, {Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "lookup", Arguments: []byte(`[]`)}}}, {Role: llm.RoleTool, ToolResults: []llm.ToolResult{toolResult("call", "lookup")}}}, Tools: []llm.Tool{validTool}}, contains: "arguments must be a JSON object"},
@@ -246,7 +246,11 @@ func TestGenerateToolPreflightAndNoIO(t *testing.T) {
 			if response != nil {
 				t.Fatalf("Generate() response = %#v", response)
 			}
-			requireModelError(t, err, llm.KindInvalidRequest, "generate")
+			op := "generate"
+			if test.name == "null schema type" {
+				op = "validate"
+			}
+			requireModelError(t, err, llm.KindInvalidRequest, op)
 			if !strings.Contains(err.Error(), test.contains) {
 				t.Fatalf("Generate() error = %v, want %q", err, test.contains)
 			}
@@ -368,4 +372,22 @@ func newStaticToolClient(t *testing.T, body string) *Client {
 		t.Fatalf("New() error = %v", err)
 	}
 	return client
+}
+
+func TestPreferredToolStrictnessFollowsCompatibility(t *testing.T) {
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "tool", InputSchema: []byte(`{"type":"object"}`), Strictness: llm.ToolStrictPrefer}}}
+	wire, _, err := requestToWireWithCompatibility("generate", "model", 1024, request, llm.AnthropicCompatibility{StrictTools: llm.CompatibilityDisabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Tools[0].Strict {
+		t.Fatal("unsupported prefer emitted strict")
+	}
+	wire, _, err = requestToWireWithCompatibility("generate", "model", 1024, request, llm.AnthropicCompatibility{StrictTools: llm.CompatibilityEnabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wire.Tools[0].Strict {
+		t.Fatal("supported prefer omitted strict")
+	}
 }

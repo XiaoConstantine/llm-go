@@ -113,6 +113,14 @@ func validateTools(tools []Tool) error {
 			return fmt.Errorf("tools[%d].name %q is duplicated", i, tool.Name)
 		}
 		names[tool.Name] = struct{}{}
+		switch tool.Strictness {
+		case ToolStrictDefault, ToolStrictPrefer, ToolStrictRequire:
+		default:
+			return fmt.Errorf("tools[%d].strictness %q is invalid", i, tool.Strictness)
+		}
+		if tool.Strict && tool.Strictness != ToolStrictDefault {
+			return fmt.Errorf("tools[%d] cannot set both strict and strictness", i)
+		}
 		if err := validateJSONSchema(tool.InputSchema); err != nil {
 			return fmt.Errorf("tools[%d].input schema: %w", i, err)
 		}
@@ -324,18 +332,6 @@ func validateJSON(value []byte) error {
 		return fmt.Errorf("must contain strict JSON")
 	}
 	return nil
-}
-
-func validateJSONSchema(schema []byte) error {
-	if err := validateJSON(schema); err != nil {
-		return err
-	}
-	switch jsontext.Value(schema).Kind() {
-	case jsontext.KindBeginObject, jsontext.KindTrue, jsontext.KindFalse:
-		return nil
-	default:
-		return fmt.Errorf("must contain a JSON Schema object or boolean")
-	}
 }
 
 type pendingToolCalls struct {

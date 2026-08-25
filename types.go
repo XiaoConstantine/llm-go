@@ -77,15 +77,41 @@ func (m Message) Text() string {
 	return b.String()
 }
 
+// ToolStrictness controls provider-side JSON Schema constrained generation.
+// The zero value preserves legacy Tool.Strict behavior. Prefer enables provider
+// strictness when supported, while Require fails before I/O when unsupported.
+type ToolStrictness string
+
+const (
+	ToolStrictDefault ToolStrictness = ""
+	ToolStrictPrefer  ToolStrictness = "prefer"
+	ToolStrictRequire ToolStrictness = "require"
+)
+
 // Tool describes a function that a model may call. InputSchema is a JSON
-// Schema describing the function arguments. Strict requires generated
-// arguments to conform to InputSchema. An implementation that cannot enforce
-// strict schemas must return an error instead of silently weakening the request.
+// Schema describing the function arguments; completed calls are always checked
+// locally. Schemas default to draft 2020-12, may declare any supported standard
+// draft, and may use only references resolved within that schema. Strict is the
+// legacy require-strict flag. Strictness provides an
+// explicit prefer/require policy; setting both Strict and Strictness is invalid.
 type Tool struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
 	Strict      bool
+	Strictness  ToolStrictness
+}
+
+// RequiresStrict reports whether unsupported provider-side strict generation
+// must fail before I/O.
+func (t Tool) RequiresStrict() bool {
+	return t.Strict || t.Strictness == ToolStrictRequire
+}
+
+// StrictEnabled reports whether strictness should be sent to a provider with
+// the supplied capability.
+func (t Tool) StrictEnabled(supported bool) bool {
+	return supported && (t.Strict || t.Strictness == ToolStrictPrefer || t.Strictness == ToolStrictRequire)
 }
 
 // ToolCall is a tool invocation requested by a model. Arguments contains one
@@ -290,16 +316,20 @@ type ModelCostTier struct {
 	CacheWrite       float64
 }
 
-// ModelInfo describes a configured model. Reasoning reports support for
-// explicit reasoning controls. Cost and Compatibility are nil when pricing or
-// protocol compatibility metadata is unknown.
+// ModelInfo describes a configured model. API identifies its wire protocol.
+// ContextWindow and MaxOutputTokens are zero when unknown. Reasoning reports
+// support for explicit reasoning controls. Cost and Compatibility are nil when
+// pricing or protocol compatibility metadata is unknown.
 type ModelInfo struct {
-	Provider      string
-	Model         string
-	Capabilities  []Capability
-	Reasoning     bool
-	Cost          *ModelCost
-	Compatibility *ModelCompatibility
+	Provider        string
+	Model           string
+	API             API
+	Capabilities    []Capability
+	ContextWindow   int
+	MaxOutputTokens int
+	Reasoning       bool
+	Cost            *ModelCost
+	Compatibility   *ModelCompatibility
 }
 
 // API identifies a provider wire protocol. Unknown nonempty values are valid so
@@ -335,11 +365,14 @@ type Model struct {
 // Generator. The returned capability slice is owned by the caller.
 func (m Model) Info() ModelInfo {
 	return ModelInfo{
-		Provider:      m.Provider,
-		Model:         m.ID,
-		Capabilities:  append([]Capability(nil), m.Capabilities...),
-		Reasoning:     m.Reasoning,
-		Cost:          cloneModelCost(m.Cost),
-		Compatibility: cloneModelCompatibility(m.Compatibility),
+		Provider:        m.Provider,
+		Model:           m.ID,
+		API:             m.API,
+		Capabilities:    append([]Capability(nil), m.Capabilities...),
+		ContextWindow:   m.ContextWindow,
+		MaxOutputTokens: m.MaxOutputTokens,
+		Reasoning:       m.Reasoning,
+		Cost:            cloneModelCost(m.Cost),
+		Compatibility:   cloneModelCompatibility(m.Compatibility),
 	}
 }

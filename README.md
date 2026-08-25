@@ -19,6 +19,9 @@ changing their conversation model.
 - Built-in provider profiles for OpenRouter, Groq, DeepSeek, xAI, Cerebras, and
   Fireworks
 - Concurrency-safe credential storage and coalesced OAuth token refresh
+- Opt-in bounded retries with pre-output-only stream retry and safe attempt hooks
+- Stream collection, completed tool-schema validation, history transformation,
+  and pluggable model-aware token budgeting
 - Caller-owned HTTP clients, headers, contexts, and returned data
 
 ## Install
@@ -52,6 +55,21 @@ model-dependent and preserved in `llm.Message.ProviderData`. `CacheRetention`,
 session-affinity controls where a provider mapping is verified. Both may be set;
 `CacheRetentionNone` disables cache-key emission while preserving session
 affinity. Unsupported mappings fail before provider I/O.
+
+### Portable orchestration helpers
+
+These helpers are opt-in and do not change provider defaults.
+
+| API | Purpose |
+| --- | --- |
+| `llm.WithRetry` | Bounded retries; streams retry only before their first chunk; attempt hooks may add validated headers |
+| `llm.Collect` | Closes and assembles a stream, preserves partial results, and validates completed tool calls |
+| `llm.Tool.Strictness` | Requests `prefer` or `require` constrained tool arguments while retaining legacy `Tool.Strict` behavior |
+| `llm.TransformHistory` | Returns an owned cross-model history plus warnings for lossy changes |
+| `llm.BudgetRequest` | Uses a caller-supplied token estimator and model limits to clamp an owned request copy |
+
+Tool inputs use JSON Schema 2020-12 by default, support declared drafts and
+local references offline, and use Go/RE2-compatible patterns.
 
 ### Built-in provider profiles
 

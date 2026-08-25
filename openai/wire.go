@@ -334,7 +334,7 @@ func newChatRequestFor(op, model string, request llm.Request, compatibility llm.
 				Name:        tool.Name,
 				Description: tool.Description,
 				Parameters:  append(json.RawMessage(nil), tool.InputSchema...),
-				Strict:      tool.Strict,
+				Strict:      tool.StrictEnabled(compatibility.StrictTools != llm.CompatibilityDisabled),
 			},
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"google.golang.org/genai"
 )
@@ -106,10 +107,7 @@ func New(config Config) (_ *Client, err error) {
 		return nil, configError("API version must be one path segment")
 	}
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := requestmeta.WrapClient(config.HTTPClient)
 	headers := config.Headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -159,6 +157,7 @@ func (c *Client) Info() llm.ModelInfo {
 	return llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
+		API:          llm.APIGeminiGenerateContent,
 		Capabilities: slices.Clone(c.capabilities),
 	}
 }
@@ -199,6 +198,9 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	}
 	if err := contextErr(ctx); err != nil {
 		return nil, err
+	}
+	if err := llm.ValidateToolCalls(request.Tools, converted.Message.ToolCalls); err != nil {
+		return nil, malformedResponseFor("generate", "validate tool call arguments: %v", err)
 	}
 	return converted, nil
 }
@@ -244,9 +246,10 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if err != nil {
 		return nil, err
 	}
-	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
+	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produceStream(producerCtx, request, contents, generationConfig, emit)
-	}), nil
+	})
+	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {

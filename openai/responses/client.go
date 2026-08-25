@@ -16,6 +16,7 @@ import (
 
 	llm "github.com/XiaoConstantine/llm-go"
 	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
+	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaioption "github.com/openai/openai-go/v3/option"
 	sdkresponses "github.com/openai/openai-go/v3/responses"
@@ -128,10 +129,7 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 			modelCompatibility.SessionAffinityFormat = llm.SessionAffinityOpenAI
 		}
 	}
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := requestmeta.WrapClient(config.HTTPClient)
 
 	sdkOptions := []openaioption.RequestOption{
 		openaioption.WithMaxRetries(0),
@@ -158,6 +156,7 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 			EncryptedReasoning:  encryptedReasoning,
 			JSONObjectOutput:    true,
 			NamedToolChoice:     true,
+			StrictTools:         modelCompatibility.StrictTools != llm.CompatibilityDisabled,
 			ExplicitPromptCache: modelCompatibility.ExplicitPromptCacheMode == llm.CompatibilityEnabled,
 		},
 		compatibility:           modelCompatibility,
@@ -220,6 +219,7 @@ func (c *Client) Info() llm.ModelInfo {
 	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
+		API:          llm.APIOpenAIResponses,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
 	if c.compatibilityConfigured {
@@ -243,6 +243,9 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (*llm.Respon
 	if err != nil {
 		return nil, err
 	}
+	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err != nil {
+		return nil, &llm.Error{Kind: llm.KindMalformedResponse, Op: "generate", Provider: c.provider, Err: fmt.Errorf("validate tool call arguments: %w", err)}
+	}
 	return response, nil
 }
 
@@ -253,9 +256,10 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 	if err != nil {
 		return nil, err
 	}
-	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
+	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produce(producerCtx, "stream", params, request.SessionID, emit)
-	}), nil
+	})
+	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
 }
 
 func (c *Client) prepare(ctx context.Context, op string, request llm.Request, requireStreaming bool) (sdkresponses.ResponseNewParams, error) {
@@ -276,7 +280,7 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 	}
 	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
 		for index, tool := range request.Tools {
-			if tool.Strict {
+			if tool.RequiresStrict() {
 				return sdkresponses.ResponseNewParams{}, unsupported(c.provider, op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
 			}
 		}
@@ -485,6 +489,7 @@ func (c *Client) classifySDKError(op string, err error) error {
 	providerErr := &llm.Error{Kind: kind, Op: op, Provider: c.provider, HTTPStatus: apiErr.StatusCode, Err: apiErr}
 	if apiErr.Response != nil {
 		providerErr.RetryAfter = retryAfter(apiErr.Response.Header.Get("Retry-After"))
+		providerErr.Retryable = retryableHint(apiErr.Response.Header.Get("X-Should-Retry"))
 	}
 	return providerErr
 }
@@ -505,6 +510,19 @@ func classifyStatus(status int, errorType, code, message string) llm.ErrorKind {
 		return llm.KindInvalidRequest
 	default:
 		return llm.KindProvider
+	}
+}
+
+func retryableHint(value string) *bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true":
+		value := true
+		return &value
+	case "false":
+		value := false
+		return &value
+	default:
+		return nil
 	}
 }
 

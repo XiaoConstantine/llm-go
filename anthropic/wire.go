@@ -246,7 +246,7 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 			Name:                tool.Name,
 			Description:         tool.Description,
 			InputSchema:         append(json.RawMessage(nil), tool.InputSchema...),
-			Strict:              tool.Strict,
+			Strict:              tool.StrictEnabled(compatibility.StrictTools != llm.CompatibilityDisabled),
 			EagerInputStreaming: compatibility.EagerToolInputStreaming != llm.CompatibilityDisabled,
 		}
 		if cache != nil && index == len(request.Tools)-1 && compatibility.CacheControlOnTools != llm.CompatibilityDisabled {

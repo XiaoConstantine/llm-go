@@ -78,6 +78,7 @@ func requestToWireWithCompatibility(op, model string, request llm.Request, compa
 		Subscription:       true,
 		ReasoningSummary:   true,
 		EncryptedReasoning: encryptedReasoning,
+		StrictTools:        compatibility.StrictTools != llm.CompatibilityDisabled,
 		InputAudio: &internalresponses.InputAudioOptions{
 			MaxDecodedBytes: maxAudioInputBytes,
 		},

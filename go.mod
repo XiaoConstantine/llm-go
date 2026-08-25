@@ -4,7 +4,9 @@ go 1.27.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.66.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/openai/openai-go/v3 v3.52.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	google.golang.org/genai v1.69.0
 )
 
@@ -18,7 +20,6 @@ require (
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/s2a-go v0.1.8 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect

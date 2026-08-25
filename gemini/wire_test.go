@@ -207,3 +207,14 @@ func TestToolChoiceBudgetAndImageToolResultWire(t *testing.T) {
 		t.Fatal("Gemini cache control unexpectedly succeeded")
 	}
 }
+
+func TestPreferredToolStrictnessUsesValidatedMode(t *testing.T) {
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "tool", InputSchema: []byte(`{"type":"object"}`), Strictness: llm.ToolStrictPrefer}}}
+	_, config, err := requestToSDK("generate", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ToolConfig == nil || config.ToolConfig.FunctionCallingConfig == nil || config.ToolConfig.FunctionCallingConfig.Mode != genai.FunctionCallingConfigModeValidated {
+		t.Fatalf("tool config = %#v", config.ToolConfig)
+	}
+}
