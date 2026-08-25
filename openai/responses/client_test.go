@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -91,6 +92,291 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 	}
 }
 
+func TestJSONCapabilityConfigurationAndInfoCopy(t *testing.T) {
+	client, err := New(Config{
+		Model: "json-model", APIKey: "key",
+		Capabilities: []llm.Capability{llm.CapabilityJSON, llm.CapabilityJSON},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	first := client.Info()
+	second := client.Info()
+	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityJSON}
+	if fmt.Sprint(first.Capabilities) != fmt.Sprint(want) {
+		t.Fatalf("Info().Capabilities = %v, want %v", first.Capabilities, want)
+	}
+	first.Capabilities[0] = llm.CapabilityAudio
+	if fmt.Sprint(second.Capabilities) != fmt.Sprint(want) {
+		t.Fatalf("Info returned aliased capabilities: %v", second.Capabilities)
+	}
+}
+
+func TestGenerateJSONModeUsesJSONObjectWireFormat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var payload map[string]any
+		if err := jsonv2.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode body: %v", err)
+			return
+		}
+		text, ok := payload["text"].(map[string]any)
+		if !ok || len(text) != 1 {
+			t.Errorf("text = %#v, want exact format object", payload["text"])
+		} else if format, ok := text["format"].(map[string]any); !ok || len(format) != 1 || format["type"] != "json_object" {
+			t.Errorf("text.format = %#v, want {type:json_object}", text["format"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, responseTextEvents(`{"value":1}`, `{"type":"response.completed","response":{"id":"resp_json","status":"completed","output":[]}}`)...)
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		Model: "json-model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityJSON},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	response, err := client.Generate(context.Background(), llm.Request{
+		Messages:       []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "JSON please"}}}},
+		ResponseFormat: llm.ResponseFormatJSON,
+	})
+	if err != nil || response == nil || response.Text() != `{"value":1}` || response.FinishReason != llm.FinishReasonStop {
+		t.Fatalf("Generate() = (%#v, %v)", response, err)
+	}
+}
+
+func TestJSONModeRequiresCapabilityBeforeIO(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityStreaming},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, ResponseFormat: llm.ResponseFormatJSON}
+	response, err := client.Generate(context.Background(), request)
+	if response != nil {
+		t.Fatalf("Generate() response = %#v, want nil", response)
+	}
+	requireResponseError(t, err, llm.KindUnsupported, "generate", "JSON capability")
+	stream, err := client.Stream(context.Background(), request)
+	if stream != nil {
+		t.Fatalf("Stream() = %#v, want nil", stream)
+	}
+	requireResponseError(t, err, llm.KindUnsupported, "stream", "JSON capability")
+	if calls.Load() != 0 {
+		t.Fatalf("HTTP calls = %d, want zero", calls.Load())
+	}
+}
+
+func TestGenerateJSONModeRejectsMalformedCompletedOutput(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		text string
+	}{
+		{name: "malformed", text: "{"},
+		{name: "trailing", text: `{} trailing`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSE(t, w, responseTextEvents(test.text, `{"type":"response.completed","response":{"status":"completed","output":[]}}`)...)
+			}))
+			defer server.Close()
+			client, err := New(Config{
+				Model: "json-model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+				Capabilities: []llm.Capability{llm.CapabilityJSON},
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			response, err := client.Generate(context.Background(), llm.Request{
+				Messages: []llm.Message{{Role: llm.RoleUser}}, ResponseFormat: llm.ResponseFormatJSON,
+			})
+			if response != nil {
+				t.Fatalf("Generate() response = %#v, want nil", response)
+			}
+			requireResponseError(t, err, llm.KindMalformedResponse, "generate", "not strict JSON")
+		})
+	}
+}
+
+func TestGenerateJSONModeSkipsValidationForRefusalIncompleteAndError(t *testing.T) {
+	t.Run("refusal", func(t *testing.T) {
+		events := []string{
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","content":[]}}`,
+			`{"type":"response.refusal.delta","output_index":0,"content_index":0,"item_id":"msg_1","delta":"cannot"}`,
+			`{"type":"response.refusal.done","output_index":0,"content_index":0,"item_id":"msg_1","refusal":"cannot"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}}`,
+			`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}]}}`,
+		}
+		response, err := generateJSONFromEvents(t, events)
+		if err != nil || response == nil || response.FinishReason != llm.FinishReasonStop {
+			t.Fatalf("Generate(refusal) = (%#v, %v)", response, err)
+		}
+	})
+
+	t.Run("incomplete", func(t *testing.T) {
+		events := responseTextEvents("not JSON", `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`)
+		response, err := generateJSONFromEvents(t, events)
+		if err != nil || response == nil || response.FinishReason != llm.FinishReasonLength {
+			t.Fatalf("Generate(incomplete) = (%#v, %v)", response, err)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		response, err := generateJSONFromEvents(t, []string{`{"type":"response.failed","response":{"error":{"type":"server_error","message":"failed"}}}`})
+		if response != nil {
+			t.Fatalf("Generate(error) response = %#v, want nil", response)
+		}
+		requireResponseError(t, err, llm.KindProvider, "generate", "failed")
+	})
+}
+
+func TestGenerateJSONModeRefusalCannotExemptMalformedText(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		events func() []string
+	}{
+		{
+			name: "fabricated terminal refusal",
+			events: func() []string {
+				return responseTextEvents("{", `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"unrelated","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}]}}`)
+			},
+		},
+		{
+			name: "completed item refusal",
+			events: func() []string {
+				events := responseTextEvents("{", `{"type":"response.completed","response":{"status":"completed","output":[]}}`)
+				events[3] = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}}`
+				return events
+			},
+		},
+		{
+			name: "invalid refusal content",
+			events: func() []string {
+				events := responseTextEvents("", `{"type":"response.completed","response":{"status":"completed","output":[]}}`)
+				events[3] = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal"}]}}`
+				return events
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := generateJSONFromEvents(t, test.events())
+			if response != nil {
+				t.Fatalf("Generate() response = %#v, want nil", response)
+			}
+			requireResponseError(t, err, llm.KindMalformedResponse, "generate", "not strict JSON")
+		})
+	}
+}
+
+func TestStreamJSONModeTerminalAndStickyBehavior(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		text                 string
+		malformed            bool
+		strayRefusal         bool
+		terminalRefusal      bool
+		completedItemRefusal bool
+		legitimateRefusal    bool
+	}{
+		{name: "valid", text: `{"value":1}`},
+		{name: "legitimate refusal only", legitimateRefusal: true},
+		{name: "malformed", text: "{", malformed: true},
+		{name: "trailing", text: `{} trailing`, malformed: true},
+		{name: "stray refusal cannot bypass validation", text: "{", malformed: true, strayRefusal: true},
+		{name: "terminal refusal cannot exempt malformed text", text: "{", malformed: true, terminalRefusal: true},
+		{name: "completed item refusal cannot exempt malformed text", text: "{", malformed: true, completedItemRefusal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				var events []string
+				if test.legitimateRefusal {
+					events = []string{
+						`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","content":[]}}`,
+						`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}}`,
+						`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}]}}`,
+					}
+				} else {
+					events = responseTextEvents(test.text, `{"type":"response.completed","response":{"status":"completed","output":[]}}`)
+				}
+				if test.strayRefusal {
+					events = append([]string{
+						events[0],
+						`{"type":"response.refusal.delta","output_index":0,"content_index":0,"item_id":"msg_1","delta":"cannot"}`,
+					}, events[1:]...)
+				}
+				if test.terminalRefusal {
+					events[len(events)-1] = `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"unrelated","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}]}}`
+				}
+				if test.completedItemRefusal {
+					events[len(events)-2] = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","content":[{"type":"refusal","refusal":"cannot"}]}}`
+				}
+				writeSSE(t, w, events...)
+			}))
+			defer server.Close()
+			client, err := New(Config{
+				Model: "json-model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityJSON},
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			stream, err := client.Stream(context.Background(), llm.Request{
+				Messages: []llm.Message{{Role: llm.RoleUser}}, ResponseFormat: llm.ResponseFormatJSON,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			var successfulTerminal bool
+			for {
+				chunk, recvErr := stream.Recv()
+				if recvErr != nil {
+					err = recvErr
+					break
+				}
+				successfulTerminal = successfulTerminal || chunk.FinishReason != ""
+				for _, event := range chunk.Events {
+					successfulTerminal = successfulTerminal || event.Kind == llm.StreamEventDone
+				}
+			}
+			if test.malformed {
+				requireResponseError(t, err, llm.KindMalformedResponse, "stream", "not strict JSON")
+				if successfulTerminal {
+					t.Fatal("Stream emitted a successful terminal chunk for malformed JSON")
+				}
+				_, sticky := stream.Recv()
+				if sticky != err {
+					t.Fatalf("sticky Recv() error = %v, want identical %v", sticky, err)
+				}
+			} else {
+				if !errors.Is(err, io.EOF) || !successfulTerminal {
+					t.Fatalf("Stream terminal = %v, successful terminal chunk = %t", err, successfulTerminal)
+				}
+				_, sticky := stream.Recv()
+				if !errors.Is(sticky, io.EOF) {
+					t.Fatalf("sticky Recv() error = %v, want EOF", sticky)
+				}
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestCompatibleResponsesStreamsRawReasoningAndRequestsEncryptedState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		body, err := io.ReadAll(request.Body)
@@ -163,6 +449,67 @@ func TestCompatibleResponsesStreamsRawReasoningAndRequestsEncryptedState(t *test
 	}
 	if events[2].Delta != "raw thought" || !strings.Contains(string(providerData), `"encrypted_content":"secret"`) {
 		t.Fatalf("raw reasoning events/provider data = (%#v, %s)", events, providerData)
+	}
+}
+
+func TestCompatibilityDisablesAutomaticEncryptedReasoning(t *testing.T) {
+	payloads := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var payload map[string]any
+		if err := jsonv2.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode body: %v", err)
+			return
+		}
+		payloads <- payload
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, writer, `{"type":"response.completed","response":{"id":"response","model":"gpt-5-test","status":"completed","output":[]}}`)
+	}))
+	defer server.Close()
+	client, err := NewWithCompatibility(Config{Model: "gpt-5-test", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client()},
+		&llm.OpenAIResponsesCompatibility{EncryptedReasoning: llm.CompatibilityDisabled})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error = %v", err)
+	}
+	if _, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, ReasoningEffort: llm.ReasoningEffortHigh}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	payload := <-payloads
+	if _, exists := payload["include"]; exists {
+		t.Fatalf("payload contains include: %#v", payload)
+	}
+}
+
+func TestClientEnforcesModelCompatibilityBeforeIO(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	client, err := NewWithCompatibility(Config{
+		Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityTools},
+	}, &llm.OpenAIResponsesCompatibility{StrictTools: llm.CompatibilityDisabled})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error = %v", err)
+	}
+	response, err := client.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser}},
+		Tools:    []llm.Tool{{Name: "tool", InputSchema: jsontext.Value(`{"type":"object"}`), Strict: true}},
+	})
+	if response != nil {
+		t.Fatalf("Generate() response = %#v, want nil", response)
+	}
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || modelErr.Op != "generate" {
+		t.Fatalf("Generate() error = %#v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want zero", calls.Load())
 	}
 }
 
@@ -356,6 +703,52 @@ func TestStreamRejectsInconsistentPartialToolArguments(t *testing.T) {
 	}
 }
 
+func TestAudioUnsupportedBeforeIO(t *testing.T) {
+	configured, err := New(Config{Model: "model", APIKey: "key", Capabilities: []llm.Capability{llm.CapabilityAudio}})
+	if configured != nil {
+		t.Fatalf("New(audio) client = %#v, want nil", configured)
+	}
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindInvalidRequest || modelErr.Op != "configure" {
+		t.Fatalf("New(audio) error = %#v", err)
+	}
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityStreaming},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{
+		Kind: llm.PartAudio, Data: []byte("audio"), MediaType: "audio/wav",
+	}}}}}
+	response, err := client.Generate(context.Background(), request)
+	if response != nil {
+		t.Fatalf("Generate() response = %#v, want nil", response)
+	}
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || modelErr.Op != "generate" ||
+		!strings.Contains(err.Error(), "does not support audio") {
+		t.Fatalf("Generate() error = %#v", err)
+	}
+	stream, err := client.Stream(context.Background(), request)
+	if stream != nil {
+		t.Fatalf("Stream() = %#v, want nil", stream)
+	}
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || modelErr.Op != "stream" ||
+		!strings.Contains(err.Error(), "does not support audio") {
+		t.Fatalf("Stream() error = %#v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("HTTP calls = %d, want zero", calls.Load())
+	}
+}
+
 func TestNewRequiresAPIKey(t *testing.T) {
 	client, err := New(Config{Model: "gpt-5.6-test"})
 	if client != nil || err == nil {
@@ -436,6 +829,49 @@ func TestStreamRejectsDuplicateToolCallIDs(t *testing.T) {
 	if !errors.As(err, &responseErr) || responseErr.Kind != llm.KindMalformedResponse || !strings.Contains(err.Error(), "call_1") {
 		t.Fatalf("second Recv() error = %#v, want duplicate-call malformed response", err)
 	}
+}
+
+func responseTextEvents(text, terminal string) []string {
+	encoded, err := jsonv2.Marshal(text)
+	if err != nil {
+		panic(err)
+	}
+	quoted := string(encoded)
+	return []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","content":[]}}`,
+		fmt.Sprintf(`{"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_1","delta":%s}`, quoted),
+		fmt.Sprintf(`{"type":"response.output_text.done","output_index":0,"content_index":0,"item_id":"msg_1","text":%s}`, quoted),
+		fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","content":[{"type":"output_text","text":%s,"annotations":[]}]}}`, quoted),
+		terminal,
+	}
+}
+
+func generateJSONFromEvents(t *testing.T, events []string) (*llm.Response, error) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, events...)
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		Model: "json-model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityJSON},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return client.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser}}, ResponseFormat: llm.ResponseFormatJSON,
+	})
+}
+
+func requireResponseError(t *testing.T, err error, kind llm.ErrorKind, op, contains string) *llm.Error {
+	t.Helper()
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != kind || modelErr.Op != op || !strings.Contains(err.Error(), contains) {
+		t.Fatalf("error = %#v, want kind %q op %q containing %q", err, kind, op, contains)
+	}
+	return modelErr
 }
 
 func writeSSE(t *testing.T, writer io.Writer, events ...string) {

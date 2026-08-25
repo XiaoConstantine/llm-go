@@ -51,11 +51,37 @@ func TestNewValidatesConfig(t *testing.T) {
 	}
 }
 
+func TestJSONModeRemainsUnsupportedAndIsolated(t *testing.T) {
+	var resolutions atomic.Int32
+	client, err := New(Config{
+		Model: "model",
+		ResolveCredentials: func(context.Context, string) (Credentials, error) {
+			resolutions.Add(1)
+			return Credentials{AccessToken: "token", AccountID: "account"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, ResponseFormat: llm.ResponseFormatJSON}
+	response, err := client.Generate(context.Background(), request)
+	if response != nil {
+		t.Fatalf("Generate() response = %#v, want nil", response)
+	}
+	requireModelError(t, err, llm.KindUnsupported, "generate")
+	if resolutions.Load() != 0 {
+		t.Fatalf("credential resolutions = %d, want zero", resolutions.Load())
+	}
+	if _, err := requestToWire("generate", "model", request); err == nil || !strings.Contains(err.Error(), "not supported by this Responses endpoint") {
+		t.Fatalf("requestToWire(JSON) error = %v, want endpoint isolation rejection", err)
+	}
+}
+
 func TestInfoCopiesCapabilitiesAndRelabelsProvider(t *testing.T) {
 	client, err := New(Config{
 		Provider:     "gateway",
 		Model:        "gpt-codex",
-		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityStreaming},
+		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityAudio, llm.CapabilityStreaming},
 		AccessToken:  testAccessToken("account"),
 	})
 	if err != nil {
@@ -65,7 +91,7 @@ func TestInfoCopiesCapabilitiesAndRelabelsProvider(t *testing.T) {
 	if info.Provider != "gateway" || info.Model != "gpt-codex" {
 		t.Fatalf("Info() = %#v", info)
 	}
-	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision}
+	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityAudio}
 	if fmt.Sprint(info.Capabilities) != fmt.Sprint(want) {
 		t.Fatalf("Info().Capabilities = %v, want %v", info.Capabilities, want)
 	}
@@ -113,6 +139,10 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 		}
 		if payload["model"] != "gpt-codex" || payload["stream"] != true || payload["store"] != false {
 			t.Errorf("request model/stream/store = %v/%v/%v", payload["model"], payload["stream"], payload["store"])
+		}
+		include, _ := payload["include"].([]any)
+		if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+			t.Errorf("request include = %#v", payload["include"])
 		}
 		reasoning, ok := payload["reasoning"].(map[string]any)
 		if !ok || reasoning["summary"] != "auto" || reasoning["effort"] != "low" {
@@ -246,6 +276,117 @@ func TestGenerateUsesSubscriptionResponsesAndReplaysProviderData(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("request count = %d, want 2", requests.Load())
+	}
+}
+
+func TestGenerateAndStreamSendUserAudio(t *testing.T) {
+	for _, streamRequest := range []bool{false, true} {
+		name := "generate"
+		if streamRequest {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				calls.Add(1)
+				if request.URL.Path != "/codex/responses" {
+					t.Errorf("request path = %q, want /codex/responses", request.URL.Path)
+				}
+				var payload struct {
+					Input []struct {
+						Role    string           `json:"role"`
+						Content []map[string]any `json:"content"`
+					} `json:"input"`
+				}
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Errorf("read request: %v", err)
+					return
+				}
+				if err := jsonv2.Unmarshal(body, &payload); err != nil {
+					t.Errorf("decode request: %v", err)
+					return
+				}
+				if len(payload.Input) != 1 || payload.Input[0].Role != "user" {
+					t.Errorf("request input = %#v", payload.Input)
+				} else {
+					content := payload.Input[0].Content
+					if len(content) != 1 || len(content[0]) != 2 || content[0]["type"] != "input_audio" ||
+						content[0]["audio_url"] != "data:audio/mp4;base64,YXVkaW8=" {
+						t.Errorf("request audio content = %#v", content)
+					}
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSE(t, w, `{"type":"response.completed","response":{"status":"completed"}}`)
+			}))
+			defer server.Close()
+
+			client, err := New(Config{
+				Model: "configured-audio-model", AccessToken: "token", AccountID: "account",
+				BaseURL: server.URL, HTTPClient: server.Client(),
+				Capabilities: []llm.Capability{llm.CapabilityAudio, llm.CapabilityStreaming},
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{
+				Kind: llm.PartAudio, Data: []byte("audio"), MediaType: "audio/m4a; codecs=mp4a.40.2",
+			}}}}}
+			if !streamRequest {
+				if response, err := client.Generate(context.Background(), request); err != nil || response == nil {
+					t.Fatalf("Generate() = (%#v, %v)", response, err)
+				}
+			} else {
+				stream, err := client.Stream(context.Background(), request)
+				if err != nil {
+					t.Fatalf("Stream() error = %v", err)
+				}
+				for {
+					_, err := stream.Recv()
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						t.Fatalf("Recv() error = %v", err)
+					}
+				}
+				if err := stream.Close(); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("HTTP calls = %d, want 1", calls.Load())
+			}
+		})
+	}
+}
+
+func TestClientEnforcesModelCompatibilityBeforeIO(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	client, err := NewWithCompatibility(Config{
+		Model: "gpt-codex", AccessToken: "token", AccountID: "account", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityTools},
+	}, &llm.OpenAIResponsesCompatibility{StrictTools: llm.CompatibilityDisabled})
+	if err != nil {
+		t.Fatalf("NewWithCompatibility() error = %v", err)
+	}
+	response, err := client.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser}},
+		Tools:    []llm.Tool{{Name: "tool", InputSchema: jsontext.Value(`{"type":"object"}`), Strict: true}},
+	})
+	if response != nil {
+		t.Fatalf("Generate() response = %#v, want nil", response)
+	}
+	modelErr := requireModelError(t, err, llm.KindUnsupported, "generate")
+	if modelErr.Provider != defaultProvider {
+		t.Fatalf("Generate() provider = %q", modelErr.Provider)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want zero", calls.Load())
 	}
 }
 
@@ -588,6 +729,50 @@ func TestStreamCancellationReachesHTTPServer(t *testing.T) {
 	}
 }
 
+func TestAudioPreflightBeforeCredentials(t *testing.T) {
+	var resolutions atomic.Int32
+	client, err := New(Config{
+		Model:        "model",
+		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityAudio},
+		ResolveCredentials: func(context.Context, string) (Credentials, error) {
+			resolutions.Add(1)
+			return Credentials{AccessToken: "token", AccountID: "account"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tests := []struct {
+		name      string
+		role      llm.Role
+		mediaType string
+		data      []byte
+		kind      llm.ErrorKind
+		want      string
+	}{
+		{name: "system role", role: llm.RoleSystem, mediaType: "audio/wav", data: []byte("audio"), kind: llm.KindUnsupported, want: "only in user messages"},
+		{name: "assistant role", role: llm.RoleAssistant, mediaType: "audio/wav", data: []byte("audio"), kind: llm.KindUnsupported, want: "only in user messages"},
+		{name: "malformed media type", role: llm.RoleUser, mediaType: `audio/wav; codecs="`, data: []byte("audio"), kind: llm.KindInvalidRequest, want: "media type"},
+		{name: "unsupported media type", role: llm.RoleUser, mediaType: "audio/flac", data: []byte("audio"), kind: llm.KindInvalidRequest, want: "not supported"},
+		{name: "oversized", role: llm.RoleUser, mediaType: "audio/wav", data: make([]byte, maxAudioInputBytes+1), kind: llm.KindInvalidRequest, want: "exceeds 52428800 decoded bytes"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := llm.Request{Messages: []llm.Message{{Role: test.role, Content: []llm.Part{{
+				Kind: llm.PartAudio, Data: test.data, MediaType: test.mediaType,
+			}}}}}
+			stream, err := client.Stream(context.Background(), request)
+			if stream != nil || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Stream() = (%#v, %v), want %s error containing %q", stream, err, test.kind, test.want)
+			}
+			requireModelError(t, err, test.kind, "stream")
+		})
+	}
+	if resolutions.Load() != 0 {
+		t.Fatalf("credential resolutions = %d, want zero", resolutions.Load())
+	}
+}
+
 func TestGenerateRejectsMalformedProviderDataBeforeCredentials(t *testing.T) {
 	var resolutions atomic.Int32
 	client, err := New(Config{
@@ -616,7 +801,7 @@ func TestGenerateRejectsMalformedProviderDataBeforeCredentials(t *testing.T) {
 	}
 }
 
-func TestGenerateChecksImageSupportBeforeCredentials(t *testing.T) {
+func TestGenerateChecksMediaSupportBeforeCredentials(t *testing.T) {
 	var resolutions atomic.Int32
 	resolver := func(context.Context, string) (Credentials, error) {
 		resolutions.Add(1)
@@ -631,15 +816,8 @@ func TestGenerateChecksImageSupportBeforeCredentials(t *testing.T) {
 	}{
 		{name: "vision capability", messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{image}}}, want: "vision capability"},
 		{name: "system image", capabilities: []llm.Capability{llm.CapabilityVision}, messages: []llm.Message{{Role: llm.RoleSystem, Content: []llm.Part{image}}}, want: "only in user messages"},
-		{name: "audio", messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte{1}, MediaType: "audio/wav"}}}}, want: "audio message content"},
-		{
-			name: "tool result image", capabilities: []llm.Capability{llm.CapabilityVision, llm.CapabilityTools},
-			messages: []llm.Message{
-				{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "read", Arguments: jsontext.Value(`{}`)}}},
-				{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "call", Name: "read", Content: []llm.Part{image}}}},
-			},
-			want: "binary tool results",
-		},
+		{name: "audio capability", messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte{1}, MediaType: "audio/wav"}}}}, want: "audio capability"},
+		{name: "audio role", capabilities: []llm.Capability{llm.CapabilityAudio}, messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte{1}, MediaType: "audio/wav"}}}}, want: "only in user messages"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -712,6 +890,57 @@ func TestRequestToWireMapsUserImage(t *testing.T) {
 	}}})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("requestToWire(SVG) error = %v, want unsupported media type", err)
+	}
+}
+
+func TestRequestToWireMapsUserAudio(t *testing.T) {
+	formats := []struct {
+		mediaType string
+		want      string
+	}{
+		{mediaType: "audio/wav; codecs=pcm", want: "audio/wav"},
+		{mediaType: "audio/X-WAV", want: "audio/wav"},
+		{mediaType: "audio/wave", want: "audio/wav"},
+		{mediaType: "audio/vnd.wave", want: "audio/wav"},
+		{mediaType: "audio/mpeg", want: "audio/mpeg"},
+		{mediaType: "audio/mp3", want: "audio/mpeg"},
+		{mediaType: "audio/mp4", want: "audio/mp4"},
+		{mediaType: "audio/x-m4a", want: "audio/mp4"},
+		{mediaType: "audio/webm", want: "audio/webm"},
+		{mediaType: "audio/ogg", want: "audio/ogg"},
+	}
+	parts := []llm.Part{{Kind: llm.PartText, Text: "transcribe"}}
+	for index, format := range formats {
+		parts = append(parts, llm.Part{Kind: llm.PartAudio, Data: []byte{byte(index + 1)}, MediaType: format.mediaType})
+	}
+	params, err := requestToWire("generate", "model", llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: parts}}})
+	if err != nil {
+		t.Fatalf("requestToWire() error = %v", err)
+	}
+	body, err := jsonv2.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var payload map[string]any
+	if err := jsonv2.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	input := payload["input"].([]any)
+	message := input[0].(map[string]any)
+	content := message["content"].([]any)
+	if len(input) != 1 || message["role"] != "user" || len(content) != len(parts) {
+		t.Fatalf("request input = %#v", input)
+	}
+	text := content[0].(map[string]any)
+	if len(text) != 2 || text["type"] != "input_text" || text["text"] != "transcribe" {
+		t.Fatalf("text content = %#v", text)
+	}
+	for index, format := range formats {
+		audio := content[index+1].(map[string]any)
+		wantURL := fmt.Sprintf("data:%s;base64,%s", format.want, base64.StdEncoding.EncodeToString([]byte{byte(index + 1)}))
+		if len(audio) != 2 || audio["type"] != "input_audio" || audio["audio_url"] != wantURL {
+			t.Errorf("content[%d] = %#v, want exact input_audio URL %q", index+1, audio, wantURL)
+		}
 	}
 }
 

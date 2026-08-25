@@ -12,33 +12,42 @@ import (
 type pricedGenerator struct {
 	generator llm.Generator
 	info      llm.ModelInfo
-	cost      llm.ModelCost
+	cost      *llm.ModelCost
 }
 
 func withPricing(generator llm.Generator, info llm.ModelInfo) llm.Generator {
-	if info.Cost == nil {
+	if info.Cost == nil && info.Compatibility == nil && !info.Reasoning {
 		return generator
 	}
-	cost := *info.Cost
-	cost.Tiers = append([]llm.ModelCostTier(nil), info.Cost.Tiers...)
+	var cost *llm.ModelCost
+	if info.Cost != nil {
+		value := *info.Cost
+		value.Tiers = append([]llm.ModelCostTier(nil), info.Cost.Tiers...)
+		cost = &value
+	}
 	configured := generator.Info()
 	configured.Capabilities = append([]llm.Capability(nil), configured.Capabilities...)
-	configured.Cost = &cost
+	configured.Reasoning = info.Reasoning
+	configured.Cost = cost
+	configured.Compatibility = cloneCompatibility(info.Compatibility)
 	return &pricedGenerator{generator: generator, info: configured, cost: cost}
 }
 
 func (g *pricedGenerator) Info() llm.ModelInfo {
 	info := g.info
 	info.Capabilities = append([]llm.Capability(nil), info.Capabilities...)
-	cost := g.cost
-	cost.Tiers = append([]llm.ModelCostTier(nil), g.cost.Tiers...)
-	info.Cost = &cost
+	if g.cost != nil {
+		cost := *g.cost
+		cost.Tiers = append([]llm.ModelCostTier(nil), g.cost.Tiers...)
+		info.Cost = &cost
+	}
+	info.Compatibility = cloneCompatibility(g.info.Compatibility)
 	return info
 }
 
 func (g *pricedGenerator) Generate(ctx context.Context, request llm.Request) (*llm.Response, error) {
 	response, err := g.generator.Generate(ctx, request)
-	if err != nil || response == nil || response.Usage == nil {
+	if err != nil || response == nil || response.Usage == nil || g.cost == nil {
 		return response, err
 	}
 	usage, err := g.price(*response.Usage)
@@ -54,11 +63,14 @@ func (g *pricedGenerator) Stream(ctx context.Context, request llm.Request) (llm.
 	if err != nil {
 		return nil, err
 	}
+	if g.cost == nil {
+		return stream, nil
+	}
 	return &pricedStream{Stream: stream, generator: g}, nil
 }
 
 func (g *pricedGenerator) price(usage llm.Usage) (llm.Usage, error) {
-	cost, err := llm.CalculateCost(g.cost, usage)
+	cost, err := llm.CalculateCost(*g.cost, usage)
 	if err != nil {
 		return llm.Usage{}, &llm.Error{
 			Kind:     llm.KindMalformedResponse,

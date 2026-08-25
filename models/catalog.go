@@ -119,6 +119,10 @@ func normalizeModel(model llm.Model) (llm.Model, error) {
 		cost.Tiers = append([]llm.ModelCostTier(nil), model.Cost.Tiers...)
 		model.Cost = &cost
 	}
+	if err := model.Compatibility.Validate(model.API); err != nil {
+		return llm.Model{}, fmt.Errorf("compatibility: %w", err)
+	}
+	model.Compatibility = cloneCompatibility(model.Compatibility)
 
 	capabilities := make([]llm.Capability, 0, len(model.Capabilities)+1)
 	seen := make(map[llm.Capability]struct{}, len(model.Capabilities)+1)
@@ -150,7 +154,28 @@ func cloneModel(model llm.Model) llm.Model {
 		cost.Tiers = append([]llm.ModelCostTier(nil), model.Cost.Tiers...)
 		model.Cost = &cost
 	}
+	model.Compatibility = cloneCompatibility(model.Compatibility)
 	return model
+}
+
+func cloneCompatibility(compatibility *llm.ModelCompatibility) *llm.ModelCompatibility {
+	if compatibility == nil {
+		return nil
+	}
+	clone := *compatibility
+	if compatibility.OpenAIChat != nil {
+		value := *compatibility.OpenAIChat
+		clone.OpenAIChat = &value
+	}
+	if compatibility.OpenAIResponses != nil {
+		value := *compatibility.OpenAIResponses
+		clone.OpenAIResponses = &value
+	}
+	if compatibility.Anthropic != nil {
+		value := *compatibility.Anthropic
+		clone.Anthropic = &value
+	}
+	return &clone
 }
 
 func catalogError(provider, format string, args ...any) error {

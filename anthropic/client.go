@@ -37,9 +37,12 @@ const (
 // "anthropic". BaseURL defaults to https://api.anthropic.com/v1, APIVersion
 // defaults to 2023-06-01, and DefaultMaxOutputTokens defaults to 4096.
 // Capabilities opts the configured model into optional protocol features;
-// generation is always enabled, while streaming and client tool use must be
-// listed explicitly. APIKey is optional to support gateways that authenticate
-// through custom Headers. A non-nil HTTPClient and custom Headers are used as
+// generation is always enabled, while streaming, client tool use, and vision
+// must be listed explicitly. APIKey is optional to support gateways that
+// authenticate through custom Headers. AccessToken selects Anthropic's
+// provider-private Claude subscription OAuth identity, including its bearer,
+// beta, CLI identity headers, and mandatory system identity; this unofficial
+// flow is unstable. A non-nil HTTPClient and custom Headers are used as
 // supplied, without being mutated by Client. A nil HTTPClient uses
 // [http.DefaultClient], which has no overall request timeout; callers should use
 // context deadlines or configure a client timeout.
@@ -48,6 +51,7 @@ type Config struct {
 	Model                  string
 	Capabilities           []llm.Capability
 	APIKey                 string
+	AccessToken            string
 	BaseURL                string
 	APIVersion             string
 	DefaultMaxOutputTokens int
@@ -55,20 +59,34 @@ type Config struct {
 	Headers                http.Header
 }
 
+// Options configures model-specific Anthropic protocol compatibility.
+type Options struct {
+	// ModelCompatibility is copied during construction.
+	ModelCompatibility *llm.AnthropicCompatibility
+}
+
 // Client is an immutable Anthropic client. It is safe for concurrent use when
 // its configured HTTP client is safe for concurrent use.
 type Client struct {
-	provider               string
-	model                  string
-	capabilities           []llm.Capability
-	defaultMaxOutputTokens int
-	headers                http.Header
-	sdkPath                string
-	sdkClient              anthropicsdk.Client
+	provider                string
+	model                   string
+	capabilities            []llm.Capability
+	defaultMaxOutputTokens  int
+	headers                 http.Header
+	sdkPath                 string
+	sdkClient               anthropicsdk.Client
+	compatibility           llm.AnthropicCompatibility
+	compatibilityConfigured bool
+	subscriptionOAuth       bool
 }
 
-// New constructs a Client from config.
-func New(config Config) (_ *Client, err error) {
+// New constructs a Client from config using protocol defaults.
+func New(config Config) (*Client, error) {
+	return NewWithOptions(config, Options{})
+}
+
+// NewWithOptions constructs a Client with model compatibility overrides.
+func NewWithOptions(config Config, options Options) (_ *Client, err error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
 		provider = defaultProvider
@@ -84,6 +102,14 @@ func New(config Config) (_ *Client, err error) {
 	capabilities, err := configureCapabilities(config.Capabilities)
 	if err != nil {
 		return nil, err
+	}
+	compatibility := llm.AnthropicCompatibility{}
+	if options.ModelCompatibility != nil {
+		compatibility = *options.ModelCompatibility
+		modelCompatibility := &llm.ModelCompatibility{Anthropic: &compatibility}
+		if err := modelCompatibility.Validate(llm.APIAnthropicMessages); err != nil {
+			return nil, configError("model compatibility: %v", err)
+		}
 	}
 
 	baseURL := strings.TrimSpace(config.BaseURL)
@@ -138,6 +164,15 @@ func New(config Config) (_ *Client, err error) {
 	if key := strings.TrimSpace(config.APIKey); key != "" {
 		setHeaderDefault(headers, "X-Api-Key", key)
 	}
+	if token := strings.TrimSpace(config.AccessToken); token != "" {
+		if strings.TrimSpace(config.APIKey) != "" {
+			return nil, configError("API key and access token cannot both be set")
+		}
+		setHeaderDefault(headers, "Authorization", "Bearer "+token)
+		setHeaderDefault(headers, "Anthropic-Beta", "claude-code-20250219,oauth-2025-04-20")
+		setHeaderDefault(headers, "X-App", "cli")
+		setHeaderDefault(headers, "User-Agent", "claude-cli/2.1.75")
+	}
 	headers.Set("Anthropic-Version", apiVersion)
 	headers.Set("Content-Type", "application/json")
 
@@ -158,13 +193,16 @@ func New(config Config) (_ *Client, err error) {
 	sdkClient := anthropicsdk.NewClient(sdkOptions...)
 
 	return &Client{
-		provider:               provider,
-		model:                  model,
-		capabilities:           capabilities,
-		defaultMaxOutputTokens: maxOutputTokens,
-		headers:                headers,
-		sdkPath:                sdkPath,
-		sdkClient:              sdkClient,
+		provider:                provider,
+		model:                   model,
+		capabilities:            capabilities,
+		defaultMaxOutputTokens:  maxOutputTokens,
+		headers:                 headers,
+		sdkPath:                 sdkPath,
+		sdkClient:               sdkClient,
+		compatibility:           compatibility,
+		compatibilityConfigured: options.ModelCompatibility != nil,
+		subscriptionOAuth:       strings.TrimSpace(config.AccessToken) != "",
 	}, nil
 }
 
@@ -173,7 +211,7 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
 	for _, capability := range configured {
 		switch capability {
-		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools:
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision:
 		default:
 			return nil, configError("capability %q is not implemented", capability)
 		}
@@ -252,11 +290,16 @@ func captureSDKResponse(headers http.Header, captured **http.Response, downstrea
 
 // Info describes the configured model.
 func (c *Client) Info() llm.ModelInfo {
-	return llm.ModelInfo{
+	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
+	if c.compatibilityConfigured {
+		compatibility := c.compatibility
+		info.Compatibility = &llm.ModelCompatibility{Anthropic: &compatibility}
+	}
+	return info
 }
 
 // Generate performs one non-streaming Messages API request.
@@ -277,8 +320,11 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err := checkRequest("generate", request); err != nil {
 		return nil, err
 	}
+	if err := c.checkCompatibility("generate", request); err != nil {
+		return nil, err
+	}
 
-	wrequest, priorToolIDs, err := requestToWire("generate", c.model, c.defaultMaxOutputTokens, request)
+	wrequest, priorToolIDs, err := requestToWireWithIdentity("generate", c.model, c.defaultMaxOutputTokens, request, c.compatibility, c.subscriptionOAuth)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +338,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
-	body, err = c.post(ctx, body)
+	body, err = c.post(ctx, body, c.requestHeaders(request))
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +350,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 		}
 		return nil, malformedResponse("decode response: %w", err)
 	}
-	response, err := responseFromWire(request, priorToolIDs, wresponse)
+	response, err := responseFromWire(c.model, request, priorToolIDs, wresponse, c.compatibility.EmptyThinkingSignature == llm.CompatibilityEnabled)
 	if err != nil {
 		if contextErr := contextErr(ctx); contextErr != nil {
 			return nil, contextErr
@@ -339,8 +385,11 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if err := checkRequest("stream", request); err != nil {
 		return nil, err
 	}
+	if err := c.checkCompatibility("stream", request); err != nil {
+		return nil, err
+	}
 
-	wrequest, priorToolIDs, err := requestToWire("stream", c.model, c.defaultMaxOutputTokens, request)
+	wrequest, priorToolIDs, err := requestToWireWithIdentity("stream", c.model, c.defaultMaxOutputTokens, request, c.compatibility, c.subscriptionOAuth)
 	if err != nil {
 		return nil, err
 	}
@@ -357,20 +406,52 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 		declared[tool.Name] = struct{}{}
 	}
 	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
-		return c.produceStream(producerCtx, payload, declared, priorToolIDs, emit)
+		return c.produceStream(producerCtx, payload, c.requestHeaders(request), declared, priorToolIDs, emit)
 	}), nil
+}
+
+func (c *Client) checkCompatibility(op string, request llm.Request) error {
+	if request.Temperature != nil && c.compatibility.Temperature == llm.CompatibilityDisabled {
+		return unsupported(op, "configured model does not support temperature")
+	}
+	if request.Temperature != nil && (request.ReasoningBudgetTokens != 0 || request.ReasoningEffort != llm.ReasoningEffortDefault && request.ReasoningEffort != llm.ReasoningEffortNone) {
+		return unsupported(op, "temperature cannot be combined with Anthropic thinking")
+	}
+	if request.CacheRetention == llm.CacheRetentionLong && c.compatibility.LongCacheRetention == llm.CompatibilityDisabled {
+		return unsupported(op, "configured model does not support one-hour prompt caching")
+	}
+	if request.CacheKey != "" {
+		return unsupported(op, "Anthropic Messages does not support arbitrary cache keys")
+	}
+	if request.SessionID != "" && c.compatibility.SessionAffinity != llm.CompatibilityEnabled {
+		return unsupported(op, "configured endpoint does not support session affinity")
+	}
+	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
+		for index, tool := range request.Tools {
+			if tool.Strict {
+				return unsupported(op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	usesTools := requestUsesTools(request)
-	hasBinary := false
+	hasImage := false
+	hasAudio := false
 	for _, message := range request.Messages {
 		for _, part := range message.Content {
-			hasBinary = hasBinary || part.Kind != llm.PartText
+			hasImage = hasImage || part.Kind == llm.PartImage
+			hasAudio = hasAudio || part.Kind == llm.PartAudio
+			if part.Kind == llm.PartImage && message.Role != llm.RoleUser {
+				return unsupported(op, "image content is supported only in user messages and tool results")
+			}
 		}
 		for _, result := range message.ToolResults {
 			for _, part := range result.Content {
-				hasBinary = hasBinary || part.Kind != llm.PartText
+				hasImage = hasImage || part.Kind == llm.PartImage
+				hasAudio = hasAudio || part.Kind == llm.PartAudio
 			}
 		}
 	}
@@ -380,8 +461,11 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		return unsupported(op, "JSON response format is not implemented")
 	}
-	if hasBinary {
-		return unsupported(op, "binary content is not implemented")
+	if hasAudio {
+		return unsupported(op, "Anthropic Messages does not support audio content")
+	}
+	if hasImage && !c.hasCapability(llm.CapabilityVision) {
+		return unsupported(op, "configured model does not declare vision capability")
 	}
 	return nil
 }
@@ -418,8 +502,47 @@ func (c *Client) executeRaw(ctx context.Context, payload []byte, headers http.He
 	return response, err, downstreamErr
 }
 
-func (c *Client) post(ctx context.Context, payload []byte) ([]byte, error) {
-	response, err, downstreamErr := c.executeRaw(ctx, payload, c.headers)
+func (c *Client) requestHeaders(request llm.Request) http.Header {
+	headers := c.headers.Clone()
+	betas := splitHeaderValues(headers.Get("Anthropic-Beta"))
+	if len(request.Tools) != 0 && c.compatibility.EagerToolInputStreaming == llm.CompatibilityDisabled {
+		betas = appendUnique(betas, "fine-grained-tool-streaming-2025-05-14")
+	}
+	if (request.ReasoningBudgetTokens != 0 ||
+		request.ReasoningEffort != llm.ReasoningEffortDefault && request.ReasoningEffort != llm.ReasoningEffortNone) &&
+		c.compatibility.AdaptiveThinking != llm.CompatibilityEnabled {
+		betas = appendUnique(betas, "interleaved-thinking-2025-05-14")
+	}
+	if len(betas) != 0 {
+		headers.Set("Anthropic-Beta", strings.Join(betas, ","))
+	}
+	if request.SessionID != "" {
+		headers.Set("X-Session-Affinity", request.SessionID)
+	}
+	return headers
+}
+
+func splitHeaderValues(value string) []string {
+	var values []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func (c *Client) post(ctx context.Context, payload []byte, headers http.Header) ([]byte, error) {
+	response, err, downstreamErr := c.executeRaw(ctx, payload, headers)
 	if err != nil && !errors.Is(err, errSDKRawErrorResponse) {
 		contextErr := contextErr(ctx)
 		if downstreamErr != nil || contextErr == nil || response == nil || response.Body == nil {

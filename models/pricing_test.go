@@ -57,7 +57,7 @@ func TestPricedGeneratorPricesGenerateAndStreamUsage(t *testing.T) {
 }
 
 func TestPricedStreamPricingErrorAndCloseFirstTerminalWins(t *testing.T) {
-	generator := &pricedGenerator{info: llm.ModelInfo{Provider: "provider"}, cost: llm.ModelCost{Input: 1}}
+	generator := &pricedGenerator{info: llm.ModelInfo{Provider: "provider"}, cost: &llm.ModelCost{Input: 1}}
 	invalid := llm.Chunk{Usage: &llm.Usage{InputTokens: 1, TotalTokens: 2}}
 
 	t.Run("pricing error first", func(t *testing.T) {

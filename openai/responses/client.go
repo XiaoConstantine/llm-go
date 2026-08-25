@@ -1,5 +1,6 @@
 // Package responses implements OpenAI's Responses API with llm-go's neutral
-// model contracts.
+// model contracts. The Responses input-content union does not support audio, so
+// CapabilityAudio is unsupported.
 package responses
 
 import (
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
 	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
@@ -33,7 +35,7 @@ type APIError = internalresponses.APIError
 // Provider identifies the service in ModelInfo and errors and defaults to
 // "openai". BaseURL defaults to https://api.openai.com/v1. Capabilities opts
 // the model into optional protocol features; generation is always enabled,
-// while streaming, tools, and vision must be listed explicitly.
+// while streaming, tools, vision, and JSON mode must be listed explicitly.
 //
 // HTTPClient and Headers are used as supplied without being mutated. The client
 // owns Authorization, Content-Type, and Accept. A nil HTTPClient uses
@@ -59,11 +61,13 @@ type Options struct {
 // Client is an immutable OpenAI Responses client. It is safe for concurrent
 // use when its HTTP client is safe for concurrent use.
 type Client struct {
-	provider       string
-	model          string
-	capabilities   []llm.Capability
-	responses      sdkresponses.ResponseService
-	requestOptions internalresponses.RequestOptions
+	provider                string
+	model                   string
+	capabilities            []llm.Capability
+	responses               sdkresponses.ResponseService
+	requestOptions          internalresponses.RequestOptions
+	compatibility           llm.OpenAIResponsesCompatibility
+	compatibilityConfigured bool
 }
 
 // New constructs a Client from config using OpenAI defaults.
@@ -72,7 +76,17 @@ func New(config Config) (*Client, error) {
 }
 
 // NewWithOptions constructs a Client with compatible protocol extensions.
-func NewWithOptions(config Config, compatibility Options) (*Client, error) {
+func NewWithOptions(config Config, options Options) (*Client, error) {
+	return newClient(config, options, nil)
+}
+
+// NewWithCompatibility constructs a Client with model compatibility metadata.
+// compatibility is copied during construction.
+func NewWithCompatibility(config Config, compatibility *llm.OpenAIResponsesCompatibility) (*Client, error) {
+	return newClient(config, Options{}, compatibility)
+}
+
+func newClient(config Config, options Options, configuredCompatibility *llm.OpenAIResponsesCompatibility) (*Client, error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
 		provider = defaultProvider
@@ -89,26 +103,47 @@ func NewWithOptions(config Config, compatibility Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	modelCompatibility := llm.OpenAIResponsesCompatibility{}
+	if configuredCompatibility != nil {
+		modelCompatibility = *configuredCompatibility
+		compatibility := &llm.ModelCompatibility{OpenAIResponses: &modelCompatibility}
+		if err := compatibility.Validate(llm.APIOpenAIResponses); err != nil {
+			return nil, configError(provider, "model compatibility: %v", err)
+		}
+	}
+	encryptedReasoning := options.EncryptedReasoning
+	if modelCompatibility.EncryptedReasoning == llm.CompatibilityEnabled {
+		encryptedReasoning = true
+	} else if modelCompatibility.EncryptedReasoning == llm.CompatibilityDisabled {
+		encryptedReasoning = false
+	}
 	baseURL, err := serviceBaseURL(provider, config.BaseURL)
 	if err != nil {
 		return nil, err
+	}
+	if modelCompatibility.SessionAffinityFormat == llm.SessionAffinityDefault {
+		if provider == "openrouter" || strings.Contains(strings.ToLower(baseURL), "openrouter.ai") {
+			modelCompatibility.SessionAffinityFormat = llm.SessionAffinityOpenRouter
+		} else {
+			modelCompatibility.SessionAffinityFormat = llm.SessionAffinityOpenAI
+		}
 	}
 	httpClient := config.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
-	options := []openaioption.RequestOption{
+	sdkOptions := []openaioption.RequestOption{
 		openaioption.WithMaxRetries(0),
 		openaioption.WithHTTPClient(httpClient),
 		openaioption.WithBaseURL(baseURL),
 	}
 	for key, values := range config.Headers.Clone() {
 		for _, value := range values {
-			options = append(options, openaioption.WithHeaderAdd(key, value))
+			sdkOptions = append(sdkOptions, openaioption.WithHeaderAdd(key, value))
 		}
 	}
-	options = append(options,
+	sdkOptions = append(sdkOptions,
 		openaioption.WithAPIKey(apiKey),
 		openaioption.WithHeader("Content-Type", "application/json"),
 		openaioption.WithHeader("Accept", "text/event-stream"),
@@ -118,10 +153,15 @@ func NewWithOptions(config Config, compatibility Options) (*Client, error) {
 		provider:     provider,
 		model:        model,
 		capabilities: capabilities,
-		responses:    sdkresponses.NewResponseService(options...),
+		responses:    sdkresponses.NewResponseService(sdkOptions...),
 		requestOptions: internalresponses.RequestOptions{
-			EncryptedReasoning: compatibility.EncryptedReasoning,
+			EncryptedReasoning:  encryptedReasoning,
+			JSONObjectOutput:    true,
+			NamedToolChoice:     true,
+			ExplicitPromptCache: modelCompatibility.ExplicitPromptCacheMode == llm.CompatibilityEnabled,
 		},
+		compatibility:           modelCompatibility,
+		compatibilityConfigured: configuredCompatibility != nil,
 	}, nil
 }
 
@@ -130,7 +170,7 @@ func configureCapabilities(provider string, configured []llm.Capability) ([]llm.
 	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
 	for _, capability := range configured {
 		switch capability {
-		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision:
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityJSON:
 		default:
 			return nil, configError(provider, "capability %q is not implemented", capability)
 		}
@@ -177,11 +217,16 @@ func serviceBaseURL(provider, raw string) (string, error) {
 
 // Info describes the configured model and optional capabilities.
 func (c *Client) Info() llm.ModelInfo {
-	return llm.ModelInfo{
+	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
+	if c.compatibilityConfigured {
+		compatibility := c.compatibility
+		info.Compatibility = &llm.ModelCompatibility{OpenAIResponses: &compatibility}
+	}
+	return info
 }
 
 // Generate performs one Responses request and assembles its event stream.
@@ -191,7 +236,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (*llm.Respon
 		return nil, err
 	}
 	response := &llm.Response{Model: c.model, Message: llm.Message{Role: llm.RoleAssistant}}
-	err = c.codec().Produce(ctx, "generate", c.model, params, c.openStream, func(chunk llm.Chunk) bool {
+	err = c.produce(ctx, "generate", params, request.SessionID, func(chunk llm.Chunk) bool {
 		internalresponses.MergeChunk(response, chunk)
 		return true
 	})
@@ -209,7 +254,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 		return nil, err
 	}
 	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
-		return c.codec().Produce(producerCtx, "stream", c.model, params, c.openStream, emit)
+		return c.produce(producerCtx, "stream", params, request.SessionID, emit)
 	}), nil
 }
 
@@ -229,10 +274,19 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 	if err := checkRequest(c.provider, op, request); err != nil {
 		return sdkresponses.ResponseNewParams{}, err
 	}
+	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
+		for index, tool := range request.Tools {
+			if tool.Strict {
+				return sdkresponses.ResponseNewParams{}, unsupported(c.provider, op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
+			}
+		}
+	}
 	options := c.requestOptions
 	if supportsReasoning(c.model) {
 		options.ReasoningSummary = true
-		options.EncryptedReasoning = true
+		if c.compatibility.EncryptedReasoning == llm.CompatibilityDefault {
+			options.EncryptedReasoning = true
+		}
 	}
 	return c.codec().Request(op, c.model, request, options)
 }
@@ -265,8 +319,14 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if usesImages && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(c.provider, op, "configured model does not declare vision capability")
 	}
-	if request.ResponseFormat == llm.ResponseFormatJSON {
-		return unsupported(c.provider, op, "JSON response format is not implemented")
+	if request.ResponseFormat == llm.ResponseFormatJSON && !c.hasCapability(llm.CapabilityJSON) {
+		return unsupported(c.provider, op, "configured model does not declare JSON capability")
+	}
+	if request.ReasoningBudgetTokens != 0 {
+		return unsupported(c.provider, op, "reasoning token budgets are not supported by the Responses API")
+	}
+	if request.CacheRetention == llm.CacheRetentionLong && c.compatibility.LongCacheRetention == llm.CompatibilityDisabled {
+		return unsupported(c.provider, op, "configured model does not support long prompt-cache retention")
 	}
 	return nil
 }
@@ -281,6 +341,12 @@ func (c *Client) hasCapability(capability llm.Capability) bool {
 }
 
 func checkRequest(provider, op string, request llm.Request) error {
+	if key := request.CacheKey; utf8.RuneCountInString(key) > 64 {
+		return requestError(provider, op, "prompt cache key must not exceed 64 characters")
+	}
+	if session := request.SessionID; request.CacheRetention != llm.CacheRetentionNone && request.CacheKey == "" && utf8.RuneCountInString(session) > 64 {
+		return requestError(provider, op, "session ID used as a prompt cache key must not exceed 64 characters")
+	}
 	if request.PresencePenalty != nil || request.FrequencyPenalty != nil || len(request.Stop) != 0 {
 		return unsupported(provider, op, "penalties and stop sequences are not supported by the Responses API")
 	}
@@ -293,7 +359,7 @@ func checkRequest(provider, op string, request llm.Request) error {
 					return unsupported(provider, op, "image content is supported only in user messages")
 				}
 			default:
-				return unsupported(provider, op, "audio message content is not implemented")
+				return unsupported(provider, op, "OpenAI Responses does not support audio message content")
 			}
 		}
 		for _, result := range message.ToolResults {
@@ -301,8 +367,8 @@ func checkRequest(provider, op string, request llm.Request) error {
 				return requestError(provider, op, "messages[%d] tool result must have a call ID", i)
 			}
 			for _, part := range result.Content {
-				if part.Kind != llm.PartText {
-					return unsupported(provider, op, "binary tool results are not implemented")
+				if part.Kind == llm.PartAudio {
+					return unsupported(provider, op, "audio tool results are not supported")
 				}
 			}
 		}
@@ -363,8 +429,16 @@ func supportsReasoning(model string) bool {
 		strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
 }
 
-func (c *Client) openStream(ctx context.Context, op string, params sdkresponses.ResponseNewParams) (*internalresponses.Stream, error) {
-	stream := c.responses.NewStreaming(ctx, params)
+func (c *Client) produce(ctx context.Context, op string, params sdkresponses.ResponseNewParams, sessionID string, emit internalstream.Emit) error {
+	open := func(ctx context.Context, op string, params sdkresponses.ResponseNewParams) (*internalresponses.Stream, error) {
+		return c.openStream(ctx, op, params, sessionID)
+	}
+	return c.codec().Produce(ctx, op, c.model, params, open, emit)
+}
+
+func (c *Client) openStream(ctx context.Context, op string, params sdkresponses.ResponseNewParams, sessionID string) (*internalresponses.Stream, error) {
+	options := sessionAffinityOptions(c.compatibility.SessionAffinityFormat, sessionID)
+	stream := c.responses.NewStreaming(ctx, params, options...)
 	if stream.Err() == nil {
 		return stream, nil
 	}
@@ -383,6 +457,23 @@ func (c *Client) openStream(ctx context.Context, op string, params sdkresponses.
 		}
 	}
 	return nil, err
+}
+
+func sessionAffinityOptions(format llm.SessionAffinityFormat, sessionID string) []openaioption.RequestOption {
+	if sessionID == "" {
+		return nil
+	}
+	switch format {
+	case llm.SessionAffinityOpenRouter:
+		return []openaioption.RequestOption{openaioption.WithHeader("X-Session-Id", sessionID)}
+	case llm.SessionAffinityOpenAINoSession:
+		return []openaioption.RequestOption{openaioption.WithHeader("X-Client-Request-Id", sessionID)}
+	default:
+		return []openaioption.RequestOption{
+			openaioption.WithHeader("session_id", sessionID),
+			openaioption.WithHeader("X-Client-Request-Id", sessionID),
+		}
+	}
 }
 
 func (c *Client) classifySDKError(op string, err error) error {

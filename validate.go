@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"math"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -27,11 +28,23 @@ func (r Request) validate() error {
 	if err := validateTools(r.Tools); err != nil {
 		return err
 	}
+	if err := validateToolChoice(r.ToolChoice, r.Tools); err != nil {
+		return err
+	}
+	if err := validateCacheControls(r.CacheRetention, r.CacheKey, r.SessionID); err != nil {
+		return err
+	}
 	if err := validateResponseFormat(r.ResponseFormat); err != nil {
 		return err
 	}
 	if err := validateReasoningEffort(r.ReasoningEffort); err != nil {
 		return err
+	}
+	if r.ReasoningBudgetTokens < 0 {
+		return fmt.Errorf("reasoning budget tokens must not be negative")
+	}
+	if r.ReasoningBudgetTokens != 0 && r.ReasoningEffort == ReasoningEffortNone {
+		return fmt.Errorf("reasoning budget tokens cannot be set when reasoning effort is none")
 	}
 	if r.MaxOutputTokens < 0 {
 		return fmt.Errorf("max output tokens must not be negative")
@@ -103,6 +116,58 @@ func validateTools(tools []Tool) error {
 		if err := validateJSONSchema(tool.InputSchema); err != nil {
 			return fmt.Errorf("tools[%d].input schema: %w", i, err)
 		}
+	}
+	return nil
+}
+
+func validateToolChoice(choice ToolChoice, tools []Tool) error {
+	switch choice.Mode {
+	case ToolChoiceAuto, ToolChoiceNone:
+		if choice.Name != "" {
+			return fmt.Errorf("tool choice name is valid only for named choice")
+		}
+	case ToolChoiceRequired:
+		if choice.Name != "" {
+			return fmt.Errorf("tool choice name is valid only for named choice")
+		}
+		if len(tools) == 0 {
+			return fmt.Errorf("required tool choice requires declared tools")
+		}
+	case ToolChoiceNamed:
+		if choice.Name == "" {
+			return fmt.Errorf("named tool choice requires a name")
+		}
+		for _, tool := range tools {
+			if tool.Name == choice.Name {
+				return nil
+			}
+		}
+		return fmt.Errorf("named tool choice %q is not declared", choice.Name)
+	default:
+		return fmt.Errorf("tool choice mode %q is invalid", choice.Mode)
+	}
+	return nil
+}
+
+func validateCacheControls(retention CacheRetention, cacheKey, sessionID string) error {
+	switch retention {
+	case CacheRetentionDefault, CacheRetentionNone, CacheRetentionShort, CacheRetentionLong:
+	default:
+		return fmt.Errorf("cache retention %q is invalid", retention)
+	}
+	for _, field := range []struct{ name, value string }{{"cache key", cacheKey}, {"session ID", sessionID}} {
+		if !utf8.ValidString(field.value) {
+			return fmt.Errorf("%s must be valid UTF-8", field.name)
+		}
+		if field.value != strings.TrimSpace(field.value) {
+			return fmt.Errorf("%s must not contain surrounding whitespace", field.name)
+		}
+		if len(field.value) > 256 {
+			return fmt.Errorf("%s exceeds 256 bytes", field.name)
+		}
+	}
+	if retention == CacheRetentionNone && cacheKey != "" {
+		return fmt.Errorf("cache key cannot be set when cache retention is none")
 	}
 	return nil
 }

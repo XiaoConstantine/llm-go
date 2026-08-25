@@ -59,26 +59,31 @@ func TestCatalogNormalizesAndLooksUpModels(t *testing.T) {
 func TestCatalogOwnsModelStorage(t *testing.T) {
 	capabilities := []llm.Capability{llm.CapabilityStreaming}
 	tiers := []llm.ModelCostTier{{InputTokensAbove: 1_000, Input: 2}}
+	compatibility := &llm.OpenAIResponsesCompatibility{StrictTools: llm.CompatibilityEnabled}
 	catalog, err := NewCatalog(llm.Model{
-		Provider:     "openai",
-		ID:           "gpt-test",
-		API:          llm.APIOpenAIResponses,
-		Capabilities: capabilities,
-		Cost:         &llm.ModelCost{Input: 1, Tiers: tiers},
+		Provider:      "openai",
+		ID:            "gpt-test",
+		API:           llm.APIOpenAIResponses,
+		Capabilities:  capabilities,
+		Cost:          &llm.ModelCost{Input: 1, Tiers: tiers},
+		Compatibility: &llm.ModelCompatibility{OpenAIResponses: compatibility},
 	})
 	if err != nil {
 		t.Fatalf("NewCatalog() error = %v", err)
 	}
 	capabilities[0] = llm.CapabilityAudio
 	tiers[0].Input = 99
+	compatibility.StrictTools = llm.CompatibilityDisabled
 
 	first, _ := catalog.Model("openai", "gpt-test")
 	first.Capabilities[0] = llm.CapabilityAudio
 	first.Cost.Input = 99
 	first.Cost.Tiers[0].Input = 99
+	first.Compatibility.OpenAIResponses.StrictTools = llm.CompatibilityDisabled
 	listed := catalog.Models("openai")
 	listed[0].Capabilities[0] = llm.CapabilityAudio
 	listed[0].Cost.Tiers[0].Input = 99
+	listed[0].Compatibility.OpenAIResponses.StrictTools = llm.CompatibilityDisabled
 
 	second, _ := catalog.Model("openai", "gpt-test")
 	want := []llm.Capability{llm.CapabilityGeneration, llm.CapabilityStreaming}
@@ -87,6 +92,10 @@ func TestCatalogOwnsModelStorage(t *testing.T) {
 	}
 	if second.Cost == nil || second.Cost.Input != 1 || second.Cost.Tiers[0].Input != 2 {
 		t.Fatalf("second Cost = %#v", second.Cost)
+	}
+	if second.Compatibility == nil || second.Compatibility.OpenAIResponses == nil ||
+		second.Compatibility.OpenAIResponses.StrictTools != llm.CompatibilityEnabled {
+		t.Fatalf("second Compatibility = %#v", second.Compatibility)
 	}
 	if listedAgain := catalog.Models("openai"); len(listedAgain) != 1 || !slices.Equal(listedAgain[0].Capabilities, want) || listedAgain[0].Cost.Tiers[0].Input != 2 {
 		t.Fatalf("second Models() = %#v, want capabilities %v", listedAgain, want)
@@ -109,6 +118,8 @@ func TestNewCatalogRejectsInvalidModels(t *testing.T) {
 		{name: "output exceeds context", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", ContextWindow: 10, MaxOutputTokens: 11}}, provider: "provider", want: "must not exceed"},
 		{name: "unknown capability", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", Capabilities: []llm.Capability{"future"}}}, provider: "provider", want: "is invalid"},
 		{name: "invalid cost", models: []llm.Model{{Provider: "provider", ID: "model", API: "api", Cost: &llm.ModelCost{Input: -1}}}, provider: "provider", want: "cost"},
+		{name: "compatibility API mismatch", models: []llm.Model{{Provider: "provider", ID: "model", API: llm.APIAnthropicMessages, Compatibility: &llm.ModelCompatibility{OpenAIChat: &llm.OpenAIChatCompatibility{}}}}, provider: "provider", want: "compatibility"},
+		{name: "invalid compatibility", models: []llm.Model{{Provider: "provider", ID: "model", API: llm.APIOpenAIChatCompletions, Compatibility: &llm.ModelCompatibility{OpenAIChat: &llm.OpenAIChatCompatibility{ThinkingFormat: "future"}}}}, provider: "provider", want: "thinking format"},
 		{name: "duplicate", models: []llm.Model{valid, valid}, provider: "provider", want: "more than once"},
 	}
 

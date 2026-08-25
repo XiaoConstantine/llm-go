@@ -43,6 +43,12 @@ func checkRequest(op string, request llm.Request) error {
 	if request.MaxOutputTokens > math.MaxInt32 {
 		return requestError(op, "max output tokens must not exceed %d", math.MaxInt32)
 	}
+	if request.ReasoningBudgetTokens > math.MaxInt32 {
+		return requestError(op, "reasoning budget tokens must not exceed %d", math.MaxInt32)
+	}
+	if request.CacheRetention != llm.CacheRetentionDefault || request.CacheKey != "" || request.SessionID != "" {
+		return unsupported(op, "Gemini GenerateContent does not support portable prompt-cache or session controls")
+	}
 	numericValues := []struct {
 		name  string
 		value *float64
@@ -99,8 +105,8 @@ func checkRequest(op string, request llm.Request) error {
 		case llm.RoleTool:
 			for _, result := range message.ToolResults {
 				for _, part := range result.Content {
-					if part.Kind != llm.PartText {
-						return unsupported(op, "binary tool results are not implemented")
+					if part.Kind == llm.PartAudio {
+						return unsupported(op, "audio tool results are not supported")
 					}
 				}
 			}
@@ -171,6 +177,9 @@ func validFunctionName(name string) bool {
 }
 
 func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.GenerateContentConfig, error) {
+	if request.CacheRetention != llm.CacheRetentionDefault || request.CacheKey != "" || request.SessionID != "" {
+		return nil, nil, unsupported(op, "Gemini GenerateContent does not support portable prompt-cache or session controls")
+	}
 	generationConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(request.MaxOutputTokens),
 		StopSequences:   append([]string(nil), request.Stop...),
@@ -191,7 +200,10 @@ func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.Gene
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		generationConfig.ResponseMIMEType = "application/json"
 	}
-	if request.ReasoningEffort == llm.ReasoningEffortNone {
+	if request.ReasoningBudgetTokens != 0 {
+		budget := int32(request.ReasoningBudgetTokens)
+		generationConfig.ThinkingConfig = &genai.ThinkingConfig{IncludeThoughts: true, ThinkingBudget: &budget}
+	} else if request.ReasoningEffort == llm.ReasoningEffortNone {
 		budget := int32(0)
 		generationConfig.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: &budget}
 	} else if request.ReasoningEffort != llm.ReasoningEffortDefault {
@@ -223,6 +235,19 @@ func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.Gene
 				FunctionCallingConfig: &genai.FunctionCallingConfig{Mode: genai.FunctionCallingConfigModeValidated},
 			}
 		}
+	}
+	if request.ToolChoice.Mode != llm.ToolChoiceAuto {
+		config := &genai.FunctionCallingConfig{}
+		switch request.ToolChoice.Mode {
+		case llm.ToolChoiceNone:
+			config.Mode = genai.FunctionCallingConfigModeNone
+		case llm.ToolChoiceRequired:
+			config.Mode = genai.FunctionCallingConfigModeAny
+		case llm.ToolChoiceNamed:
+			config.Mode = genai.FunctionCallingConfigModeAny
+			config.AllowedFunctionNames = []string{request.ToolChoice.Name}
+		}
+		generationConfig.ToolConfig = &genai.ToolConfig{FunctionCallingConfig: config}
 	}
 
 	encoder := newMessageEncoder(op)
@@ -307,11 +332,18 @@ func (encoder *messageEncoder) convert(message llm.Message) (*genai.Content, err
 			if result.IsError {
 				key = "error"
 			}
-			parts[index] = &genai.Part{FunctionResponse: &genai.FunctionResponse{
-				ID:       call.ID,
-				Name:     call.Name,
-				Response: map[string]any{key: resultText(result.Content)},
-			}}
+			response := &genai.FunctionResponse{ID: call.ID, Name: call.Name, Response: map[string]any{key: resultText(result.Content)}}
+			for partIndex, part := range result.Content {
+				if part.Kind != llm.PartImage {
+					continue
+				}
+				mediaType, _, err := mime.ParseMediaType(part.MediaType)
+				if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+					return nil, requestError(encoder.op, "tool result %d content[%d] has invalid image media type %q", index, partIndex, part.MediaType)
+				}
+				response.Parts = append(response.Parts, genai.NewFunctionResponsePartFromBytes(append([]byte(nil), part.Data...), mediaType))
+			}
+			parts[index] = &genai.Part{FunctionResponse: response}
 		}
 		return &genai.Content{Role: genai.RoleUser, Parts: parts}, nil
 	default:

@@ -68,12 +68,12 @@ type streamFunctionCallDelta struct {
 	Arguments *string `json:"arguments"`
 }
 
-func (c *Client) produceStream(ctx context.Context, format llm.ResponseFormat, declaredTools map[string]struct{}, payload []byte, emit internalstream.Emit) (err error) {
+func (c *Client) produceStream(ctx context.Context, format llm.ResponseFormat, declaredTools map[string]struct{}, payload []byte, sessionID string, emit internalstream.Emit) (err error) {
 	defer func() {
 		err = relabelProviderError(err, c.provider)
 	}()
 
-	response, err := c.openStream(ctx, payload)
+	response, err := c.openStream(ctx, payload, sessionID)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,8 @@ func (c *Client) produceStream(ctx context.Context, format llm.ResponseFormat, d
 		close(closingDone)
 	})
 
-	streamErr := readEventStream(ctx, response.Body, newStreamDecoder(c.model, format, declaredTools), emit)
+	streamErr := readEventStream(ctx, response.Body, newStreamDecoderWithCompatibility(c.model, format, declaredTools,
+		c.compatibility.FinishReason != llm.CompatibilityDisabled), emit)
 	if !stopClosing() {
 		<-closingDone
 	}
@@ -109,8 +110,8 @@ func (c *Client) produceStream(ctx context.Context, format llm.ResponseFormat, d
 	return nil
 }
 
-func (c *Client) openStream(ctx context.Context, payload []byte) (*http.Response, error) {
-	headers := c.headers.Clone()
+func (c *Client) openStream(ctx context.Context, payload []byte, sessionID string) (*http.Response, error) {
+	headers := c.requestHeaders(sessionID)
 	headers.Set("Accept", "text/event-stream")
 	response, err, downstreamErr := c.executeRaw(ctx, c.sdkChatPath, payload, headers)
 	if err != nil && !errors.Is(err, errSDKRawErrorResponse) {
@@ -319,6 +320,7 @@ type streamDecoder struct {
 	reasoningEnded       bool
 	finished             bool
 	usageSeen            bool
+	supportsFinishReason bool
 }
 
 type streamToolMode uint8
@@ -342,17 +344,44 @@ type streamFunctionCallBuilder struct {
 }
 
 func newStreamDecoder(configuredModel string, format llm.ResponseFormat, declaredTools map[string]struct{}) *streamDecoder {
+	return newStreamDecoderWithCompatibility(configuredModel, format, declaredTools, true)
+}
+
+func newStreamDecoderWithCompatibility(configuredModel string, format llm.ResponseFormat, declaredTools map[string]struct{}, supportsFinishReason bool) *streamDecoder {
 	return &streamDecoder{
-		configuredModel: configuredModel,
-		format:          format,
-		declaredTools:   declaredTools,
+		configuredModel:      configuredModel,
+		format:               format,
+		declaredTools:        declaredTools,
+		supportsFinishReason: supportsFinishReason,
 	}
 }
 
 func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, error) {
 	if data == "[DONE]" {
 		if !d.finished {
-			return false, malformedStream("event stream ended before a finish reason")
+			if d.supportsFinishReason {
+				return false, malformedStream("event stream ended before a finish reason")
+			}
+			finish := llm.FinishReasonStop
+			providerFinish := "stop"
+			if d.toolMode == streamToolModeModern {
+				finish = llm.FinishReasonToolCall
+				providerFinish = "tool_calls"
+			} else if d.toolMode == streamToolModeLegacy {
+				finish = llm.FinishReasonToolCall
+				providerFinish = "function_call"
+			}
+			chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(true)}
+			if !d.started {
+				d.started = true
+				chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventStart})
+			}
+			if err := d.finishChunk(&chunk, finish, providerFinish); err != nil {
+				return false, err
+			}
+			if !emit(chunk) {
+				return false, errStreamEmitStopped
+			}
 		}
 		return true, nil
 	}
@@ -388,14 +417,19 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 		if usage == nil {
 			return false, malformedStream("event contains neither a choice nor usage")
 		}
-		if !d.finished {
+		if !d.finished && d.supportsFinishReason {
 			return false, malformedStream("usage arrived before the finish reason")
 		}
 		if d.usageSeen {
 			return false, malformedStream("event stream contains repeated usage")
 		}
 		d.usageSeen = true
-		if !emit(llm.Chunk{ID: d.id, Model: d.modelForChunk(true), Usage: usage}) {
+		chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(true), Usage: usage}
+		if !d.started {
+			d.started = true
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventStart})
+		}
+		if !emit(chunk) {
 			return false, errStreamEmitStopped
 		}
 		return false, nil
@@ -417,7 +451,7 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 	if choice.Delta == nil {
 		return false, malformedStream("event choice has no delta")
 	}
-	if len(choice.FinishReason) == 0 {
+	if len(choice.FinishReason) == 0 && d.supportsFinishReason {
 		return false, malformedStream("event choice has no finish reason field")
 	}
 	if choice.Delta.Role != nil && *choice.Delta.Role != string(llm.RoleAssistant) {
@@ -489,68 +523,22 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 		}
 	}
 
-	finish, providerFinish, hasFinish, err := decodeStreamFinishReason(choice.FinishReason)
-	if err != nil {
-		return false, err
+	var finish llm.FinishReason
+	var providerFinish string
+	hasFinish := false
+	if len(choice.FinishReason) != 0 {
+		finish, providerFinish, hasFinish, err = decodeStreamFinishReason(choice.FinishReason)
+		if err != nil {
+			return false, err
+		}
 	}
 	if hasFinish {
-		toolCalls, toolErr := d.finishToolCalls(providerFinish)
-		if toolErr != nil {
-			return false, toolErr
-		}
-		d.finished = true
-		chunk.Model = d.modelForChunk(true)
-		chunk.ToolCalls = toolCalls
-		chunk.FinishReason = finish
-		if d.reasoningStarted && !d.reasoningEnded {
-			d.reasoningEnded = true
-			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: 0, Content: d.reasoning.String()})
-		}
-		if d.textStarted {
-			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: 0, Content: d.content.String()})
-		}
-		for index := range toolCalls {
-			call := cloneToolCallForEvent(toolCalls[index])
-			chunk.Events = append(chunk.Events, llm.StreamEvent{
-				Kind:       llm.StreamEventToolCallEnd,
-				Index:      index,
-				ToolCallID: call.ID,
-				ToolName:   call.Name,
-				ToolCall:   &call,
-			})
-		}
-		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish})
-		if d.format == llm.ResponseFormatJSON && finish == llm.FinishReasonStop && !d.refusalSeen &&
-			!jsontext.Value(d.content.String()).IsValid() {
-			return false, malformedStream("completed JSON response is not strict JSON")
-		}
-		if d.refusalSeen || d.reasoningStarted || d.reasoningDetailsSeen {
-			data := wireMessageData{}
-			if d.reasoningDetailsSeen {
-				details := cloneRawMessages(d.reasoningDetails)
-				data.ReasoningDetails = &details
-			}
-			if d.refusalSeen {
-				refusal := d.refusal.String()
-				data.Refusal = &refusal
-			}
-			if d.reasoningStarted {
-				reasoning := d.reasoning.String()
-				if d.reasoningField == "reasoning_content" {
-					data.ReasoningContent = &reasoning
-				} else {
-					data.Reasoning = &reasoning
-				}
-			}
-			providerData, marshalErr := marshalMessageData(data)
-			if marshalErr != nil {
-				return false, malformedStream("encode provider message state: %w", marshalErr)
-			}
-			chunk.ProviderData = providerData
+		if err := d.finishChunk(&chunk, finish, providerFinish); err != nil {
+			return false, err
 		}
 	}
 	if usage != nil {
-		if !hasFinish {
+		if !hasFinish && d.supportsFinishReason {
 			return false, malformedStream("usage arrived before the finish reason")
 		}
 		if d.usageSeen {
@@ -567,6 +555,64 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 		}
 	}
 	return false, nil
+}
+
+func (d *streamDecoder) finishChunk(chunk *llm.Chunk, finish llm.FinishReason, providerFinish string) error {
+	toolCalls, err := d.finishToolCalls(providerFinish)
+	if err != nil {
+		return err
+	}
+	d.finished = true
+	chunk.Model = d.modelForChunk(true)
+	chunk.ToolCalls = toolCalls
+	chunk.FinishReason = finish
+	if d.reasoningStarted && !d.reasoningEnded {
+		d.reasoningEnded = true
+		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: 0, Content: d.reasoning.String()})
+	}
+	if d.textStarted {
+		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: 0, Content: d.content.String()})
+	}
+	for index := range toolCalls {
+		call := cloneToolCallForEvent(toolCalls[index])
+		chunk.Events = append(chunk.Events, llm.StreamEvent{
+			Kind:       llm.StreamEventToolCallEnd,
+			Index:      index,
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			ToolCall:   &call,
+		})
+	}
+	chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish})
+	if d.format == llm.ResponseFormatJSON && finish == llm.FinishReasonStop && !d.refusalSeen &&
+		!jsontext.Value(d.content.String()).IsValid() {
+		return malformedStream("completed JSON response is not strict JSON")
+	}
+	if d.refusalSeen || d.reasoningStarted || d.reasoningDetailsSeen {
+		data := wireMessageData{}
+		if d.reasoningDetailsSeen {
+			details := cloneRawMessages(d.reasoningDetails)
+			data.ReasoningDetails = &details
+		}
+		if d.refusalSeen {
+			refusal := d.refusal.String()
+			data.Refusal = &refusal
+		}
+		if d.reasoningStarted {
+			reasoning := d.reasoning.String()
+			if d.reasoningField == "reasoning_content" {
+				data.ReasoningContent = &reasoning
+			} else {
+				data.Reasoning = &reasoning
+			}
+		}
+		providerData, marshalErr := marshalMessageData(data)
+		if marshalErr != nil {
+			return malformedStream("encode provider message state: %w", marshalErr)
+		}
+		chunk.ProviderData = providerData
+	}
+	return nil
 }
 
 func (d *streamDecoder) consumeToolDelta(delta streamDelta) ([]llm.StreamEvent, error) {

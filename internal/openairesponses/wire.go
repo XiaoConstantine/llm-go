@@ -30,9 +30,20 @@ type Codec struct {
 
 // RequestOptions captures endpoint differences within the Responses protocol.
 type RequestOptions struct {
-	Subscription       bool
-	ReasoningSummary   bool
-	EncryptedReasoning bool
+	Subscription        bool
+	ReasoningSummary    bool
+	EncryptedReasoning  bool
+	JSONObjectOutput    bool
+	NamedToolChoice     bool
+	ExplicitPromptCache bool
+	InputAudio          *InputAudioOptions
+}
+
+// InputAudioOptions enables the private Responses input_audio content variant
+// used by endpoints that explicitly support it. Public Responses callers leave
+// this nil.
+type InputAudioOptions struct {
+	MaxDecodedBytes int
 }
 
 type providerDataEnvelope struct {
@@ -54,11 +65,11 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 				instructions = append(instructions, text)
 			}
 		case llm.RoleUser:
-			content, hasImage, err := c.userContentToWire(op, i, message.Content)
+			content, hasStructuredContent, err := c.userContentToWire(op, i, message.Content, options.InputAudio)
 			if err != nil {
 				return openairesponses.ResponseNewParams{}, err
 			}
-			if hasImage {
+			if hasStructuredContent {
 				input = append(input, openairesponses.ResponseInputItemParamOfMessage(content, openairesponses.EasyInputMessageRoleUser))
 			} else {
 				input = append(input, openairesponses.ResponseInputItemParamOfMessage(text, openairesponses.EasyInputMessageRoleUser))
@@ -79,8 +90,16 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 				input = append(input, openairesponses.ResponseInputItemParamOfFunctionCall(string(call.Arguments), call.ID, call.Name))
 			}
 		case llm.RoleTool:
-			for _, result := range message.ToolResults {
-				input = append(input, openairesponses.ResponseInputItemParamOfFunctionCallOutput(result.CallID, toolResultText(result)))
+			for resultIndex, result := range message.ToolResults {
+				items, hasImage, err := c.toolResultToWire(op, i, resultIndex, result)
+				if err != nil {
+					return openairesponses.ResponseNewParams{}, err
+				}
+				if hasImage {
+					input = append(input, openairesponses.ResponseInputItemParamOfFunctionCallOutput(result.CallID, items))
+				} else {
+					input = append(input, openairesponses.ResponseInputItemParamOfFunctionCallOutput(result.CallID, toolResultText(result)))
+				}
 			}
 		}
 	}
@@ -119,6 +138,33 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		}
 		params.Text.Verbosity = openairesponses.ResponseTextConfigVerbosityLow
 	}
+	if request.ResponseFormat == llm.ResponseFormatJSON {
+		if !options.JSONObjectOutput {
+			return openairesponses.ResponseNewParams{}, c.unsupported(op, "JSON response format is not supported by this Responses endpoint")
+		}
+		format := shared.NewResponseFormatJSONObjectParam()
+		params.Text.Format.OfJSONObject = &format
+	}
+	if err := c.applyToolChoice(op, &params, request.ToolChoice, options.NamedToolChoice); err != nil {
+		return openairesponses.ResponseNewParams{}, err
+	}
+	if request.CacheRetention == llm.CacheRetentionNone && options.ExplicitPromptCache {
+		params.PromptCacheOptions.Mode = "explicit"
+	}
+	if request.CacheRetention != llm.CacheRetentionNone {
+		key := request.CacheKey
+		if key == "" {
+			key = request.SessionID
+		}
+		if key != "" {
+			params.PromptCacheKey = param.NewOpt(key)
+		}
+	}
+	if request.CacheRetention == llm.CacheRetentionLong {
+		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetention24h
+	} else if request.CacheRetention == llm.CacheRetentionShort {
+		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetentionInMemory
+	}
 	if request.ReasoningEffort != llm.ReasoningEffortDefault {
 		effort := request.ReasoningEffort
 		if options.Subscription && effort == llm.ReasoningEffortMinimal {
@@ -140,9 +186,9 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 	return params, nil
 }
 
-func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part) (openairesponses.ResponseInputMessageContentListParam, bool, error) {
+func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, audioOptions *InputAudioOptions) (openairesponses.ResponseInputMessageContentListParam, bool, error) {
 	content := make(openairesponses.ResponseInputMessageContentListParam, 0, len(parts))
-	hasImage := false
+	hasStructuredContent := false
 	for partIndex, part := range parts {
 		switch part.Kind {
 		case llm.PartText:
@@ -161,12 +207,108 @@ func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part) 
 			image := openairesponses.ResponseInputContentParamOfInputImage(openairesponses.ResponseInputImageDetailAuto)
 			image.OfInputImage.ImageURL = param.NewOpt("data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data))
 			content = append(content, image)
-			hasImage = true
+			hasStructuredContent = true
+		case llm.PartAudio:
+			if audioOptions == nil {
+				return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] audio is not supported", messageIndex, partIndex))
+			}
+			mediaType, err := canonicalAudioMediaType(part.MediaType)
+			if err != nil {
+				return nil, false, c.requestError(op, "messages[%d] content[%d] audio media type %q is invalid: %v", messageIndex, partIndex, part.MediaType, err)
+			}
+			if mediaType == "" {
+				return nil, false, c.requestError(op, "messages[%d] content[%d] audio media type %q is not supported", messageIndex, partIndex, part.MediaType)
+			}
+			if audioOptions.MaxDecodedBytes > 0 && len(part.Data) > audioOptions.MaxDecodedBytes {
+				return nil, false, c.requestError(op, "messages[%d] content[%d] audio input exceeds %d decoded bytes", messageIndex, partIndex, audioOptions.MaxDecodedBytes)
+			}
+			raw, err := json.Marshal(struct {
+				Type     string `json:"type"`
+				AudioURL string `json:"audio_url"`
+			}{
+				Type:     "input_audio",
+				AudioURL: "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data),
+			})
+			if err != nil {
+				return nil, false, c.requestError(op, "messages[%d] content[%d] encode audio: %v", messageIndex, partIndex, err)
+			}
+			content = append(content, param.Override[openairesponses.ResponseInputContentUnionParam](json.RawMessage(raw)))
+			hasStructuredContent = true
 		default:
 			return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] kind %d is not implemented", messageIndex, partIndex, part.Kind))
 		}
 	}
-	return content, hasImage, nil
+	return content, hasStructuredContent, nil
+}
+
+func canonicalAudioMediaType(value string) (string, error) {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(mediaType) {
+	case "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave":
+		return "audio/wav", nil
+	case "audio/mpeg", "audio/mp3":
+		return "audio/mpeg", nil
+	case "audio/mp4", "audio/m4a", "audio/x-m4a":
+		return "audio/mp4", nil
+	case "audio/webm":
+		return "audio/webm", nil
+	case "audio/ogg":
+		return "audio/ogg", nil
+	default:
+		return "", nil
+	}
+}
+
+func (c Codec) applyToolChoice(op string, params *openairesponses.ResponseNewParams, choice llm.ToolChoice, named bool) error {
+	switch choice.Mode {
+	case llm.ToolChoiceAuto:
+		return nil
+	case llm.ToolChoiceNone, llm.ToolChoiceRequired:
+		params.ToolChoice.OfToolChoiceMode = param.NewOpt(openairesponses.ToolChoiceOptions(choice.Mode))
+		return nil
+	case llm.ToolChoiceNamed:
+		if !named {
+			return c.unsupported(op, "named tool choice is not supported by this Responses endpoint")
+		}
+		params.ToolChoice.OfFunctionTool = &openairesponses.ToolChoiceFunctionParam{Name: choice.Name}
+		return nil
+	default:
+		return c.requestError(op, "invalid tool choice %q", choice.Mode)
+	}
+}
+
+func (c Codec) toolResultToWire(op string, messageIndex, resultIndex int, result llm.ToolResult) (openairesponses.ResponseFunctionCallOutputItemListParam, bool, error) {
+	items := make(openairesponses.ResponseFunctionCallOutputItemListParam, 0, len(result.Content)+1)
+	if result.IsError {
+		items = append(items, openairesponses.ResponseFunctionCallOutputItemParamOfInputText("Error: "))
+	}
+	hasImage := false
+	for partIndex, part := range result.Content {
+		switch part.Kind {
+		case llm.PartText:
+			items = append(items, openairesponses.ResponseFunctionCallOutputItemParamOfInputText(part.Text))
+		case llm.PartImage:
+			mediaType, _, err := mime.ParseMediaType(part.MediaType)
+			mediaType = strings.ToLower(mediaType)
+			if err != nil {
+				return nil, false, c.requestError(op, "messages[%d] tool result[%d] content[%d] image media type %q is invalid", messageIndex, resultIndex, partIndex, part.MediaType)
+			}
+			switch mediaType {
+			case "image/png", "image/jpeg", "image/webp", "image/gif":
+			default:
+				return nil, false, c.requestError(op, "messages[%d] tool result[%d] content[%d] image media type %q is not supported", messageIndex, resultIndex, partIndex, part.MediaType)
+			}
+			image := openairesponses.ResponseInputImageContentParam{ImageURL: param.NewOpt("data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data))}
+			items = append(items, openairesponses.ResponseFunctionCallOutputItemUnionParam{OfInputImage: &image})
+			hasImage = true
+		default:
+			return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] tool result[%d] content[%d] kind %d is not supported", messageIndex, resultIndex, partIndex, part.Kind))
+		}
+	}
+	return items, hasImage, nil
 }
 
 func (c Codec) providerItems(data json.RawMessage, model string) ([]openairesponses.ResponseInputItemUnionParam, bool, error) {

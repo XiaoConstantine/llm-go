@@ -175,3 +175,35 @@ func TestSDKErrorClassifiesOversizedStreamEvent(t *testing.T) {
 	err := sdkError("stream", bufio.ErrTooLong)
 	requireModelError(t, err, llm.KindMalformedResponse, "stream", defaultProvider)
 }
+
+func TestToolChoiceBudgetAndImageToolResultWire(t *testing.T) {
+	request := llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.Part{{Text: "go"}}},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "inspect", Arguments: []byte(`{}`)}}},
+			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "call", Content: []llm.Part{{Text: "screen"}, {Kind: llm.PartImage, Data: []byte{3}, MediaType: "image/webp"}}}}},
+		},
+		Tools:                 []llm.Tool{{Name: "inspect", InputSchema: []byte(`{"type":"object"}`)}},
+		ToolChoice:            llm.ToolChoice{Mode: llm.ToolChoiceNamed, Name: "inspect"},
+		ReasoningBudgetTokens: 2048,
+	}
+	contents, config, err := requestToSDK("generate", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calling := config.ToolConfig.FunctionCallingConfig
+	if calling.Mode != genai.FunctionCallingConfigModeAny || len(calling.AllowedFunctionNames) != 1 || calling.AllowedFunctionNames[0] != "inspect" {
+		t.Fatalf("function calling config = %#v", calling)
+	}
+	if config.ThinkingConfig == nil || config.ThinkingConfig.ThinkingBudget == nil || *config.ThinkingConfig.ThinkingBudget != 2048 {
+		t.Fatalf("thinking config = %#v", config.ThinkingConfig)
+	}
+	response := contents[2].Parts[0].FunctionResponse
+	if response == nil || len(response.Parts) != 1 || response.Parts[0].InlineData == nil || response.Parts[0].InlineData.MIMEType != "image/webp" || response.Parts[0].InlineData.Data[0] != 3 {
+		t.Fatalf("function response = %#v", response)
+	}
+	request.CacheRetention = llm.CacheRetentionShort
+	if _, _, err := requestToSDK("generate", request); err == nil {
+		t.Fatal("Gemini cache control unexpectedly succeeded")
+	}
+}

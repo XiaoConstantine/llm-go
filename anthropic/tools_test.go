@@ -54,7 +54,6 @@ func TestNewConfiguresToolCapability(t *testing.T) {
 
 	for _, capability := range []llm.Capability{
 		llm.CapabilityJSON,
-		llm.CapabilityVision,
 		llm.Capability("future"),
 	} {
 		t.Run(string(capability), func(t *testing.T) {
@@ -192,7 +191,7 @@ func TestGenerateTranslatesToolConversationAndResponse(t *testing.T) {
 		t.Fatalf("first tool result = %#v", firstResult)
 	}
 	secondResult := resultBlocks[1].(map[string]any)
-	if secondResult["tool_use_id"] != "toolu_llm_go_2" || secondResult["content"] != "" || secondResult["is_error"] != true {
+	if secondResult["tool_use_id"] != "toolu_llm_go_2" || secondResult["content"] != nil || secondResult["is_error"] != true {
 		t.Fatalf("second tool result = %#v", secondResult)
 	}
 }

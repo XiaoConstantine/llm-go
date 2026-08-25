@@ -324,6 +324,7 @@ func TestStreamPreflightAndNoIO(t *testing.T) {
 	penalty := 0.1
 	temperature := 1.1
 	image := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartImage, Data: []byte{1}, MediaType: "image/png"}}}}}
+	audio := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte{1}, MediaType: "audio/wav"}}}}}
 	for _, test := range []struct {
 		name    string
 		request llm.Request
@@ -331,7 +332,8 @@ func TestStreamPreflightAndNoIO(t *testing.T) {
 		want    string
 	}{
 		{name: "JSON", request: llm.Request{Messages: textRequest("hello").Messages, ResponseFormat: llm.ResponseFormatJSON}, kind: llm.KindUnsupported, want: "JSON"},
-		{name: "image", request: image, kind: llm.KindUnsupported, want: "binary"},
+		{name: "image", request: image, kind: llm.KindUnsupported, want: "vision capability"},
+		{name: "audio", request: audio, kind: llm.KindUnsupported, want: "does not support audio"},
 		{name: "penalty", request: llm.Request{Messages: textRequest("hello").Messages, PresencePenalty: &penalty}, kind: llm.KindUnsupported, want: "penalties"},
 		{name: "temperature", request: llm.Request{Messages: textRequest("hello").Messages, Temperature: &temperature}, kind: llm.KindInvalidRequest, want: "must not exceed 1"},
 		{name: "tool capability", request: toolRequest(), kind: llm.KindUnsupported, want: "tool capability"},
@@ -534,7 +536,7 @@ func TestStreamRejectsMalformedProtocol(t *testing.T) {
 		{name: "missing block index", body: start + streamEvent("content_block_start", `{"type":"content_block_start","content_block":{"type":"text","text":""}}`), kind: llm.KindMalformedResponse, want: "index is missing"},
 		{name: "block index gap", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`), kind: llm.KindMalformedResponse, want: "want 0"},
 		{name: "missing block type", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"text":""}}`), kind: llm.KindMalformedResponse, want: "no content block type"},
-		{name: "unsupported block", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`), kind: llm.KindUnsupported, want: "thinking"},
+		{name: "malformed thinking block", body: start + streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`) + streamEvent("content_block_stop", `{"type":"content_block_stop","index":0}`), kind: llm.KindMalformedResponse, want: "signature"},
 		{name: "delta without block", body: start + streamEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`), kind: llm.KindMalformedResponse, want: "without an active block"},
 		{name: "delta index mismatch", body: start + textStart + streamEvent("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"x"}}`), kind: llm.KindMalformedResponse, want: "want 0"},
 		{name: "missing delta type", body: start + textStart + streamEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"text":"x"}}`), kind: llm.KindMalformedResponse, want: "no delta type"},
@@ -888,7 +890,7 @@ func TestProduceStreamCancellationPreservesBodyCloseError(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		result <- client.produceStream(ctx, []byte(`{}`), nil, nil, func(llm.Chunk) bool { return true })
+		result <- client.produceStream(ctx, []byte(`{}`), client.headers, nil, nil, func(llm.Chunk) bool { return true })
 	}()
 	<-body.reading
 	cancel(cause)

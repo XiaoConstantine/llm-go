@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
@@ -44,8 +45,10 @@ type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (C
 //
 // BaseURL defaults to https://chatgpt.com/backend-api. Capabilities opts the
 // configured model into optional protocol features; generation is always
-// enabled, while streaming, tools, and vision must be listed explicitly. A non-nil
-// HTTPClient and custom Headers are used as supplied without being mutated.
+// enabled, while streaming, tools, vision, and audio must be listed explicitly.
+// Audio capability is model-gated and enables user-message WAV, MP3/MPEG,
+// M4A/MP4, WebM, and Ogg inputs up to 50 MiB each. A non-nil HTTPClient and
+// custom Headers are used as supplied without being mutated.
 // Authorization, ChatGPT-Account-ID, OpenAI-Beta, Originator, Content-Type,
 // Accept, and User-Agent are owned by Client and overwrite custom values. A nil
 // HTTPClient uses [http.DefaultClient], so callers should use context deadlines
@@ -67,17 +70,29 @@ type Config struct {
 // concurrent use when its credential resolver and HTTP client are safe for
 // concurrent use.
 type Client struct {
-	provider           string
-	model              string
-	capabilities       []llm.Capability
-	resolveCredentials CredentialResolver
-	headers            http.Header
-	originator         string
-	responses          openairesponses.ResponseService
+	provider                string
+	model                   string
+	capabilities            []llm.Capability
+	resolveCredentials      CredentialResolver
+	headers                 http.Header
+	originator              string
+	responses               openairesponses.ResponseService
+	compatibility           llm.OpenAIResponsesCompatibility
+	compatibilityConfigured bool
 }
 
-// New constructs a Client from config.
-func New(config Config) (_ *Client, err error) {
+// New constructs a Client from config using subscription protocol defaults.
+func New(config Config) (*Client, error) {
+	return newClient(config, nil)
+}
+
+// NewWithCompatibility constructs a Client with model compatibility metadata.
+// compatibility is copied during construction.
+func NewWithCompatibility(config Config, compatibility *llm.OpenAIResponsesCompatibility) (*Client, error) {
+	return newClient(config, compatibility)
+}
+
+func newClient(config Config, configuredCompatibility *llm.OpenAIResponsesCompatibility) (_ *Client, err error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
 		provider = defaultProvider
@@ -93,6 +108,14 @@ func New(config Config) (_ *Client, err error) {
 	capabilities, err := configureCapabilities(config.Capabilities)
 	if err != nil {
 		return nil, err
+	}
+	compatibility := llm.OpenAIResponsesCompatibility{}
+	if configuredCompatibility != nil {
+		compatibility = *configuredCompatibility
+		modelCompatibility := &llm.ModelCompatibility{OpenAIResponses: &compatibility}
+		if err := modelCompatibility.Validate(llm.APIOpenAICodexResponses); err != nil {
+			return nil, configError("model compatibility: %v", err)
+		}
 	}
 
 	resolver, err := configureCredentials(config)
@@ -114,12 +137,14 @@ func New(config Config) (_ *Client, err error) {
 	}
 
 	return &Client{
-		provider:           provider,
-		model:              model,
-		capabilities:       capabilities,
-		resolveCredentials: resolver,
-		headers:            cloneHeader(config.Headers),
-		originator:         originator,
+		provider:                provider,
+		model:                   model,
+		capabilities:            capabilities,
+		resolveCredentials:      resolver,
+		headers:                 cloneHeader(config.Headers),
+		originator:              originator,
+		compatibility:           compatibility,
+		compatibilityConfigured: configuredCompatibility != nil,
 		responses: openairesponses.NewResponseService(
 			openaioption.WithMaxRetries(0),
 			openaioption.WithHTTPClient(httpClient),
@@ -158,7 +183,7 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
 	for _, capability := range configured {
 		switch capability {
-		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision:
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityAudio:
 		default:
 			return nil, configError("capability %q is not implemented", capability)
 		}
@@ -218,11 +243,16 @@ func cloneHeader(header http.Header) http.Header {
 // Info describes the configured model and its explicitly declared optional
 // capabilities.
 func (c *Client) Info() llm.ModelInfo {
-	return llm.ModelInfo{
+	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
+	if c.compatibilityConfigured {
+		compatibility := c.compatibility
+		info.Compatibility = &llm.ModelCompatibility{OpenAIResponses: &compatibility}
+	}
+	return info
 }
 
 // Generate performs one Codex Responses request. The subscription endpoint is
@@ -238,7 +268,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	}
 
 	response := &llm.Response{Model: c.model, Message: llm.Message{Role: llm.RoleAssistant}}
-	err = c.produce(ctx, "generate", params, func(chunk llm.Chunk) bool {
+	err = c.produce(ctx, "generate", params, request.SessionID, func(chunk llm.Chunk) bool {
 		mergeChunk(response, chunk)
 		return true
 	})
@@ -259,7 +289,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 		return nil, err
 	}
 	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
-		return relabelProviderError(c.produce(producerCtx, "stream", params, emit), c.provider)
+		return relabelProviderError(c.produce(producerCtx, "stream", params, request.SessionID, emit), c.provider)
 	}), nil
 }
 
@@ -279,20 +309,30 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 	if err := checkRequest(op, request); err != nil {
 		return openairesponses.ResponseNewParams{}, err
 	}
-	return requestToWire(op, c.model, request)
+	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
+		for index, tool := range request.Tools {
+			if tool.Strict {
+				return openairesponses.ResponseNewParams{}, unsupported(op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
+			}
+		}
+	}
+	return requestToWireWithCompatibility(op, c.model, request, c.compatibility)
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	usesTools := len(request.Tools) != 0
 	usesImages := false
+	usesAudio := false
 	for _, message := range request.Messages {
 		usesTools = usesTools || len(message.ToolCalls) != 0 || len(message.ToolResults) != 0
 		for _, part := range message.Content {
 			usesImages = usesImages || part.Kind == llm.PartImage
+			usesAudio = usesAudio || part.Kind == llm.PartAudio
 		}
 		for _, result := range message.ToolResults {
 			for _, part := range result.Content {
 				usesImages = usesImages || part.Kind == llm.PartImage
+				usesAudio = usesAudio || part.Kind == llm.PartAudio
 			}
 		}
 	}
@@ -302,8 +342,17 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if usesImages && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(op, "configured model does not declare vision capability")
 	}
+	if usesAudio && !c.hasCapability(llm.CapabilityAudio) {
+		return unsupported(op, "configured model does not declare audio capability")
+	}
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		return unsupported(op, "JSON response format is not implemented")
+	}
+	if request.ReasoningBudgetTokens != 0 {
+		return unsupported(op, "reasoning token budgets are not supported by the subscription endpoint")
+	}
+	if request.CacheRetention == llm.CacheRetentionLong {
+		return unsupported(op, "long prompt-cache retention is not supported by the subscription endpoint")
 	}
 	return nil
 }
@@ -318,6 +367,12 @@ func (c *Client) hasCapability(capability llm.Capability) bool {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if key := request.CacheKey; utf8.RuneCountInString(key) > 64 {
+		return requestError(op, "prompt cache key must not exceed 64 characters")
+	}
+	if session := request.SessionID; request.CacheRetention != llm.CacheRetentionNone && request.CacheKey == "" && utf8.RuneCountInString(session) > 64 {
+		return requestError(op, "session ID used as a prompt cache key must not exceed 64 characters")
+	}
 	if request.MaxOutputTokens != 0 {
 		return unsupported(op, "max output tokens are not supported by the subscription endpoint")
 	}
@@ -332,8 +387,10 @@ func checkRequest(op string, request llm.Request) error {
 				if message.Role != llm.RoleUser {
 					return unsupported(op, "image content is supported only in user messages")
 				}
-			default:
-				return unsupported(op, "audio message content is not implemented")
+			case llm.PartAudio:
+				if message.Role != llm.RoleUser {
+					return unsupported(op, "audio content is supported only in user messages")
+				}
 			}
 		}
 		for _, result := range message.ToolResults {
@@ -341,8 +398,8 @@ func checkRequest(op string, request llm.Request) error {
 				return requestError(op, "messages[%d] tool result must have a call ID", i)
 			}
 			for _, part := range result.Content {
-				if part.Kind != llm.PartText {
-					return unsupported(op, "binary tool results are not implemented")
+				if part.Kind == llm.PartAudio {
+					return unsupported(op, "audio tool results are not supported")
 				}
 			}
 		}

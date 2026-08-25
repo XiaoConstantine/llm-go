@@ -29,12 +29,12 @@ const (
 
 var errStreamEmitStopped = errors.New("stream emission stopped")
 
-func (c *Client) produceStream(ctx context.Context, payload []byte, declared, priorToolIDs map[string]struct{}, emit internalstream.Emit) (err error) {
+func (c *Client) produceStream(ctx context.Context, payload []byte, headers http.Header, declared, priorToolIDs map[string]struct{}, emit internalstream.Emit) (err error) {
 	defer func() {
 		err = relabelProviderError(err, c.provider)
 	}()
 
-	response, err := c.openStream(ctx, payload)
+	response, err := c.openStream(ctx, payload, headers)
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,9 @@ func (c *Client) produceStream(ctx context.Context, payload []byte, declared, pr
 		close(closingDone)
 	})
 
-	streamErr := readEventStream(ctx, response.Body, newStreamDecoder(response.Header.Get("Request-Id"), declared, priorToolIDs), emit)
+	decoder := newStreamDecoder(response.Header.Get("Request-Id"), declared, priorToolIDs, c.compatibility.EmptyThinkingSignature == llm.CompatibilityEnabled)
+	decoder.configuredModel = c.model
+	streamErr := readEventStream(ctx, response.Body, decoder, emit)
 	if !stopClosing() {
 		<-closingDone
 	}
@@ -70,8 +72,8 @@ func (c *Client) produceStream(ctx context.Context, payload []byte, declared, pr
 	return nil
 }
 
-func (c *Client) openStream(ctx context.Context, payload []byte) (*http.Response, error) {
-	headers := c.headers.Clone()
+func (c *Client) openStream(ctx context.Context, payload []byte, headers http.Header) (*http.Response, error) {
+	headers = headers.Clone()
 	headers.Set("Accept", "text/event-stream")
 	response, err, downstreamErr := c.executeRaw(ctx, payload, headers)
 	if err != nil && !errors.Is(err, errSDKRawErrorResponse) {
@@ -272,20 +274,23 @@ func splitStreamLines(data []byte, atEOF bool) (advance int, token []byte, err e
 }
 
 type streamDecoder struct {
-	started           bool
-	messageDeltaSeen  bool
-	finished          bool
-	requestID         string
-	id                string
-	model             string
-	nextBlock         int
-	activeBlock       *streamBlock
-	usage             usageAccumulator
-	declared          map[string]struct{}
-	seenToolIDs       map[string]struct{}
-	toolCalls         []llm.ToolCall
-	toolArgumentBytes int
-	pendingEvents     []llm.StreamEvent
+	started                     bool
+	messageDeltaSeen            bool
+	finished                    bool
+	requestID                   string
+	id                          string
+	model                       string
+	configuredModel             string
+	nextBlock                   int
+	activeBlock                 *streamBlock
+	usage                       usageAccumulator
+	declared                    map[string]struct{}
+	seenToolIDs                 map[string]struct{}
+	toolCalls                   []llm.ToolCall
+	thinking                    []anthropicThinking
+	toolArgumentBytes           int
+	pendingEvents               []llm.StreamEvent
+	allowEmptyThinkingSignature bool
 }
 
 type streamBlock struct {
@@ -294,6 +299,8 @@ type streamBlock struct {
 	toolID       string
 	toolName     string
 	hasToolDelta bool
+	signature    strings.Builder
+	data         string
 	content      strings.Builder
 }
 
@@ -321,11 +328,14 @@ type streamContentBlockEvent struct {
 }
 
 type streamContentBlock struct {
-	Type  string           `json:"type"`
-	Text  *string          `json:"text"`
-	ID    *string          `json:"id"`
-	Name  *string          `json:"name"`
-	Input *json.RawMessage `json:"input"`
+	Type      string           `json:"type"`
+	Text      *string          `json:"text"`
+	ID        *string          `json:"id"`
+	Name      *string          `json:"name"`
+	Input     *json.RawMessage `json:"input"`
+	Thinking  *string          `json:"thinking"`
+	Signature *string          `json:"signature"`
+	Data      *string          `json:"data"`
 }
 
 type streamContentDeltaEvent struct {
@@ -336,6 +346,8 @@ type streamContentDeltaEvent struct {
 type streamDelta struct {
 	Type        string  `json:"type"`
 	Text        *string `json:"text"`
+	Thinking    *string `json:"thinking"`
+	Signature   *string `json:"signature"`
 	PartialJSON *string `json:"partial_json"`
 }
 
@@ -366,12 +378,13 @@ type streamErrorEvent struct {
 	RequestID string    `json:"request_id"`
 }
 
-func newStreamDecoder(requestID string, declared, priorToolIDs map[string]struct{}) *streamDecoder {
+func newStreamDecoder(requestID string, declared, priorToolIDs map[string]struct{}, allowEmptyThinkingSignature ...bool) *streamDecoder {
 	seen := make(map[string]struct{}, len(priorToolIDs))
 	for id := range priorToolIDs {
 		seen[id] = struct{}{}
 	}
-	return &streamDecoder{requestID: requestID, declared: declared, seenToolIDs: seen}
+	allowEmpty := len(allowEmptyThinkingSignature) != 0 && allowEmptyThinkingSignature[0]
+	return &streamDecoder{requestID: requestID, declared: declared, seenToolIDs: seen, allowEmptyThinkingSignature: allowEmpty}
 }
 
 func (decoder *streamDecoder) consume(eventName, data string, emit internalstream.Emit) (bool, error) {
@@ -497,6 +510,33 @@ func (decoder *streamDecoder) consumeContentStart(data string, emit internalstre
 			chunk.Content = []llm.Part{{Kind: llm.PartText, Text: *event.ContentBlock.Text}}
 			chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventTextDelta, Index: block.index, Delta: *event.ContentBlock.Text})
 		}
+	case "thinking":
+		if event.ContentBlock.Thinking == nil {
+			return malformedStream("thinking content block %d has no thinking field", block.index)
+		}
+		if err := appendStreamContent(&block.content, *event.ContentBlock.Thinking); err != nil {
+			return err
+		}
+		if event.ContentBlock.Signature != nil {
+			block.signature.WriteString(*event.ContentBlock.Signature)
+		}
+		decoder.pendingEvents = append(decoder.pendingEvents, llm.StreamEvent{Kind: llm.StreamEventReasoningStart, Index: block.index})
+		if *event.ContentBlock.Thinking != "" {
+			chunk.ReasoningSummary = *event.ContentBlock.Thinking
+			chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventReasoningDelta, Index: block.index, Delta: *event.ContentBlock.Thinking})
+		}
+	case "redacted_thinking":
+		if event.ContentBlock.Data == nil || *event.ContentBlock.Data == "" {
+			return malformedStream("redacted thinking block %d has no data", block.index)
+		}
+		block.data = *event.ContentBlock.Data
+		if err := appendStreamContent(&block.content, "[Reasoning redacted]"); err != nil {
+			return err
+		}
+		chunk.ReasoningSummary = "[Reasoning redacted]"
+		chunk.Events = append(decoder.takePendingEvents(),
+			llm.StreamEvent{Kind: llm.StreamEventReasoningStart, Index: block.index},
+			llm.StreamEvent{Kind: llm.StreamEventReasoningDelta, Index: block.index, Delta: "[Reasoning redacted]"})
 	case "tool_use":
 		if event.ContentBlock.ID == nil || *event.ContentBlock.ID == "" {
 			return malformedStream("tool use %d has no ID", block.index)
@@ -567,6 +607,24 @@ func (decoder *streamDecoder) consumeContentDelta(data string, emit internalstre
 		}
 		chunk.Content = []llm.Part{{Kind: llm.PartText, Text: *event.Delta.Text}}
 		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventTextDelta, Index: block.index, Delta: *event.Delta.Text})
+	case block.kind == "thinking" && event.Delta.Type == "thinking_delta":
+		if event.Delta.Thinking == nil {
+			return malformedStream("thinking delta %d has no thinking", block.index)
+		}
+		if *event.Delta.Thinking == "" {
+			return nil
+		}
+		if err := appendStreamContent(&block.content, *event.Delta.Thinking); err != nil {
+			return err
+		}
+		chunk.ReasoningSummary = *event.Delta.Thinking
+		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventReasoningDelta, Index: block.index, Delta: *event.Delta.Thinking})
+	case block.kind == "thinking" && event.Delta.Type == "signature_delta":
+		if event.Delta.Signature == nil {
+			return malformedStream("signature delta %d has no signature", block.index)
+		}
+		block.signature.WriteString(*event.Delta.Signature)
+		return nil
 	case block.kind == "tool_use" && event.Delta.Type == "input_json_delta":
 		if event.Delta.PartialJSON == nil {
 			return malformedStream("tool argument delta %d has no partial_json", block.index)
@@ -610,6 +668,15 @@ func (decoder *streamDecoder) consumeContentStop(data string, emit internalstrea
 	switch block.kind {
 	case "text":
 		decoder.pendingEvents = append(decoder.pendingEvents, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: block.index, Content: block.content.String()})
+	case "thinking":
+		if block.signature.Len() == 0 && !decoder.allowEmptyThinkingSignature {
+			return malformedStream("thinking block %d has no signature", block.index)
+		}
+		decoder.thinking = append(decoder.thinking, anthropicThinking{Type: "thinking", Thinking: block.content.String(), Signature: block.signature.String()})
+		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: block.index, Content: block.content.String()})
+	case "redacted_thinking":
+		decoder.thinking = append(decoder.thinking, anthropicThinking{Type: "redacted_thinking", Data: block.data})
+		chunk.Events = append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: block.index, Content: block.content.String()})
 	case "tool_use":
 		arguments := json.RawMessage(block.content.String())
 		if !jsontext.Value(arguments).IsValid() || jsontext.Value(arguments).Kind() != jsontext.KindBeginObject {
@@ -700,10 +767,19 @@ func (decoder *streamDecoder) consumeMessageDelta(data string, emit internalstre
 		toolCalls[index] = call
 		toolCalls[index].Arguments = append(json.RawMessage(nil), call.Arguments...)
 	}
+	providerModel := decoder.configuredModel
+	if providerModel == "" {
+		providerModel = decoder.model
+	}
+	providerData, err := marshalAnthropicMessageData(providerModel, decoder.thinking)
+	if err != nil {
+		return malformedStream("encode thinking replay: %v", err)
+	}
 	if !emit(llm.Chunk{
 		ID:           decoder.id,
 		Model:        decoder.model,
 		ToolCalls:    toolCalls,
+		ProviderData: providerData,
 		FinishReason: finish,
 		Usage:        usage,
 		Events:       append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish}),

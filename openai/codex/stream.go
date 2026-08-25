@@ -26,11 +26,14 @@ type APIError = internalresponses.APIError
 
 type sdkResponseStream = ssestream.Stream[openairesponses.ResponseStreamEventUnion]
 
-func (c *Client) produce(ctx context.Context, op string, params openairesponses.ResponseNewParams, emit internalstream.Emit) error {
-	return responseCodec().Produce(ctx, op, c.model, params, c.openStream, emit)
+func (c *Client) produce(ctx context.Context, op string, params openairesponses.ResponseNewParams, sessionID string, emit internalstream.Emit) error {
+	open := func(ctx context.Context, op string, params openairesponses.ResponseNewParams) (*sdkResponseStream, error) {
+		return c.openStream(ctx, op, params, sessionID)
+	}
+	return responseCodec().Produce(ctx, op, c.model, params, open, emit)
 }
 
-func (c *Client) openStream(ctx context.Context, op string, params openairesponses.ResponseNewParams) (*sdkResponseStream, error) {
+func (c *Client) openStream(ctx context.Context, op string, params openairesponses.ResponseNewParams, sessionID string) (*sdkResponseStream, error) {
 	rejected := ""
 	var rejectedErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -60,7 +63,7 @@ func (c *Client) openStream(ctx context.Context, op string, params openairespons
 		var captured *http.Response
 		var downstreamErr error
 		stream := c.responses.NewStreaming(ctx, params, openaioption.WithMiddleware(
-			c.requestMiddleware(credentials, &captured, &downstreamErr),
+			c.requestMiddleware(credentials, sessionID, &captured, &downstreamErr),
 		))
 		if stream.Err() == nil {
 			return stream, nil
@@ -96,7 +99,7 @@ func normalizeCredentials(credentials Credentials) (Credentials, error) {
 	return credentials, nil
 }
 
-func (c *Client) requestMiddleware(credentials Credentials, captured **http.Response, downstreamErr *error) openaioption.Middleware {
+func (c *Client) requestMiddleware(credentials Credentials, sessionID string, captured **http.Response, downstreamErr *error) openaioption.Middleware {
 	return func(request *http.Request, next openaioption.MiddlewareNext) (*http.Response, error) {
 		for key := range request.Header {
 			delete(request.Header, key)
@@ -113,6 +116,10 @@ func (c *Client) requestMiddleware(credentials Credentials, captured **http.Resp
 		request.Header.Set("User-Agent", "llm-go")
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Accept", "text/event-stream")
+		if sessionID != "" {
+			request.Header.Set("Session-Id", sessionID)
+			request.Header.Set("X-Client-Request-Id", sessionID)
+		}
 
 		response, err := next(request)
 		*captured = response

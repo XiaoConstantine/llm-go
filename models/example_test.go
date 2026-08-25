@@ -58,6 +58,10 @@ func ExampleCatalog() {
 		Capabilities:    []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
 		ContextWindow:   128_000,
 		MaxOutputTokens: 16_384,
+		Reasoning:       true,
+		Compatibility: &llm.ModelCompatibility{OpenAIResponses: &llm.OpenAIResponsesCompatibility{
+			StrictTools: llm.CompatibilityEnabled,
+		}},
 	})
 	if err != nil {
 		panic(err)

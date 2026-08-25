@@ -294,6 +294,105 @@ func TestStreamRejectsReasoningAfterToolOutputStarts(t *testing.T) {
 	_ = stream.Close()
 }
 
+func TestStreamInfersFinishWhenCompatibilityDisablesFinishReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		events     string
+		tools      []llm.Tool
+		wantFinish llm.FinishReason
+	}{
+		{
+			name: "text",
+			events: `data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n" +
+				`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{}}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}` + "\n\n" +
+				"data: [DONE]\n\n",
+			wantFinish: llm.FinishReasonStop,
+		},
+		{
+			name: "tool",
+			events: `data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call","type":"function","function":{"name":"tool","arguments":"{}"}}]}}]}` + "\n\n" +
+				"data: [DONE]\n\n",
+			tools:      []llm.Tool{{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+			wantFinish: llm.FinishReasonToolCall,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, test.events)
+			}))
+			defer server.Close()
+			capabilities := []llm.Capability{llm.CapabilityStreaming}
+			if len(test.tools) != 0 {
+				capabilities = append(capabilities, llm.CapabilityTools)
+			}
+			client, err := NewWithCompatibility(Config{Model: "model", Capabilities: capabilities, BaseURL: server.URL, HTTPClient: server.Client()},
+				&llm.OpenAIChatCompatibility{FinishReason: llm.CompatibilityDisabled})
+			if err != nil {
+				t.Fatalf("NewWithOptions() error = %v", err)
+			}
+			stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: test.tools})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			chunks, terminal := receiveAll(stream)
+			if terminal != io.EOF {
+				t.Fatalf("Recv() terminal = %v, want EOF", terminal)
+			}
+			final := chunks[len(chunks)-1]
+			if final.FinishReason != test.wantFinish || len(final.Events) == 0 || final.Events[len(final.Events)-1].Kind != llm.StreamEventDone {
+				t.Fatalf("final chunk = %#v", final)
+			}
+			if test.name == "text" {
+				if len(chunks) != 3 || chunks[1].Usage == nil || chunks[1].Usage.TotalTokens != 3 {
+					t.Fatalf("text chunks = %#v", chunks)
+				}
+			} else if len(final.ToolCalls) != 1 || final.ToolCalls[0].ID != "call" {
+				t.Fatalf("tool chunks = %#v", chunks)
+			}
+		})
+	}
+}
+
+func TestStreamOmitsUsageOptionWhenCompatibilityDisablesIt(t *testing.T) {
+	payloads := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		var payload map[string]any
+		if err := jsonv2.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		payloads <- payload
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, `data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n"+"data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client, err := NewWithCompatibility(Config{
+		Model: "model", Capabilities: []llm.Capability{llm.CapabilityStreaming}, BaseURL: server.URL, HTTPClient: server.Client(),
+	}, &llm.OpenAIChatCompatibility{StreamingUsage: llm.CompatibilityDisabled})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error = %v", err)
+	}
+	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	_, terminal := receiveAll(stream)
+	if terminal != io.EOF {
+		t.Fatalf("Recv() terminal = %v, want EOF", terminal)
+	}
+	payload := <-payloads
+	if _, exists := payload["stream_options"]; exists {
+		t.Fatalf("payload contains stream_options: %#v", payload)
+	}
+}
+
 func TestStreamSDKIgnoresAmbientConfiguration(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "ambient-key")
 	t.Setenv("OPENAI_ADMIN_KEY", "ambient-admin-key")
@@ -1553,7 +1652,7 @@ func TestProduceStreamCancellationPreservesBodyCloseError(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		result <- client.produceStream(ctx, llm.ResponseFormatText, nil, []byte(`{}`), func(llm.Chunk) bool { return true })
+		result <- client.produceStream(ctx, llm.ResponseFormatText, nil, []byte(`{}`), "", func(llm.Chunk) bool { return true })
 	}()
 	<-body.reading
 	cancel(cause)

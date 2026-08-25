@@ -1,10 +1,13 @@
 package anthropic
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"mime"
+	"slices"
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -21,6 +24,9 @@ type messageRequest struct {
 	TopP          *float64         `json:"top_p,omitempty"`
 	StopSequences []string         `json:"stop_sequences,omitempty"`
 	Tools         []toolDefinition `json:"tools,omitempty"`
+	ToolChoice    *toolChoice      `json:"tool_choice,omitempty"`
+	Thinking      *thinkingConfig  `json:"thinking,omitempty"`
+	OutputConfig  *outputConfig    `json:"output_config,omitempty"`
 	Stream        bool             `json:"stream,omitzero"`
 }
 
@@ -29,27 +35,61 @@ type inputMessage struct {
 	Content any    `json:"content"`
 }
 
-type contentBlock struct {
+type cacheControl struct {
 	Type string `json:"type"`
-	Text string `json:"text"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+type contentBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+type thinkingConfig struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitzero"`
+	Display      string `json:"display,omitempty"`
+}
+
+type outputConfig struct {
+	Effort llm.ReasoningEffort `json:"effort,omitempty"`
+}
+
+type toolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 type inputContentBlock struct {
-	Type      string          `json:"type"`
-	Text      *string         `json:"text,omitzero"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   *string         `json:"content,omitzero"`
-	IsError   bool            `json:"is_error,omitzero"`
+	Type         string          `json:"type"`
+	Text         *string         `json:"text,omitzero"`
+	Source       *imageSource    `json:"source,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Input        json.RawMessage `json:"input,omitzero"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	Content      any             `json:"content,omitempty"`
+	IsError      bool            `json:"is_error,omitzero"`
+	Thinking     *string         `json:"thinking,omitzero"`
+	Signature    *string         `json:"signature,omitzero"`
+	Data         string          `json:"data,omitempty"`
+	CacheControl *cacheControl   `json:"cache_control,omitempty"`
 }
 
 type toolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	Strict      bool            `json:"strict,omitzero"`
+	Name                string          `json:"name"`
+	Description         string          `json:"description,omitempty"`
+	InputSchema         json.RawMessage `json:"input_schema"`
+	Strict              bool            `json:"strict,omitzero"`
+	EagerInputStreaming bool            `json:"eager_input_streaming,omitzero"`
+	CacheControl        *cacheControl   `json:"cache_control,omitempty"`
 }
 
 type messageResponse struct {
@@ -63,11 +103,14 @@ type messageResponse struct {
 }
 
 type responseBlock struct {
-	Type  string           `json:"type"`
-	Text  *string          `json:"text"`
-	ID    *string          `json:"id"`
-	Name  *string          `json:"name"`
-	Input *json.RawMessage `json:"input"`
+	Type      string           `json:"type"`
+	Text      *string          `json:"text"`
+	ID        *string          `json:"id"`
+	Name      *string          `json:"name"`
+	Input     *json.RawMessage `json:"input"`
+	Thinking  *string          `json:"thinking"`
+	Signature *string          `json:"signature"`
+	Data      *string          `json:"data"`
 }
 
 type responseUsage struct {
@@ -92,10 +135,23 @@ type errorEnvelope struct {
 	RequestID string    `json:"request_id"`
 }
 
+const anthropicMessageDataVersion = 1
+
+type anthropicMessageData struct {
+	Provider string              `json:"provider"`
+	Version  int                 `json:"version"`
+	Model    string              `json:"model"`
+	Thinking []anthropicThinking `json:"thinking"`
+}
+
+type anthropicThinking struct {
+	Type      string `json:"type"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
+}
+
 func checkRequest(op string, request llm.Request) error {
-	if request.ReasoningEffort != llm.ReasoningEffortDefault {
-		return unsupported(op, "reasoning effort is not implemented")
-	}
 	if request.PresencePenalty != nil || request.FrequencyPenalty != nil {
 		return unsupported(op, "presence and frequency penalties are not supported")
 	}
@@ -158,6 +214,14 @@ func checkRequest(op string, request llm.Request) error {
 }
 
 func requestToWire(op, model string, defaultMaxOutputTokens int, request llm.Request) (messageRequest, map[string]struct{}, error) {
+	return requestToWireWithCompatibility(op, model, defaultMaxOutputTokens, request, llm.AnthropicCompatibility{})
+}
+
+func requestToWireWithCompatibility(op, model string, defaultMaxOutputTokens int, request llm.Request, compatibility llm.AnthropicCompatibility) (messageRequest, map[string]struct{}, error) {
+	return requestToWireWithIdentity(op, model, defaultMaxOutputTokens, request, compatibility, false)
+}
+
+func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, request llm.Request, compatibility llm.AnthropicCompatibility, subscriptionOAuth bool) (messageRequest, map[string]struct{}, error) {
 	maxTokens := request.MaxOutputTokens
 	if maxTokens == 0 {
 		maxTokens = defaultMaxOutputTokens
@@ -170,16 +234,30 @@ func requestToWire(op, model string, defaultMaxOutputTokens int, request llm.Req
 		TopP:          request.TopP,
 		StopSequences: append([]string(nil), request.Stop...),
 	}
+	cache := anthropicCacheControl(request.CacheRetention)
+	if subscriptionOAuth {
+		wrequest.System = append(wrequest.System, contentBlock{
+			Type: "text", Text: "You are Claude Code, Anthropic's official CLI for Claude.", CacheControl: cache,
+		})
+	}
 	wrequest.Tools = make([]toolDefinition, len(request.Tools))
 	for index, tool := range request.Tools {
 		wrequest.Tools[index] = toolDefinition{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: append(json.RawMessage(nil), tool.InputSchema...),
-			Strict:      tool.Strict,
+			Name:                tool.Name,
+			Description:         tool.Description,
+			InputSchema:         append(json.RawMessage(nil), tool.InputSchema...),
+			Strict:              tool.Strict,
+			EagerInputStreaming: compatibility.EagerToolInputStreaming != llm.CompatibilityDisabled,
+		}
+		if cache != nil && index == len(request.Tools)-1 && compatibility.CacheControlOnTools != llm.CompatibilityDisabled {
+			wrequest.Tools[index].CacheControl = cache
 		}
 	}
-	encoder := newMessageEncoder(op, request.Messages)
+	applyAnthropicToolChoice(&wrequest, request.ToolChoice)
+	if err := applyAnthropicThinking(op, &wrequest, request, compatibility); err != nil {
+		return messageRequest{}, nil, err
+	}
+	encoder := newMessageEncoder(op, request.Messages, model, compatibility.EmptyThinkingSignature == llm.CompatibilityEnabled)
 	for _, message := range request.Messages {
 		if message.Role == llm.RoleSystem {
 			for _, part := range message.Content {
@@ -193,7 +271,102 @@ func requestToWire(op, model string, defaultMaxOutputTokens int, request llm.Req
 		}
 		wrequest.Messages = append(wrequest.Messages, converted)
 	}
+	if cache != nil {
+		if len(wrequest.System) != 0 {
+			wrequest.System[len(wrequest.System)-1].CacheControl = cache
+		}
+		for index := len(wrequest.Messages) - 1; index >= 0; index-- {
+			if wrequest.Messages[index].Role != string(llm.RoleUser) {
+				continue
+			}
+			blocks, ok := wrequest.Messages[index].Content.([]inputContentBlock)
+			if !ok {
+				text, _ := wrequest.Messages[index].Content.(string)
+				blocks = []inputContentBlock{{Type: "text", Text: &text}}
+			}
+			if len(blocks) != 0 {
+				blocks[len(blocks)-1].CacheControl = cache
+				wrequest.Messages[index].Content = blocks
+			}
+			break
+		}
+	}
 	return wrequest, encoder.usedIDs, nil
+}
+
+func anthropicCacheControl(retention llm.CacheRetention) *cacheControl {
+	switch retention {
+	case llm.CacheRetentionShort:
+		return &cacheControl{Type: "ephemeral"}
+	case llm.CacheRetentionLong:
+		return &cacheControl{Type: "ephemeral", TTL: "1h"}
+	default:
+		return nil
+	}
+}
+
+func applyAnthropicToolChoice(request *messageRequest, choice llm.ToolChoice) {
+	switch choice.Mode {
+	case llm.ToolChoiceNone:
+		request.ToolChoice = &toolChoice{Type: "none"}
+	case llm.ToolChoiceRequired:
+		request.ToolChoice = &toolChoice{Type: "any"}
+	case llm.ToolChoiceNamed:
+		request.ToolChoice = &toolChoice{Type: "tool", Name: choice.Name}
+	}
+}
+
+func applyAnthropicThinking(op string, wire *messageRequest, request llm.Request, compatibility llm.AnthropicCompatibility) error {
+	if request.ReasoningEffort == llm.ReasoningEffortDefault && request.ReasoningBudgetTokens == 0 {
+		return nil
+	}
+	if request.ReasoningEffort == llm.ReasoningEffortNone {
+		wire.Thinking = &thinkingConfig{Type: "disabled"}
+		return nil
+	}
+	if compatibility.AdaptiveThinking == llm.CompatibilityEnabled {
+		if request.ReasoningBudgetTokens != 0 {
+			return requestError(op, "explicit reasoning budgets are not supported with adaptive thinking")
+		}
+		wire.Thinking = &thinkingConfig{Type: "adaptive", Display: "summarized"}
+		effort := request.ReasoningEffort
+		if effort == llm.ReasoningEffortMinimal {
+			effort = llm.ReasoningEffortLow
+		}
+		if effort != llm.ReasoningEffortDefault {
+			wire.OutputConfig = &outputConfig{Effort: effort}
+		}
+		return nil
+	}
+	budget := request.ReasoningBudgetTokens
+	explicitBudget := budget != 0
+	if !explicitBudget {
+		switch request.ReasoningEffort {
+		case llm.ReasoningEffortMinimal:
+			budget = 1024
+		case llm.ReasoningEffortLow:
+			budget = 2048
+		case llm.ReasoningEffortMedium:
+			budget = 8192
+		case llm.ReasoningEffortHigh, llm.ReasoningEffortXHigh, llm.ReasoningEffortMax:
+			budget = 16384
+		default:
+			budget = 1024
+		}
+		// Anthropic's max_tokens ceiling includes thinking. Preserve at least
+		// 1024 answer tokens while fitting legacy effort budgets under the cap.
+		if available := wire.MaxTokens - 1024; budget > available {
+			budget = available
+		}
+	}
+	if budget < 1024 {
+		return requestError(op, "reasoning budget must be at least 1024 tokens")
+	}
+	if budget >= wire.MaxTokens {
+		return requestError(op, "reasoning budget must be less than max output tokens")
+	}
+	wire.Thinking = &thinkingConfig{Type: "enabled", BudgetTokens: budget}
+	return nil
 }
 
 func validToolName(name string) bool {
@@ -233,13 +406,15 @@ func checkToolHistory(op string, messages []llm.Message) error {
 }
 
 type messageEncoder struct {
-	op            string
-	usedIDs       map[string]struct{}
-	pendingByName map[string][]string
-	nextID        int
+	op                          string
+	model                       string
+	allowEmptyThinkingSignature bool
+	usedIDs                     map[string]struct{}
+	pendingByName               map[string][]string
+	nextID                      int
 }
 
-func newMessageEncoder(op string, messages []llm.Message) *messageEncoder {
+func newMessageEncoder(op string, messages []llm.Message, model string, allowEmptyThinkingSignature bool) *messageEncoder {
 	usedIDs := make(map[string]struct{})
 	for _, message := range messages {
 		for _, call := range message.ToolCalls {
@@ -249,38 +424,66 @@ func newMessageEncoder(op string, messages []llm.Message) *messageEncoder {
 		}
 	}
 	return &messageEncoder{
-		op:            op,
-		usedIDs:       usedIDs,
-		pendingByName: make(map[string][]string),
+		op:                          op,
+		model:                       model,
+		allowEmptyThinkingSignature: allowEmptyThinkingSignature,
+		usedIDs:                     usedIDs,
+		pendingByName:               make(map[string][]string),
 	}
 }
 
 func (encoder *messageEncoder) toWire(message llm.Message) (inputMessage, error) {
 	if message.Role == llm.RoleTool {
-		blocks := make([]inputContentBlock, len(message.ToolResults))
+		blocks := make([]inputContentBlock, 0, len(message.ToolResults))
 		for index, result := range message.ToolResults {
 			callID, err := encoder.resultID(result)
 			if err != nil {
 				return inputMessage{}, err
 			}
-			blocks[index] = inputContentBlock{
-				Type:      "tool_result",
-				ToolUseID: callID,
-				Content:   optionalTextContent(result.Content),
-				IsError:   result.IsError,
+			content, err := anthropicParts(encoder.op, result.Content)
+			if err != nil {
+				return inputMessage{}, fmt.Errorf("tool result %d: %w", index, err)
 			}
+			var value any
+			if allTextParts(result.Content) {
+				value = optionalTextContent(result.Content)
+			} else if len(content) != 0 {
+				value = content
+			}
+			blocks = append(blocks, inputContentBlock{Type: "tool_result", ToolUseID: callID, Content: value, IsError: result.IsError})
 		}
 		return inputMessage{Role: string(llm.RoleUser), Content: blocks}, nil
 	}
 
+	blocks, err := anthropicParts(encoder.op, message.Content)
+	if err != nil {
+		return inputMessage{}, err
+	}
+	replayedThinking := false
+	if message.Role == llm.RoleAssistant {
+		replay, recognized, err := parseAnthropicMessageData(message.ProviderData, encoder.model)
+		if err != nil {
+			return inputMessage{}, requestError(encoder.op, "assistant provider data: %v", err)
+		}
+		if recognized {
+			replayed, err := thinkingBlocksToWire(replay.Thinking, encoder.allowEmptyThinkingSignature)
+			if err != nil {
+				return inputMessage{}, requestError(encoder.op, "assistant provider data: %v", err)
+			}
+			replayedThinking = true
+			blocks = append(replayed, blocks...)
+		}
+	}
 	if len(message.ToolCalls) == 0 {
-		return inputMessage{Role: string(message.Role), Content: message.Text()}, nil
+		if allTextParts(message.Content) && !replayedThinking {
+			return inputMessage{Role: string(message.Role), Content: message.Text()}, nil
+		}
+		if len(blocks) == 1 && blocks[0].Type == "text" && blocks[0].Text != nil {
+			return inputMessage{Role: string(message.Role), Content: *blocks[0].Text}, nil
+		}
+		return inputMessage{Role: string(message.Role), Content: blocks}, nil
 	}
-	blocks := make([]inputContentBlock, 0, len(message.Content)+len(message.ToolCalls))
-	for _, part := range message.Content {
-		text := part.Text
-		blocks = append(blocks, inputContentBlock{Type: "text", Text: &text})
-	}
+	blocks = slices.Grow(blocks, len(message.ToolCalls))
 	for _, call := range message.ToolCalls {
 		callID := call.ID
 		if callID == "" {
@@ -326,6 +529,91 @@ func (encoder *messageEncoder) resultID(result llm.ToolResult) (string, error) {
 	return callID, nil
 }
 
+func anthropicParts(op string, parts []llm.Part) ([]inputContentBlock, error) {
+	blocks := make([]inputContentBlock, 0, len(parts))
+	for index, part := range parts {
+		switch part.Kind {
+		case llm.PartText:
+			text := part.Text
+			blocks = append(blocks, inputContentBlock{Type: "text", Text: &text})
+		case llm.PartImage:
+			mediaType, _, err := mime.ParseMediaType(part.MediaType)
+			mediaType = strings.ToLower(mediaType)
+			if err != nil {
+				return nil, requestError(op, "content[%d] image media type %q is invalid", index, part.MediaType)
+			}
+			switch mediaType {
+			case "image/jpeg", "image/png", "image/gif", "image/webp":
+			default:
+				return nil, requestError(op, "content[%d] image media type %q is not supported", index, part.MediaType)
+			}
+			blocks = append(blocks, inputContentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(part.Data)}})
+		default:
+			return nil, unsupported(op, fmt.Sprintf("content[%d] kind %d is not supported", index, part.Kind))
+		}
+	}
+	return blocks, nil
+}
+
+func parseAnthropicMessageData(raw json.RawMessage, model string) (anthropicMessageData, bool, error) {
+	if len(raw) == 0 || jsontext.Value(raw).Kind() != jsontext.KindBeginObject {
+		return anthropicMessageData{}, false, nil
+	}
+	var data anthropicMessageData
+	if err := jsonv2.Unmarshal(raw, &data); err != nil {
+		return anthropicMessageData{}, false, err
+	}
+	if data.Provider != "anthropic" {
+		return anthropicMessageData{}, false, nil
+	}
+	if data.Version != anthropicMessageDataVersion {
+		return anthropicMessageData{}, false, fmt.Errorf("unsupported version %d", data.Version)
+	}
+	if data.Model != model {
+		return anthropicMessageData{}, false, nil
+	}
+	return data, true, nil
+}
+
+func thinkingBlocksToWire(thinking []anthropicThinking, allowEmptySignature bool) ([]inputContentBlock, error) {
+	blocks := make([]inputContentBlock, 0, len(thinking))
+	for index, item := range thinking {
+		switch item.Type {
+		case "redacted_thinking":
+			if item.Data == "" {
+				return nil, fmt.Errorf("redacted thinking block %d has no data", index)
+			}
+			blocks = append(blocks, inputContentBlock{Type: item.Type, Data: item.Data})
+		case "thinking":
+			if item.Signature == "" && !allowEmptySignature {
+				return nil, fmt.Errorf("thinking block %d has no signature", index)
+			}
+			thinking := item.Thinking
+			signature := item.Signature
+			blocks = append(blocks, inputContentBlock{Type: item.Type, Thinking: &thinking, Signature: &signature})
+		default:
+			return nil, fmt.Errorf("thinking block %d has unsupported type %q", index, item.Type)
+		}
+	}
+	return blocks, nil
+}
+
+func marshalAnthropicMessageData(model string, thinking []anthropicThinking) (json.RawMessage, error) {
+	if len(thinking) == 0 {
+		return nil, nil
+	}
+	return jsonv2.Marshal(anthropicMessageData{Provider: "anthropic", Version: anthropicMessageDataVersion, Model: model, Thinking: thinking})
+}
+
+func allTextParts(parts []llm.Part) bool {
+	for _, part := range parts {
+		if part.Kind != llm.PartText {
+			return false
+		}
+	}
+	return true
+}
+
 func optionalTextContent(parts []llm.Part) *string {
 	if len(parts) == 0 {
 		return nil
@@ -338,7 +626,7 @@ func optionalTextContent(parts []llm.Part) *string {
 	return &text
 }
 
-func responseFromWire(request llm.Request, priorToolIDs map[string]struct{}, response messageResponse) (*llm.Response, error) {
+func responseFromWire(configuredModel string, request llm.Request, priorToolIDs map[string]struct{}, response messageResponse, allowEmptyThinkingSignature ...bool) (*llm.Response, error) {
 	if response.ID == "" {
 		return nil, malformedResponse("response has no ID")
 	}
@@ -368,6 +656,8 @@ func responseFromWire(request llm.Request, priorToolIDs map[string]struct{}, res
 	}
 	content := make([]llm.Part, 0, len(*response.Content))
 	toolCalls := make([]llm.ToolCall, 0)
+	thinking := make([]anthropicThinking, 0)
+	var reasoning strings.Builder
 	seenIDs := make(map[string]struct{}, len(priorToolIDs))
 	for id := range priorToolIDs {
 		seenIDs[id] = struct{}{}
@@ -385,6 +675,25 @@ func responseFromWire(request llm.Request, priorToolIDs map[string]struct{}, res
 				return nil, err
 			}
 			toolCalls = append(toolCalls, call)
+		case "thinking":
+			if block.Thinking == nil || block.Signature == nil {
+				return nil, malformedResponse("response thinking block %d is missing thinking or signature", index)
+			}
+			allowEmpty := len(allowEmptyThinkingSignature) != 0 && allowEmptyThinkingSignature[0]
+			if *block.Signature == "" && !allowEmpty {
+				return nil, malformedResponse("response thinking block %d has an empty signature", index)
+			}
+			thinking = append(thinking, anthropicThinking{Type: "thinking", Thinking: *block.Thinking, Signature: *block.Signature})
+			reasoning.WriteString(*block.Thinking)
+		case "redacted_thinking":
+			if block.Data == nil || *block.Data == "" {
+				return nil, malformedResponse("response redacted thinking block %d is missing data", index)
+			}
+			thinking = append(thinking, anthropicThinking{Type: "redacted_thinking", Data: *block.Data})
+			if reasoning.Len() != 0 {
+				reasoning.WriteString("\n\n")
+			}
+			reasoning.WriteString("[Reasoning redacted]")
 		default:
 			return nil, malformedResponse("response content %d has unsupported type %q", index, block.Type)
 		}
@@ -403,12 +712,17 @@ func responseFromWire(request llm.Request, priorToolIDs map[string]struct{}, res
 	if err != nil {
 		return nil, err
 	}
+	providerData, err := marshalAnthropicMessageData(configuredModel, thinking)
+	if err != nil {
+		return nil, malformedResponse("encode thinking replay: %v", err)
+	}
 	return &llm.Response{
-		ID:           response.ID,
-		Model:        response.Model,
-		Message:      llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls},
-		FinishReason: finishReason,
-		Usage:        usage,
+		ID:               response.ID,
+		Model:            response.Model,
+		Message:          llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls, ProviderData: providerData},
+		ReasoningSummary: reasoning.String(),
+		FinishReason:     finishReason,
+		Usage:            usage,
 	}, nil
 }
 

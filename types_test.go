@@ -50,6 +50,46 @@ func TestModelInfoOwnsCapabilities(t *testing.T) {
 	}
 }
 
+func TestRequestValidatesToolChoiceAndCacheControls(t *testing.T) {
+	base := Request{
+		Messages: []Message{{Role: RoleUser}},
+		Tools:    []Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)}},
+	}
+	for _, choice := range []ToolChoice{
+		{}, {Mode: ToolChoiceNone}, {Mode: ToolChoiceRequired}, {Mode: ToolChoiceNamed, Name: "lookup"},
+	} {
+		request := base
+		request.ToolChoice = choice
+		if err := request.Validate(); err != nil {
+			t.Errorf("Validate(%#v) error = %v", choice, err)
+		}
+	}
+	invalid := base
+	invalid.ToolChoice = ToolChoice{Mode: ToolChoiceNamed, Name: "missing"}
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("Validate(named missing tool) succeeded")
+	}
+	invalid = base
+	invalid.CacheRetention = CacheRetentionNone
+	invalid.CacheKey = "cache"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("Validate(cache disabled with key) succeeded")
+	}
+	withoutCache := base
+	withoutCache.CacheRetention = CacheRetentionNone
+	withoutCache.SessionID = "session"
+	if err := withoutCache.Validate(); err != nil {
+		t.Fatalf("Validate(cache disabled with session affinity) error = %v", err)
+	}
+	valid := base
+	valid.CacheRetention = CacheRetentionLong
+	valid.CacheKey = "stable-key"
+	valid.SessionID = "session"
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate(cache controls) error = %v", err)
+	}
+}
+
 func TestResponseText(t *testing.T) {
 	response := Response{Message: Message{Content: []Part{{Text: "ok"}}}}
 

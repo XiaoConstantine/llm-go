@@ -71,6 +71,7 @@ func (c Codec) Produce(ctx context.Context, op, model string, params openairespo
 		toolArgsDone:  make(map[int]bool),
 		toolHadDelta:  make(map[int]bool),
 		pendingEvents: []llm.StreamEvent{{Kind: llm.StreamEventStart}},
+		jsonMode:      params.Text.Format.OfJSONObject != nil,
 	}
 
 	for stream.Next() {
@@ -185,6 +186,9 @@ type streamState struct {
 	pendingEvents []llm.StreamEvent
 	streamedBytes int
 	providerBytes int
+	jsonContent   strings.Builder
+	jsonMode      bool
+	refusalSeen   bool
 	stopped       bool
 	terminal      bool
 }
@@ -339,6 +343,9 @@ func (s *streamState) consumePartDelta(event openairesponses.ResponseStreamEvent
 		s.partContent[key] = builder
 	}
 	builder.WriteString(event.Delta)
+	if kind == "text" {
+		s.jsonContent.WriteString(event.Delta)
+	}
 	events := s.takePendingEvents()
 	if s.partStates[key] == streamPartUnseen {
 		if len(s.partStates) >= maxStreamOutputItems {
@@ -392,6 +399,7 @@ func (s *streamState) consumePartDone(event openairesponses.ResponseStreamEventU
 		}
 		s.streamedBytes += len(event.Text)
 		if kind == "text" {
+			s.jsonContent.WriteString(event.Text)
 			chunk.Content = []llm.Part{{Kind: llm.PartText, Text: event.Text}}
 		} else if summary {
 			chunk.ReasoningSummary = event.Text
@@ -498,6 +506,11 @@ func (s *streamState) consumeOutputItem(event openairesponses.ResponseStreamEven
 	}
 	if err := jsonv2.Unmarshal(raw, &item); err != nil {
 		return s.codec.malformedResponse(s.op, "decode output item %d: %v", index, err)
+	}
+	if identity.Type == "message" {
+		for _, content := range event.Item.Content {
+			s.refusalSeen = s.refusalSeen || validRefusalContent(content)
+		}
 	}
 	if identity.Type != "function_call" {
 		return nil
@@ -712,7 +725,6 @@ func (s *streamState) finish(response openairesponses.Response, reason llm.Finis
 	if model == "" {
 		model = s.defaultModel
 	}
-	s.terminal = true
 	events := s.takePendingEvents()
 	for key, state := range s.partStates {
 		if state != streamPartOpen {
@@ -722,6 +734,13 @@ func (s *streamState) finish(response openairesponses.Response, reason llm.Finis
 			return s.codec.malformedResponse(s.op, "%s output item %d part %d did not complete", key.kind, key.outputIndex, key.subindex)
 		}
 	}
+	if s.jsonMode && reason == llm.FinishReasonStop {
+		refusalOnly := s.jsonContent.Len() == 0 && (s.refusalSeen || responseHasValidRefusal(response.Output))
+		if !refusalOnly && !jsontext.Value(s.jsonContent.String()).IsValid() {
+			return s.codec.malformedResponse(s.op, "completed JSON response is not strict JSON")
+		}
+	}
+	s.terminal = true
 	if reason != llm.FinishReasonStop {
 		indexes := make([]int, 0, len(s.pendingItems))
 		for index := range s.pendingItems {
@@ -744,6 +763,24 @@ func (s *streamState) finish(response openairesponses.Response, reason llm.Finis
 		Events:       events,
 	})
 	return nil
+}
+
+func responseHasValidRefusal(output []openairesponses.ResponseOutputItemUnion) bool {
+	for _, item := range output {
+		if item.Type != "message" {
+			continue
+		}
+		for _, content := range item.Content {
+			if validRefusalContent(content) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validRefusalContent(content openairesponses.ResponseOutputMessageContentUnion) bool {
+	return content.Type == "refusal" && content.JSON.Type.Valid() && content.JSON.Refusal.Valid()
 }
 
 func (s *streamState) backfillReasoning(output []openairesponses.ResponseOutputItemUnion) error {

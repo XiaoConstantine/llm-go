@@ -8,10 +8,252 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	llm "github.com/XiaoConstantine/llm-go"
 )
+
+func TestManagedAPIKeyRotationIsObservedByLongLivedGenerator(t *testing.T) {
+	seen := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		seen <- request.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"response","model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	store, err := NewMemoryCredentialStore(map[string]StoredCredential{"openai": {Type: CredentialAPIKey, APIKey: "first"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewCredentialManager(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := NewWithCredentialManager(manager, ProviderConfig{ID: "openai", API: OpenAIChatCompletions, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "openai", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}
+	if _, err := generator.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Modify(context.Background(), "openai", func(StoredCredential, bool) (*StoredCredential, error) {
+		return &StoredCredential{Type: CredentialAPIKey, APIKey: "second"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if first, second := <-seen, <-seen; first != "Bearer first" || second != "Bearer second" {
+		t.Fatalf("authorization headers = %q, %q", first, second)
+	}
+}
+
+func TestManagedGeminiAPIKeyRotationUpdatesHeaderAndQuery(t *testing.T) {
+	type observedCredential struct{ headers, queries []string }
+	seen := make(chan observedCredential, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		seen <- observedCredential{headers: append([]string(nil), request.Header.Values("X-Goog-Api-Key")...), queries: append([]string(nil), request.URL.Query()["key"]...)}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer server.Close()
+	store, err := NewMemoryCredentialStore(map[string]StoredCredential{"gemini": {Type: CredentialAPIKey, APIKey: "first"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewCredentialManager(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := NewWithCredentialManager(manager, ProviderConfig{ID: "gemini", API: GeminiGenerateContent, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "gemini", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}}
+	if _, err := generator.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Modify(context.Background(), "gemini", func(StoredCredential, bool) (*StoredCredential, error) {
+		return &StoredCredential{Type: CredentialAPIKey, APIKey: "second"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	first, second := <-seen, <-seen
+	if !slices.Equal(first.headers, []string{"first"}) || !slices.Equal(first.queries, []string{"first"}) ||
+		!slices.Equal(second.headers, []string{"second"}) || !slices.Equal(second.queries, []string{"second"}) {
+		t.Fatalf("Gemini credentials = %#v, %#v", first, second)
+	}
+}
+
+func TestManagedAnthropicOAuthRefreshIsLiveAndCoalesced(t *testing.T) {
+	seen := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		seen <- request.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"served","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	now := time.Unix(1_000, 0)
+	store, err := NewMemoryCredentialStore(map[string]StoredCredential{"anthropic": {Type: CredentialOAuth, AccessToken: "first", RefreshToken: "refresh", ExpiresAt: now.Add(time.Hour)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshes atomic.Int64
+	manager, err := NewCredentialManager(store, CredentialRefreshConfig{Provider: "anthropic", Refresh: func(context.Context, StoredCredential) (StoredCredential, error) {
+		refreshes.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		return StoredCredential{Type: CredentialOAuth, AccessToken: "second", RefreshToken: "rotated", ExpiresAt: now.Add(4 * time.Hour)}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.now = func() time.Time { return now }
+	collection, err := NewWithCredentialManager(manager, ProviderConfig{ID: "anthropic", API: AnthropicMessages, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "anthropic", Model: "alias"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.now = func() time.Time { return now.Add(2 * time.Hour) }
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}
+	var group sync.WaitGroup
+	errorsSeen := make(chan error, 2)
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, err := generator.Generate(context.Background(), request)
+			errorsSeen <- err
+		}()
+	}
+	group.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if refreshes.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshes.Load())
+	}
+	for range 2 {
+		if authorization := <-seen; authorization != "Bearer second" {
+			t.Errorf("Authorization = %q", authorization)
+		}
+	}
+}
+
+func TestManagedCodexOAuthRefreshesRejectedCurrentTokenOnly(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		switch request.Header.Get("Authorization") {
+		case "Bearer first":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"revoked"}}`)
+		case "Bearer second":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp\",\"status\":\"completed\"}}\n\n")
+		default:
+			t.Errorf("Authorization = %q", request.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+	now := time.Now()
+	store, err := NewMemoryCredentialStore(map[string]StoredCredential{"codex": {Type: CredentialOAuth, AccessToken: "first", RefreshToken: "refresh", AccountID: "account", ExpiresAt: now.Add(time.Hour)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshes atomic.Int64
+	manager, err := NewCredentialManager(store, CredentialRefreshConfig{Provider: "codex", Refresh: func(context.Context, StoredCredential) (StoredCredential, error) {
+		refreshes.Add(1)
+		return StoredCredential{Type: CredentialOAuth, AccessToken: "second", RefreshToken: "rotated", AccountID: "account", ExpiresAt: now.Add(2 * time.Hour)}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := NewWithCredentialManager(manager, ProviderConfig{ID: "codex", API: OpenAICodexResponses, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "codex", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 || refreshes.Load() != 1 {
+		t.Fatalf("requests/refreshes = %d/%d", requests.Load(), refreshes.Load())
+	}
+	manager.now = func() time.Time { return now.Add(3 * time.Hour) }
+	credential, found, err := manager.resolveRejectedOAuth(context.Background(), "codex", "first")
+	if err != nil || !found || credential.AccessToken != "second" || refreshes.Load() != 1 {
+		t.Fatalf("newer-token resolution = %#v, %v, refreshes %d", credential, err, refreshes.Load())
+	}
+}
+
+func TestManagedCodexOAuthRotationIsObservedByLongLivedGenerator(t *testing.T) {
+	seen := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		seen <- request.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp\",\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+	store, err := NewMemoryCredentialStore(map[string]StoredCredential{"codex": {Type: CredentialOAuth, AccessToken: "first", RefreshToken: "refresh", AccountID: "account", ExpiresAt: time.Now().Add(time.Hour)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewCredentialManager(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := NewWithCredentialManager(manager, ProviderConfig{ID: "codex", API: OpenAICodexResponses, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "codex", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}
+	if _, err := generator.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Modify(context.Background(), "codex", func(current StoredCredential, _ bool) (*StoredCredential, error) {
+		current.AccessToken = "second"
+		return &current, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if first, second := <-seen, <-seen; first != "Bearer first" || second != "Bearer second" {
+		t.Fatalf("authorization headers = %q, %q", first, second)
+	}
+}
 
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	tests := []struct {
@@ -27,6 +269,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		{name: "Codex API key", configs: []ProviderConfig{{ID: "openai-codex", API: OpenAICodexResponses, APIKey: "key"}}, provider: "openai-codex", wantError: "APIKey is not used"},
 		{name: "token on API-key protocol", configs: []ProviderConfig{{ID: "openai", API: OpenAIChatCompletions, Credentials: Credentials{AccessToken: "token"}}}, provider: "openai", wantError: "token-based protocols"},
 		{name: "ambiguous Codex credentials", configs: []ProviderConfig{{ID: "openai-codex", API: OpenAICodexResponses, Credentials: Credentials{AccessToken: "token"}, ResolveCredentials: func(context.Context, string) (Credentials, error) { return Credentials{}, nil }}}, provider: "openai-codex", wantError: "must be empty"},
+		{name: "Anthropic resolver", configs: []ProviderConfig{{ID: "anthropic", API: AnthropicMessages, ResolveCredentials: func(context.Context, string) (Credentials, error) { return Credentials{}, nil }}}, provider: "anthropic", wantError: "supported only by OpenAICodexResponses"},
 		{
 			name: "duplicate ID",
 			configs: []ProviderConfig{
@@ -140,6 +383,9 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 		API:          llm.APIOpenAIChatCompletions,
 		Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
 		Cost:         &llm.ModelCost{Input: 1, Output: 2},
+		Compatibility: &llm.ModelCompatibility{OpenAIChat: &llm.OpenAIChatCompatibility{
+			StrictTools: llm.CompatibilityEnabled,
+		}},
 	})
 	if err != nil {
 		t.Fatalf("NewCatalog() error = %v", err)
@@ -153,11 +399,18 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 		t.Fatalf("GeneratorFor() error = %v", err)
 	}
 	info := generator.Info()
-	if info.Provider != model.Provider || info.Model != model.ID || !slices.Equal(info.Capabilities, model.Capabilities) || info.Cost == nil || info.Cost.Input != 1 {
+	if info.Provider != model.Provider || info.Model != model.ID || !slices.Equal(info.Capabilities, model.Capabilities) || info.Cost == nil || info.Cost.Input != 1 ||
+		info.Compatibility == nil || info.Compatibility.OpenAIChat == nil || info.Compatibility.OpenAIChat.StrictTools != llm.CompatibilityEnabled {
 		t.Fatalf("GeneratorFor().Info() = %#v, want model %#v", info, model)
 	}
 
+	info.Compatibility.OpenAIChat.StrictTools = llm.CompatibilityDisabled
+	if again := generator.Info(); again.Compatibility.OpenAIChat.StrictTools != llm.CompatibilityEnabled {
+		t.Fatalf("GeneratorFor().Info() retained caller mutation: %#v", again.Compatibility)
+	}
+
 	model.API = llm.APIAnthropicMessages
+	model.Compatibility = nil
 	generator, err = collection.GeneratorFor(model)
 	if generator != nil {
 		t.Fatalf("GeneratorFor(mismatched API) = %#v, want nil", generator)
@@ -165,6 +418,51 @@ func TestGeneratorForCatalogModel(t *testing.T) {
 	modelErr := requireModelError(t, err, llm.KindInvalidRequest, "resolve", "openai-compatible")
 	if !strings.Contains(modelErr.Error(), "does not match") {
 		t.Fatalf("GeneratorFor(mismatched API) error = %q", modelErr)
+	}
+}
+
+func TestGeneratorOwnsCompatibilityWithoutPricing(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: "compatible", API: OpenAIChatCompletions})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	compatibility := &llm.OpenAIChatCompatibility{MaxTokensField: llm.MaxTokensFieldLegacy, StrictTools: llm.CompatibilityDisabled}
+	generator, err := collection.Generator(llm.ModelInfo{
+		Provider:      "compatible",
+		Model:         "model",
+		Reasoning:     true,
+		Compatibility: &llm.ModelCompatibility{OpenAIChat: compatibility},
+	})
+	if err != nil {
+		t.Fatalf("Generator() error = %v", err)
+	}
+	compatibility.MaxTokensField = llm.MaxTokensFieldCompletion
+	first := generator.Info()
+	if first.Cost != nil || !first.Reasoning || first.Compatibility == nil || first.Compatibility.OpenAIChat == nil ||
+		first.Compatibility.OpenAIChat.MaxTokensField != llm.MaxTokensFieldLegacy {
+		t.Fatalf("Generator().Info() = %#v", first)
+	}
+	first.Compatibility.OpenAIChat.MaxTokensField = llm.MaxTokensFieldCompletion
+	if second := generator.Info(); second.Compatibility.OpenAIChat.MaxTokensField != llm.MaxTokensFieldLegacy {
+		t.Fatalf("second Generator().Info() = %#v", second)
+	}
+}
+
+func TestGeneratorRejectsCompatibilityForConfiguredAPI(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: "anthropic", API: AnthropicMessages})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{
+		Provider: "anthropic", Model: "model",
+		Compatibility: &llm.ModelCompatibility{OpenAIChat: &llm.OpenAIChatCompatibility{}},
+	})
+	if generator != nil {
+		t.Fatalf("Generator() = %#v, want nil", generator)
+	}
+	modelErr := requireModelError(t, err, llm.KindInvalidRequest, "resolve", "anthropic")
+	if !strings.Contains(modelErr.Error(), "compatibility") {
+		t.Fatalf("Generator() error = %v", modelErr)
 	}
 }
 

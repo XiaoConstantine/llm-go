@@ -108,6 +108,36 @@ type ToolResult struct {
 	IsError bool
 }
 
+// ToolChoiceMode controls whether and which tools the model may call. The zero
+// value is automatic selection.
+type ToolChoiceMode string
+
+const (
+	ToolChoiceAuto     ToolChoiceMode = ""
+	ToolChoiceNone     ToolChoiceMode = "none"
+	ToolChoiceRequired ToolChoiceMode = "required"
+	ToolChoiceNamed    ToolChoiceMode = "named"
+)
+
+// ToolChoice is a closed provider-neutral tool selection. Name is required only
+// for ToolChoiceNamed and must identify a declared tool.
+type ToolChoice struct {
+	Mode ToolChoiceMode
+	Name string
+}
+
+// CacheRetention controls provider prompt-cache policy. Default leaves the
+// provider's policy unchanged; None explicitly disables request cache markers;
+// Short and Long request the provider's short and longest portable retention.
+type CacheRetention string
+
+const (
+	CacheRetentionDefault CacheRetention = ""
+	CacheRetentionNone    CacheRetention = "none"
+	CacheRetentionShort   CacheRetention = "short"
+	CacheRetentionLong    CacheRetention = "long"
+)
+
 // ResponseFormat identifies the requested response representation. The zero
 // value is ResponseFormatText.
 type ResponseFormat uint8
@@ -140,10 +170,22 @@ const (
 // provider to use its default. An empty Tools or Stop list means none.
 // Implementations must treat Request as read-only.
 type Request struct {
-	Messages         []Message
-	Tools            []Tool
-	ResponseFormat   ResponseFormat
-	ReasoningEffort  ReasoningEffort
+	Messages        []Message
+	Tools           []Tool
+	ToolChoice      ToolChoice
+	ResponseFormat  ResponseFormat
+	ReasoningEffort ReasoningEffort
+	// ReasoningBudgetTokens requests an explicit provider reasoning-token
+	// budget. Zero leaves budgeting to the provider or ReasoningEffort.
+	ReasoningBudgetTokens int
+	CacheRetention        CacheRetention
+	// CacheKey partitions provider prompt-cache identity. It is not a session
+	// affinity identifier and unsupported mappings are rejected.
+	CacheKey string
+	// SessionID supplies provider session-affinity identity independently of
+	// CacheRetention. When caching is enabled, it may also be used as the fallback
+	// prompt-cache key if CacheKey is empty.
+	SessionID        string
 	MaxOutputTokens  int
 	Temperature      *float64
 	TopP             *float64
@@ -248,12 +290,16 @@ type ModelCostTier struct {
 	CacheWrite       float64
 }
 
-// ModelInfo describes a configured model. Cost is nil when pricing is unknown.
+// ModelInfo describes a configured model. Reasoning reports support for
+// explicit reasoning controls. Cost and Compatibility are nil when pricing or
+// protocol compatibility metadata is unknown.
 type ModelInfo struct {
-	Provider     string
-	Model        string
-	Capabilities []Capability
-	Cost         *ModelCost
+	Provider      string
+	Model         string
+	Capabilities  []Capability
+	Reasoning     bool
+	Cost          *ModelCost
+	Compatibility *ModelCompatibility
 }
 
 // API identifies a provider wire protocol. Unknown nonempty values are valid so
@@ -269,7 +315,8 @@ const (
 )
 
 // Model describes one catalog entry. Name is a human-readable display name and
-// defaults conceptually to ID when empty. ContextWindow and MaxOutputTokens are
+// defaults conceptually to ID when empty. Reasoning reports whether the model
+// supports explicit reasoning controls. ContextWindow and MaxOutputTokens are
 // zero when unknown.
 type Model struct {
 	Provider        string
@@ -279,16 +326,20 @@ type Model struct {
 	Capabilities    []Capability
 	ContextWindow   int
 	MaxOutputTokens int
+	Reasoning       bool
 	Cost            *ModelCost
+	Compatibility   *ModelCompatibility
 }
 
 // Info returns the provider-neutral configuration used to construct a
 // Generator. The returned capability slice is owned by the caller.
 func (m Model) Info() ModelInfo {
 	return ModelInfo{
-		Provider:     m.Provider,
-		Model:        m.ID,
-		Capabilities: append([]Capability(nil), m.Capabilities...),
-		Cost:         cloneModelCost(m.Cost),
+		Provider:      m.Provider,
+		Model:         m.ID,
+		Capabilities:  append([]Capability(nil), m.Capabilities...),
+		Reasoning:     m.Reasoning,
+		Cost:          cloneModelCost(m.Cost),
+		Compatibility: cloneModelCompatibility(m.Compatibility),
 	}
 }

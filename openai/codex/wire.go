@@ -17,6 +17,7 @@ const (
 	accountClaim        = "https://api.openai.com/auth"
 	providerDataAPI     = "openai-codex-responses"
 	providerDataVersion = 1
+	maxAudioInputBytes  = 50 << 20
 )
 
 type providerDataEnvelope struct {
@@ -68,5 +69,17 @@ func responseCodec() internalresponses.Codec {
 }
 
 func requestToWire(op, model string, request llm.Request) (openairesponses.ResponseNewParams, error) {
-	return responseCodec().Request(op, model, request, internalresponses.RequestOptions{Subscription: true, ReasoningSummary: true})
+	return requestToWireWithCompatibility(op, model, request, llm.OpenAIResponsesCompatibility{})
+}
+
+func requestToWireWithCompatibility(op, model string, request llm.Request, compatibility llm.OpenAIResponsesCompatibility) (openairesponses.ResponseNewParams, error) {
+	encryptedReasoning := compatibility.EncryptedReasoning != llm.CompatibilityDisabled
+	return responseCodec().Request(op, model, request, internalresponses.RequestOptions{
+		Subscription:       true,
+		ReasoningSummary:   true,
+		EncryptedReasoning: encryptedReasoning,
+		InputAudio: &internalresponses.InputAudioOptions{
+			MaxDecodedBytes: maxAudioInputBytes,
+		},
+	})
 }

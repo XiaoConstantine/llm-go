@@ -14,20 +14,36 @@ import (
 )
 
 type chatRequest struct {
-	Model               string              `json:"model"`
-	Messages            []chatMessage       `json:"messages"`
-	Tools               []chatTool          `json:"tools,omitempty"`
-	Stream              bool                `json:"stream,omitzero"`
-	StreamOptions       *streamOptions      `json:"stream_options,omitempty"`
-	Temperature         *float64            `json:"temperature,omitempty"`
-	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
-	MaxTokens           *int                `json:"max_tokens,omitempty"`
-	ResponseFormat      *responseFormat     `json:"response_format,omitempty"`
-	ReasoningEffort     llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
-	TopP                *float64            `json:"top_p,omitempty"`
-	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
-	Stop                []string            `json:"stop,omitempty"`
+	Model                string              `json:"model"`
+	Messages             []chatMessage       `json:"messages"`
+	Tools                []chatTool          `json:"tools,omitempty"`
+	Stream               bool                `json:"stream,omitzero"`
+	StreamOptions        *streamOptions      `json:"stream_options,omitempty"`
+	Temperature          *float64            `json:"temperature,omitempty"`
+	MaxCompletionTokens  *int                `json:"max_completion_tokens,omitempty"`
+	MaxTokens            *int                `json:"max_tokens,omitempty"`
+	ResponseFormat       *responseFormat     `json:"response_format,omitempty"`
+	ReasoningEffort      llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
+	Reasoning            *reasoningOptions   `json:"reasoning,omitempty"`
+	Thinking             any                 `json:"thinking,omitempty"`
+	EnableThinking       *bool               `json:"enable_thinking,omitempty"`
+	TopP                 *float64            `json:"top_p,omitempty"`
+	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
+	Stop                 []string            `json:"stop,omitempty"`
+	ToolChoice           any                 `json:"tool_choice,omitempty"`
+	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
+}
+
+type reasoningOptions struct {
+	Effort  llm.ReasoningEffort `json:"effort,omitempty"`
+	Enabled *bool               `json:"enabled,omitempty"`
+}
+
+type thinkingOptions struct {
+	Type          string `json:"type"`
+	ClearThinking *bool  `json:"clear_thinking,omitempty"`
 }
 
 type chatMessage struct {
@@ -38,13 +54,20 @@ type chatMessage struct {
 	Reasoning        *string            `json:"reasoning,omitzero"`
 	ReasoningDetails *[]json.RawMessage `json:"reasoning_details,omitzero"`
 	ToolCallID       string             `json:"tool_call_id,omitempty"`
+	Name             string             `json:"name,omitempty"`
 	ToolCalls        []chatToolCall     `json:"tool_calls,omitempty"`
 }
 
 type contentPart struct {
-	Type     string    `json:"type"`
-	Text     *string   `json:"text,omitzero"`
-	ImageURL *imageURL `json:"image_url,omitempty"`
+	Type         string            `json:"type"`
+	Text         *string           `json:"text,omitzero"`
+	ImageURL     *imageURL         `json:"image_url,omitempty"`
+	CacheControl *chatCacheControl `json:"cache_control,omitempty"`
+}
+
+type chatCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type imageURL struct {
@@ -52,8 +75,9 @@ type imageURL struct {
 }
 
 type chatTool struct {
-	Type     string             `json:"type"`
-	Function functionDefinition `json:"function"`
+	Type         string             `json:"type"`
+	Function     functionDefinition `json:"function"`
+	CacheControl *chatCacheControl  `json:"cache_control,omitempty"`
 }
 
 type functionDefinition struct {
@@ -270,13 +294,24 @@ func cloneRawMessages(values []json.RawMessage) []json.RawMessage {
 }
 
 func newChatRequest(model string, request llm.Request) (chatRequest, error) {
-	return newChatRequestFor("generate", model, request, MaxTokensFieldCompletion)
+	return newChatRequestFor("generate", model, request, llm.OpenAIChatCompatibility{MaxTokensField: MaxTokensFieldCompletion})
 }
 
-func newChatRequestFor(op, model string, request llm.Request, maxTokensField MaxTokensField) (chatRequest, error) {
-	encoder := newMessageEncoder(op, request.Messages)
+func newChatRequestFor(op, model string, request llm.Request, compatibility llm.OpenAIChatCompatibility) (chatRequest, error) {
+	encoder := newMessageEncoder(op, request.Messages, compatibility)
 	messages := make([]chatMessage, 0, len(request.Messages))
-	for _, message := range request.Messages {
+	for index := 0; index < len(request.Messages); {
+		message := request.Messages[index]
+		if message.Role == llm.RoleTool {
+			combined := llm.Message{Role: llm.RoleTool}
+			for index < len(request.Messages) && request.Messages[index].Role == llm.RoleTool {
+				combined.ToolResults = append(combined.ToolResults, request.Messages[index].ToolResults...)
+				index++
+			}
+			message = combined
+		} else {
+			index++
+		}
 		converted, err := encoder.toWire(message)
 		if err != nil {
 			return chatRequest{}, err
@@ -306,11 +341,11 @@ func newChatRequestFor(op, model string, request llm.Request, maxTokensField Max
 		FrequencyPenalty: request.FrequencyPenalty,
 		PresencePenalty:  request.PresencePenalty,
 		Stop:             append([]string(nil), request.Stop...),
-		ReasoningEffort:  request.ReasoningEffort,
 	}
+	applyReasoningOptions(&wrequest, request.ReasoningEffort, compatibility)
 	if request.MaxOutputTokens != 0 {
 		maxTokens := request.MaxOutputTokens
-		if maxTokensField == MaxTokensFieldLegacy {
+		if compatibility.MaxTokensField == MaxTokensFieldLegacy {
 			wrequest.MaxTokens = &maxTokens
 		} else {
 			wrequest.MaxCompletionTokens = &maxTokens
@@ -319,18 +354,168 @@ func newChatRequestFor(op, model string, request llm.Request, maxTokensField Max
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		wrequest.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
+	wrequest.ToolChoice = openAIChatToolChoice(request.ToolChoice)
+	if request.CacheRetention != llm.CacheRetentionNone {
+		cacheKey := request.CacheKey
+		if cacheKey == "" {
+			cacheKey = request.SessionID
+		}
+		if cacheKey != "" {
+			if compatibility.LongCacheRetention != llm.CompatibilityEnabled {
+				return chatRequest{}, unsupported(op, "configured endpoint does not support OpenAI prompt cache keys")
+			}
+			wrequest.PromptCacheKey = cacheKey
+		}
+	}
+	if request.CacheRetention == llm.CacheRetentionLong {
+		wrequest.PromptCacheRetention = "24h"
+	}
+	if compatibility.CacheControlFormat == llm.CacheControlAnthropic &&
+		(request.CacheRetention == llm.CacheRetentionShort || request.CacheRetention == llm.CacheRetentionLong) {
+		control := &chatCacheControl{Type: "ephemeral"}
+		if request.CacheRetention == llm.CacheRetentionLong {
+			control.TTL = "1h"
+		}
+		applyAnthropicChatCacheControl(wrequest.Messages, wrequest.Tools, control)
+	}
 	return wrequest, nil
 }
 
-type messageEncoder struct {
-	op            string
-	usedIDs       map[string]struct{}
-	pendingByName map[string][]string
-	nextID        int
+func applyAnthropicChatCacheControl(messages []chatMessage, tools []chatTool, control *chatCacheControl) {
+	for index := range messages {
+		if messages[index].Role != string(llm.RoleSystem) && messages[index].Role != string(llm.InstructionRoleDeveloper) {
+			continue
+		}
+		if addAnthropicCacheControlToContent(&messages[index], control) {
+			break
+		}
+	}
+	if len(tools) != 0 {
+		tools[len(tools)-1].CacheControl = control
+	}
+	for index := len(messages) - 1; index >= 0; index-- {
+		switch messages[index].Role {
+		case string(llm.RoleUser), string(llm.RoleAssistant), string(llm.RoleTool):
+			if addAnthropicCacheControlToContent(&messages[index], control) {
+				return
+			}
+		}
+	}
 }
 
-func newMessageEncoder(op string, messages []llm.Message) *messageEncoder {
+func addAnthropicCacheControlToContent(message *chatMessage, control *chatCacheControl) bool {
+	switch content := message.Content.(type) {
+	case string:
+		if content == "" {
+			return false
+		}
+		text := content
+		message.Content = []contentPart{{Type: "text", Text: &text, CacheControl: control}}
+		return true
+	case []contentPart:
+		imageIndex := -1
+		for index := len(content) - 1; index >= 0; index-- {
+			if content[index].Type == "text" && content[index].Text != nil {
+				content[index].CacheControl = control
+				message.Content = content
+				return true
+			}
+			if imageIndex < 0 && content[index].Type == "image_url" && content[index].ImageURL != nil && content[index].ImageURL.URL != "" {
+				imageIndex = index
+			}
+		}
+		if imageIndex >= 0 {
+			content[imageIndex].CacheControl = control
+			message.Content = content
+			return true
+		}
+	}
+	return false
+}
+
+func openAIChatToolChoice(choice llm.ToolChoice) any {
+	switch choice.Mode {
+	case llm.ToolChoiceNone:
+		return "none"
+	case llm.ToolChoiceRequired:
+		return "required"
+	case llm.ToolChoiceNamed:
+		return map[string]any{"type": "function", "function": map[string]string{"name": choice.Name}}
+	default:
+		if choice.Mode == llm.ToolChoiceAuto && choice.Name == "" {
+			return nil
+		}
+		return "auto"
+	}
+}
+
+func applyReasoningOptions(request *chatRequest, effort llm.ReasoningEffort, compatibility llm.OpenAIChatCompatibility) {
+	if effort == llm.ReasoningEffortDefault {
+		return
+	}
+	format := compatibility.ThinkingFormat
+	if format == "" {
+		format = llm.ThinkingFormatOpenAI
+	}
+	enabled := effort != llm.ReasoningEffortNone
+	switch format {
+	case llm.ThinkingFormatOpenAI:
+		if compatibility.ReasoningEffort != llm.CompatibilityDisabled {
+			request.ReasoningEffort = effort
+		}
+	case llm.ThinkingFormatOpenRouter:
+		request.Reasoning = &reasoningOptions{Effort: effort}
+	case llm.ThinkingFormatDeepSeek:
+		state := "disabled"
+		if enabled {
+			state = "enabled"
+		}
+		request.Thinking = thinkingOptions{Type: state}
+		if enabled && compatibility.ReasoningEffort == llm.CompatibilityEnabled {
+			request.ReasoningEffort = effort
+		}
+	case llm.ThinkingFormatTogether:
+		request.Reasoning = &reasoningOptions{Enabled: &enabled}
+		if enabled && compatibility.ReasoningEffort == llm.CompatibilityEnabled {
+			request.ReasoningEffort = effort
+		}
+	case llm.ThinkingFormatZAI:
+		state := "disabled"
+		if enabled {
+			state = "enabled"
+			clear := false
+			request.Thinking = thinkingOptions{Type: state, ClearThinking: &clear}
+		} else {
+			request.Thinking = thinkingOptions{Type: state}
+		}
+		if enabled && compatibility.ReasoningEffort == llm.CompatibilityEnabled {
+			request.ReasoningEffort = effort
+		}
+	case llm.ThinkingFormatQwen:
+		request.EnableThinking = &enabled
+		if enabled && compatibility.ReasoningEffort == llm.CompatibilityEnabled {
+			request.ReasoningEffort = effort
+		}
+	case llm.ThinkingFormatString:
+		request.Thinking = string(effort)
+	}
+}
+
+const assistantAfterToolResultText = "I have processed the tool results."
+
+type messageEncoder struct {
+	op            string
+	compatibility llm.OpenAIChatCompatibility
+	usedIDs       map[string]struct{}
+	callNames     map[string]string
+	pendingByName map[string][]string
+	nextID        int
+	previousRole  llm.Role
+}
+
+func newMessageEncoder(op string, messages []llm.Message, compatibility llm.OpenAIChatCompatibility) *messageEncoder {
 	usedIDs := make(map[string]struct{})
+	callNames := make(map[string]string)
 	for _, message := range messages {
 		for _, call := range message.ToolCalls {
 			if call.ID != "" {
@@ -340,24 +525,59 @@ func newMessageEncoder(op string, messages []llm.Message) *messageEncoder {
 	}
 	return &messageEncoder{
 		op:            op,
+		compatibility: compatibility,
 		usedIDs:       usedIDs,
+		callNames:     callNames,
 		pendingByName: make(map[string][]string),
 	}
 }
 
 func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
+	previousRole := e.previousRole
+	e.previousRole = message.Role
 	if message.Role == llm.RoleTool {
-		messages := make([]chatMessage, len(message.ToolResults))
+		messages := make([]chatMessage, 0, len(message.ToolResults)+1)
+		imageParts := []llm.Part{{Kind: llm.PartText, Text: "Attached image(s) from tool result:"}}
 		for i, result := range message.ToolResults {
 			callID, err := e.resultID(result)
 			if err != nil {
 				return nil, err
 			}
-			messages[i] = chatMessage{
-				Role:       string(llm.RoleTool),
-				Content:    toolResultText(result),
-				ToolCallID: callID,
+			text := toolResultText(result)
+			hasImage := false
+			for _, part := range result.Content {
+				if part.Kind == llm.PartImage {
+					hasImage = true
+					imageParts = append(imageParts, part)
+				}
 			}
+			if text == "" && hasImage {
+				text = "(see attached image)"
+			}
+			toolMessage := chatMessage{Role: string(llm.RoleTool), Content: text, ToolCallID: callID}
+			if e.compatibility.ToolResultName == llm.CompatibilityEnabled {
+				name := result.Name
+				if name == "" {
+					name = e.callNames[callID]
+				}
+				if name == "" {
+					return nil, requestError(e.op, "tool result %d has no function name required by the configured model", i)
+				}
+				toolMessage.Name = name
+			}
+			messages = append(messages, toolMessage)
+			delete(e.callNames, callID)
+		}
+		if len(imageParts) > 1 {
+			content, err := contentToWire(e.op, llm.RoleUser, imageParts)
+			if err != nil {
+				return nil, err
+			}
+			if e.compatibility.AssistantAfterToolResult == llm.CompatibilityEnabled {
+				messages = append(messages, chatMessage{Role: string(llm.RoleAssistant), Content: assistantAfterToolResultText})
+			}
+			messages = append(messages, chatMessage{Role: string(llm.RoleUser), Content: content})
+			e.previousRole = llm.RoleUser
 		}
 		return messages, nil
 	}
@@ -366,10 +586,11 @@ func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	wmessage := chatMessage{
-		Role:    string(message.Role),
-		Content: content,
+	role := string(message.Role)
+	if message.Role == llm.RoleSystem && e.compatibility.InstructionRole == llm.InstructionRoleDeveloper {
+		role = string(llm.InstructionRoleDeveloper)
 	}
+	wmessage := chatMessage{Role: role, Content: content}
 	if message.Role == llm.RoleAssistant {
 		data, recognized, err := parseMessageData(message.ProviderData)
 		if err != nil {
@@ -387,6 +608,10 @@ func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
 			wmessage.Reasoning = cloneString(data.Reasoning)
 			wmessage.ReasoningDetails = cloneRawMessagePointer(data.ReasoningDetails)
 		}
+		if wmessage.ReasoningContent == nil && e.compatibility.ReasoningContentReplay == llm.CompatibilityEnabled {
+			empty := ""
+			wmessage.ReasoningContent = &empty
+		}
 	}
 	if len(message.ToolCalls) != 0 {
 		wmessage.ToolCalls = make([]chatToolCall, len(message.ToolCalls))
@@ -396,6 +621,7 @@ func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
 				callID = e.newID()
 				e.pendingByName[call.Name] = append(e.pendingByName[call.Name], callID)
 			}
+			e.callNames[callID] = call.Name
 			wmessage.ToolCalls[i] = chatToolCall{
 				ID:   callID,
 				Type: "function",
@@ -405,6 +631,10 @@ func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
 				},
 			}
 		}
+	}
+	if message.Role == llm.RoleUser && previousRole == llm.RoleTool &&
+		e.compatibility.AssistantAfterToolResult == llm.CompatibilityEnabled {
+		return []chatMessage{{Role: string(llm.RoleAssistant), Content: assistantAfterToolResultText}, wmessage}, nil
 	}
 	return []chatMessage{wmessage}, nil
 }

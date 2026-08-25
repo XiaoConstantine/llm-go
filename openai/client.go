@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
@@ -31,14 +32,14 @@ const (
 )
 
 // MaxTokensField identifies the request field used for an output-token limit.
-type MaxTokensField string
+type MaxTokensField = llm.MaxTokensField
 
 const (
 	// MaxTokensFieldCompletion uses max_completion_tokens, the default for
 	// current OpenAI-compatible APIs.
-	MaxTokensFieldCompletion MaxTokensField = "max_completion_tokens"
+	MaxTokensFieldCompletion = llm.MaxTokensFieldCompletion
 	// MaxTokensFieldLegacy uses max_tokens for providers such as DeepSeek.
-	MaxTokensFieldLegacy MaxTokensField = "max_tokens"
+	MaxTokensFieldLegacy = llm.MaxTokensFieldLegacy
 )
 
 // Config configures an OpenAI-compatible client. Model is required. Provider
@@ -71,13 +72,14 @@ type Options struct {
 // Client is an immutable OpenAI-compatible client. It is safe for concurrent
 // use when its configured HTTP client is safe for concurrent use.
 type Client struct {
-	provider       string
-	model          string
-	capabilities   []llm.Capability
-	headers        http.Header
-	maxTokensField MaxTokensField
-	sdkChatPath    string
-	sdkClient      openaisdk.Client
+	provider                string
+	model                   string
+	capabilities            []llm.Capability
+	headers                 http.Header
+	compatibility           llm.OpenAIChatCompatibility
+	compatibilityConfigured bool
+	sdkChatPath             string
+	sdkClient               openaisdk.Client
 }
 
 // New constructs a Client from config using current OpenAI request fields.
@@ -85,8 +87,18 @@ func New(config Config) (*Client, error) {
 	return NewWithOptions(config, Options{})
 }
 
-// NewWithOptions constructs a Client with explicit protocol compatibility.
-func NewWithOptions(config Config, options Options) (_ *Client, err error) {
+// NewWithOptions constructs a Client with explicit token-field compatibility.
+func NewWithOptions(config Config, options Options) (*Client, error) {
+	return newClient(config, options, nil)
+}
+
+// NewWithCompatibility constructs a Client with model compatibility metadata.
+// compatibility is copied during construction.
+func NewWithCompatibility(config Config, compatibility *llm.OpenAIChatCompatibility) (*Client, error) {
+	return newClient(config, Options{}, compatibility)
+}
+
+func newClient(config Config, options Options, configuredCompatibility *llm.OpenAIChatCompatibility) (_ *Client, err error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
 		provider = defaultProvider
@@ -103,14 +115,24 @@ func NewWithOptions(config Config, options Options) (_ *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
-	maxTokensField := options.MaxTokensField
-	if maxTokensField == "" {
-		maxTokensField = MaxTokensFieldCompletion
+	compatibility := llm.OpenAIChatCompatibility{}
+	if configuredCompatibility != nil {
+		compatibility = *configuredCompatibility
+		modelCompatibility := &llm.ModelCompatibility{OpenAIChat: &compatibility}
+		if err := modelCompatibility.Validate(llm.APIOpenAIChatCompletions); err != nil {
+			return nil, configError("model compatibility: %v", err)
+		}
 	}
-	switch maxTokensField {
+	if compatibility.MaxTokensField == "" {
+		compatibility.MaxTokensField = options.MaxTokensField
+	}
+	if compatibility.MaxTokensField == "" {
+		compatibility.MaxTokensField = MaxTokensFieldCompletion
+	}
+	switch compatibility.MaxTokensField {
 	case MaxTokensFieldCompletion, MaxTokensFieldLegacy:
 	default:
-		return nil, configError("max tokens field %q is not supported", maxTokensField)
+		return nil, configError("max tokens field %q is not supported", compatibility.MaxTokensField)
 	}
 
 	baseURL := strings.TrimSpace(config.BaseURL)
@@ -129,6 +151,16 @@ func NewWithOptions(config Config, options Options) (_ *Client, err error) {
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, configError("base URL must not contain a query or fragment")
+	}
+	if strings.EqualFold(parsed.Hostname(), "api.openai.com") && compatibility.LongCacheRetention == llm.CompatibilityDefault {
+		compatibility.LongCacheRetention = llm.CompatibilityEnabled
+	}
+	if compatibility.SessionAffinityFormat == llm.SessionAffinityDefault {
+		if provider == "openrouter" || strings.Contains(strings.ToLower(parsed.Host), "openrouter.ai") {
+			compatibility.SessionAffinityFormat = llm.SessionAffinityOpenRouter
+		} else {
+			compatibility.SessionAffinityFormat = llm.SessionAffinityOpenAI
+		}
 	}
 	chatEndpoint, err := url.JoinPath(baseURL, "chat/completions")
 	if err != nil {
@@ -166,13 +198,14 @@ func NewWithOptions(config Config, options Options) (_ *Client, err error) {
 	}}
 
 	return &Client{
-		provider:       provider,
-		model:          model,
-		capabilities:   capabilities,
-		headers:        headers,
-		maxTokensField: maxTokensField,
-		sdkChatPath:    sdkChatPath,
-		sdkClient:      sdkClient,
+		provider:                provider,
+		model:                   model,
+		capabilities:            capabilities,
+		headers:                 headers,
+		compatibility:           compatibility,
+		compatibilityConfigured: configuredCompatibility != nil,
+		sdkChatPath:             sdkChatPath,
+		sdkClient:               sdkClient,
 	}, nil
 }
 
@@ -236,11 +269,16 @@ func captureSDKResponse(headers http.Header, captured **http.Response, downstrea
 // Info describes the configured model and its explicitly declared optional
 // capabilities.
 func (c *Client) Info() llm.ModelInfo {
-	return llm.ModelInfo{
+	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
 		Capabilities: append([]llm.Capability(nil), c.capabilities...),
 	}
+	if c.compatibilityConfigured {
+		compatibility := c.compatibility
+		info.Compatibility = &llm.ModelCompatibility{OpenAIChat: &compatibility}
+	}
+	return info
 }
 
 // Generate performs one non-streaming Chat Completions request.
@@ -261,8 +299,11 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err := checkRequest("generate", request); err != nil {
 		return nil, err
 	}
+	if err := c.checkCompatibility("generate", request); err != nil {
+		return nil, err
+	}
 
-	wrequest, err := newChatRequestFor("generate", c.model, request, c.maxTokensField)
+	wrequest, err := newChatRequestFor("generate", c.model, request, c.compatibility)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +317,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 		}
 	}
 
-	body, err = c.post(ctx, "generate", c.sdkChatPath, body)
+	body, err = c.post(ctx, "generate", c.sdkChatPath, body, request.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -326,13 +367,18 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if err := checkRequest("stream", request); err != nil {
 		return nil, err
 	}
+	if err := c.checkCompatibility("stream", request); err != nil {
+		return nil, err
+	}
 
-	wrequest, err := newChatRequestFor("stream", c.model, request, c.maxTokensField)
+	wrequest, err := newChatRequestFor("stream", c.model, request, c.compatibility)
 	if err != nil {
 		return nil, err
 	}
 	wrequest.Stream = true
-	wrequest.StreamOptions = &streamOptions{IncludeUsage: true}
+	if c.compatibility.StreamingUsage != llm.CompatibilityDisabled {
+		wrequest.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
 	payload, err := jsonv2.Marshal(&wrequest)
 	if err != nil {
 		return nil, requestError("stream", "encode request: %w", err)
@@ -340,7 +386,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	format := request.ResponseFormat
 	declaredTools := declaredToolNames(request.Tools)
 	return internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
-		return c.produceStream(producerCtx, format, declaredTools, payload, emit)
+		return c.produceStream(producerCtx, format, declaredTools, payload, request.SessionID, emit)
 	}), nil
 }
 
@@ -355,8 +401,8 @@ func (c *Client) executeRaw(ctx context.Context, path string, payload []byte, he
 	return response, err, downstreamErr
 }
 
-func (c *Client) post(ctx context.Context, op, path string, payload []byte) ([]byte, error) {
-	response, err, downstreamErr := c.executeRaw(ctx, path, payload, c.headers)
+func (c *Client) post(ctx context.Context, op, path string, payload []byte, sessionID string) ([]byte, error) {
+	response, err, downstreamErr := c.executeRaw(ctx, path, payload, c.requestHeaders(sessionID))
 	if err != nil && !errors.Is(err, errSDKRawErrorResponse) {
 		contextErr := contextErr(ctx)
 		if downstreamErr != nil || contextErr == nil || response == nil || response.Body == nil {
@@ -560,9 +606,51 @@ func retryAfter(value string) time.Duration {
 	return delay
 }
 
+func (c *Client) checkCompatibility(op string, request llm.Request) error {
+	if request.SessionID != "" && c.compatibility.SessionAffinity != llm.CompatibilityEnabled {
+		return unsupported(op, "configured model does not support session affinity")
+	}
+	if c.compatibility.StrictTools == llm.CompatibilityDisabled {
+		for index, tool := range request.Tools {
+			if tool.Strict {
+				return unsupported(op, fmt.Sprintf("tool %d requires strict schemas, which the configured model does not support", index))
+			}
+		}
+	}
+	format := c.compatibility.ThinkingFormat
+	if format == "" {
+		format = llm.ThinkingFormatOpenAI
+	}
+	if request.ReasoningEffort != llm.ReasoningEffortDefault && format == llm.ThinkingFormatOpenAI &&
+		c.compatibility.ReasoningEffort == llm.CompatibilityDisabled {
+		return unsupported(op, "configured model does not support reasoning effort")
+	}
+	return nil
+}
+
+func (c *Client) requestHeaders(sessionID string) http.Header {
+	headers := c.headers.Clone()
+	if sessionID == "" || c.compatibility.SessionAffinity != llm.CompatibilityEnabled {
+		return headers
+	}
+	switch c.compatibility.SessionAffinityFormat {
+	case llm.SessionAffinityOpenRouter:
+		headers.Set("X-Session-Id", sessionID)
+	case llm.SessionAffinityOpenAINoSession:
+		headers.Set("X-Client-Request-Id", sessionID)
+		headers.Set("X-Session-Affinity", sessionID)
+	default:
+		headers.Set("session_id", sessionID)
+		headers.Set("X-Client-Request-Id", sessionID)
+		headers.Set("X-Session-Affinity", sessionID)
+	}
+	return headers
+}
+
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	usesTools := len(request.Tools) != 0
 	hasImage := false
+	hasToolImage := false
 	hasAudio := false
 	for _, message := range request.Messages {
 		usesTools = usesTools || len(message.ToolCalls) != 0 || len(message.ToolResults) != 0
@@ -579,6 +667,7 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 				switch part.Kind {
 				case llm.PartImage:
 					hasImage = true
+					hasToolImage = true
 				case llm.PartAudio:
 					hasAudio = true
 				}
@@ -598,6 +687,15 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if hasAudio {
 		return unsupported(op, "audio content is not supported")
 	}
+	if hasToolImage && c.compatibility.ToolResultImageFallback != llm.CompatibilityEnabled {
+		return unsupported(op, "image tool results require the explicit synthetic-user compatibility fallback")
+	}
+	if request.ReasoningBudgetTokens != 0 {
+		return unsupported(op, "reasoning token budgets are not implemented")
+	}
+	if request.CacheRetention == llm.CacheRetentionLong && c.compatibility.LongCacheRetention != llm.CompatibilityEnabled {
+		return unsupported(op, "configured model does not support long prompt-cache retention")
+	}
 	return nil
 }
 
@@ -611,6 +709,12 @@ func (c *Client) hasCapability(target llm.Capability) bool {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if key := request.CacheKey; utf8.RuneCountInString(key) > 64 {
+		return requestError(op, "prompt cache key must not exceed 64 characters")
+	}
+	if session := request.SessionID; request.CacheRetention != llm.CacheRetentionNone && request.CacheKey == "" && utf8.RuneCountInString(session) > 64 {
+		return requestError(op, "session ID used as a prompt cache key must not exceed 64 characters")
+	}
 	if request.Temperature != nil && *request.Temperature > 2 {
 		return requestError(op, "temperature must not exceed 2")
 	}
@@ -646,8 +750,8 @@ func checkRequest(op string, request llm.Request) error {
 		}
 		for _, result := range message.ToolResults {
 			for _, part := range result.Content {
-				if part.Kind != llm.PartText {
-					return unsupported(op, "binary tool results are not supported")
+				if part.Kind == llm.PartAudio {
+					return unsupported(op, "audio tool results are not supported")
 				}
 			}
 		}

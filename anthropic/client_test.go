@@ -86,6 +86,17 @@ func TestNewConfiguresClientWithoutMutatingHeaders(t *testing.T) {
 	}
 }
 
+func TestNewRejectsAudioCapability(t *testing.T) {
+	client, err := New(Config{Model: "model", Capabilities: []llm.Capability{llm.CapabilityAudio}})
+	if client != nil {
+		t.Fatalf("New() client = %#v, want nil", client)
+	}
+	requireModelError(t, err, llm.KindInvalidRequest, "configure")
+	if !strings.Contains(err.Error(), "audio") {
+		t.Fatalf("New() error = %v, want audio capability rejection", err)
+	}
+}
+
 func TestClientUsesConfiguredProviderIdentity(t *testing.T) {
 	client, err := New(Config{Provider: " gateway ", Model: "model"})
 	if err != nil {
@@ -114,15 +125,13 @@ func TestClientUsesConfiguredProviderIdentity(t *testing.T) {
 	}
 }
 
-func TestRequestRejectsReasoningEffort(t *testing.T) {
+func TestRequestAcceptsReasoningEffort(t *testing.T) {
 	request := llm.Request{
 		Messages:        []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}},
 		ReasoningEffort: llm.ReasoningEffortHigh,
 	}
-	err := checkRequest("generate", request)
-	var modelErr *llm.Error
-	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported {
-		t.Fatalf("checkRequest() error = %#v", err)
+	if err := checkRequest("generate", request); err != nil {
+		t.Fatalf("checkRequest() error = %v", err)
 	}
 }
 
@@ -169,6 +178,39 @@ func TestNewDefaultsAndRejectsInvalidConfig(t *testing.T) {
 			}
 			requireModelError(t, err, llm.KindInvalidRequest, "configure")
 		})
+	}
+}
+
+func TestClientEnforcesModelCompatibilityBeforeIO(t *testing.T) {
+	var calls atomic.Int32
+	client, err := NewWithOptions(Config{
+		Model:        "model",
+		Capabilities: []llm.Capability{llm.CapabilityTools},
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return nil, errors.New("unexpected I/O")
+		})},
+	}, Options{ModelCompatibility: &llm.AnthropicCompatibility{
+		Temperature: llm.CompatibilityDisabled,
+		StrictTools: llm.CompatibilityDisabled,
+	}})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error = %v", err)
+	}
+	temperature := 0.5
+	requests := []llm.Request{
+		{Messages: []llm.Message{{Role: llm.RoleUser}}, Temperature: &temperature},
+		{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "tool", InputSchema: []byte(`{"type":"object"}`), Strict: true}}},
+	}
+	for _, request := range requests {
+		response, err := client.Generate(context.Background(), request)
+		if response != nil {
+			t.Fatalf("Generate() response = %#v, want nil", response)
+		}
+		requireModelError(t, err, llm.KindUnsupported, "generate")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want zero", calls.Load())
 	}
 }
 
@@ -535,7 +577,8 @@ func TestGeneratePreflightOrderAndNoIO(t *testing.T) {
 		{name: "temperature", request: llm.Request{Messages: valid.Messages, Temperature: &temperature}, kind: llm.KindInvalidRequest, want: "must not exceed 1"},
 		{name: "late system", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}, {Role: llm.RoleSystem}}}, kind: llm.KindInvalidRequest, want: "must precede"},
 		{name: "system only", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleSystem}}}, kind: llm.KindInvalidRequest, want: "user or assistant"},
-		{name: "image", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartImage, Data: []byte{1}, MediaType: "image/png"}}}}}, kind: llm.KindUnsupported, want: "binary content"},
+		{name: "image", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartImage, Data: []byte{1}, MediaType: "image/png"}}}}}, kind: llm.KindUnsupported, want: "vision capability"},
+		{name: "audio", request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartAudio, Data: []byte{1}, MediaType: "audio/wav"}}}}}, kind: llm.KindUnsupported, want: "does not support audio"},
 		{name: "too many messages", request: llm.Request{Messages: tooMany}, kind: llm.KindInvalidRequest, want: "maximum"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -606,7 +649,7 @@ func TestGenerateRejectsMalformedResponse(t *testing.T) {
 		{name: "unknown stop", body: strings.Replace(validResponse, `"stop_reason":"end_turn"`, `"stop_reason":"future_reason"`, 1), want: "unsupported stop reason"},
 		{name: "missing content", body: strings.Replace(validResponse, `"content":[{"type":"text","text":"hello"}],`, "", 1), want: "no content"},
 		{name: "null content", body: strings.Replace(validResponse, `[{"type":"text","text":"hello"}]`, `null`, 1), want: "no content"},
-		{name: "unsupported content", body: strings.Replace(validResponse, `{"type":"text","text":"hello"}`, `{"type":"thinking"}`, 1), want: "unsupported type"},
+		{name: "unsupported content", body: strings.Replace(validResponse, `{"type":"text","text":"hello"}`, `{"type":"thinking"}`, 1), want: "missing thinking or signature"},
 		{name: "missing text", body: strings.Replace(validResponse, `,"text":"hello"`, "", 1), want: "no text"},
 		{name: "null text", body: strings.Replace(validResponse, `"text":"hello"`, `"text":null`, 1), want: "no text"},
 		{name: "missing usage", body: strings.Replace(validResponse, `,

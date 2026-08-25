@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,6 +86,125 @@ func TestRequestTranslatesReasoningEffort(t *testing.T) {
 	}
 	if request.ReasoningEffort != llm.ReasoningEffortHigh {
 		t.Fatalf("ReasoningEffort = %q", request.ReasoningEffort)
+	}
+}
+
+func TestRequestAppliesModelCompatibility(t *testing.T) {
+	t.Run("reasoning formats", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			format        llm.ThinkingFormat
+			effort        llm.ReasoningEffort
+			support       llm.CompatibilityToggle
+			wantEffort    llm.ReasoningEffort
+			wantReasoning *reasoningOptions
+			wantThinking  any
+			wantEnabled   *bool
+		}{
+			{name: "OpenAI", format: llm.ThinkingFormatOpenAI, effort: llm.ReasoningEffortHigh, wantEffort: llm.ReasoningEffortHigh},
+			{name: "OpenRouter", format: llm.ThinkingFormatOpenRouter, effort: llm.ReasoningEffortHigh, wantReasoning: &reasoningOptions{Effort: llm.ReasoningEffortHigh}},
+			{name: "DeepSeek", format: llm.ThinkingFormatDeepSeek, effort: llm.ReasoningEffortHigh, support: llm.CompatibilityDisabled, wantThinking: thinkingOptions{Type: "enabled"}},
+			{name: "DeepSeek off", format: llm.ThinkingFormatDeepSeek, effort: llm.ReasoningEffortNone, wantThinking: thinkingOptions{Type: "disabled"}},
+			{name: "Together", format: llm.ThinkingFormatTogether, effort: llm.ReasoningEffortHigh, support: llm.CompatibilityDisabled, wantReasoning: &reasoningOptions{Enabled: boolPointer(true)}},
+			{name: "ZAI", format: llm.ThinkingFormatZAI, effort: llm.ReasoningEffortNone, wantThinking: thinkingOptions{Type: "disabled"}},
+			{name: "Qwen", format: llm.ThinkingFormatQwen, effort: llm.ReasoningEffortHigh, wantEnabled: boolPointer(true)},
+			{name: "string", format: llm.ThinkingFormatString, effort: llm.ReasoningEffortHigh, wantThinking: "high"},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				compatibility := llm.OpenAIChatCompatibility{MaxTokensField: llm.MaxTokensFieldCompletion, ThinkingFormat: test.format, ReasoningEffort: test.support}
+				request, err := newChatRequestFor("generate", "model", llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, ReasoningEffort: test.effort}, compatibility)
+				if err != nil {
+					t.Fatalf("newChatRequestFor() error = %v", err)
+				}
+				if request.ReasoningEffort != test.wantEffort || !reflect.DeepEqual(request.Reasoning, test.wantReasoning) ||
+					!reflect.DeepEqual(request.Thinking, test.wantThinking) || !reflect.DeepEqual(request.EnableThinking, test.wantEnabled) {
+					t.Fatalf("reasoning fields = effort %q, reasoning %#v, thinking %#v, enabled %#v", request.ReasoningEffort, request.Reasoning, request.Thinking, request.EnableThinking)
+				}
+			})
+		}
+	})
+
+	t.Run("message conversion", func(t *testing.T) {
+		compatibility := llm.OpenAIChatCompatibility{
+			MaxTokensField:           llm.MaxTokensFieldLegacy,
+			InstructionRole:          llm.InstructionRoleDeveloper,
+			ToolResultName:           llm.CompatibilityEnabled,
+			AssistantAfterToolResult: llm.CompatibilityEnabled,
+			ReasoningContentReplay:   llm.CompatibilityEnabled,
+		}
+		canonical := llm.Request{
+			Messages: []llm.Message{
+				{Role: llm.RoleSystem, Content: []llm.Part{{Text: "instructions"}}},
+				{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "tool", Arguments: json.RawMessage(`{}`)}}},
+				{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "call", Content: []llm.Part{{Text: "result"}}}}},
+				{Role: llm.RoleUser, Content: []llm.Part{{Text: "next"}}},
+			},
+			MaxOutputTokens: 10,
+		}
+		request, err := newChatRequestFor("generate", "model", canonical, compatibility)
+		if err != nil {
+			t.Fatalf("newChatRequestFor() error = %v", err)
+		}
+		if request.MaxTokens == nil || *request.MaxTokens != 10 || request.MaxCompletionTokens != nil {
+			t.Fatalf("token limit fields = %#v", request)
+		}
+		if len(request.Messages) != 5 || request.Messages[0].Role != "developer" || request.Messages[2].Name != "tool" ||
+			request.Messages[3].Role != "assistant" || request.Messages[3].Content != assistantAfterToolResultText || request.Messages[4].Role != "user" {
+			t.Fatalf("messages = %#v", request.Messages)
+		}
+		if request.Messages[1].ReasoningContent == nil || *request.Messages[1].ReasoningContent != "" {
+			t.Fatalf("assistant reasoning replay = %#v", request.Messages[1])
+		}
+	})
+
+	t.Run("tool result names follow reused IDs sequentially", func(t *testing.T) {
+		request, err := newChatRequestFor("generate", "model", llm.Request{Messages: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "reused", Name: "first", Arguments: json.RawMessage(`{}`)}}},
+			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "reused", Content: []llm.Part{{Text: "one"}}}}},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "reused", Name: "second", Arguments: json.RawMessage(`{}`)}}},
+			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "reused", Content: []llm.Part{{Text: "two"}}}}},
+		}}, llm.OpenAIChatCompatibility{MaxTokensField: llm.MaxTokensFieldCompletion, ToolResultName: llm.CompatibilityEnabled})
+		if err != nil {
+			t.Fatalf("newChatRequestFor() error = %v", err)
+		}
+		if request.Messages[1].Name != "first" || request.Messages[3].Name != "second" {
+			t.Fatalf("tool result messages = %#v, %#v", request.Messages[1], request.Messages[3])
+		}
+	})
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func TestClientEnforcesModelCompatibilityBeforeIO(t *testing.T) {
+	var calls atomic.Int32
+	client, err := NewWithCompatibility(Config{
+		Model:        "model",
+		Capabilities: []llm.Capability{llm.CapabilityTools},
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return nil, errors.New("unexpected I/O")
+		})},
+	}, &llm.OpenAIChatCompatibility{
+		StrictTools:     llm.CompatibilityDisabled,
+		ReasoningEffort: llm.CompatibilityDisabled,
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error = %v", err)
+	}
+	requests := []llm.Request{
+		{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`), Strict: true}}},
+		{Messages: []llm.Message{{Role: llm.RoleUser}}, ReasoningEffort: llm.ReasoningEffortHigh},
+	}
+	for _, request := range requests {
+		response, err := client.Generate(context.Background(), request)
+		if response != nil {
+			t.Fatalf("Generate() response = %#v, want nil", response)
+		}
+		requireModelError(t, err, llm.KindUnsupported, "generate")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want zero", calls.Load())
 	}
 }
 
