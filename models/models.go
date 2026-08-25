@@ -193,7 +193,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 
 	switch config.api {
 	case OpenAIResponses:
-		generator, err := openairesponses.New(openairesponses.Config{
+		generator, err := openairesponses.NewWithOptions(openairesponses.Config{
 			Provider:     config.id,
 			Model:        info.Model,
 			Capabilities: info.Capabilities,
@@ -201,13 +201,17 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 			BaseURL:      config.baseURL,
 			HTTPClient:   config.httpClient,
 			Headers:      config.headers,
-		})
+		}, openairesponses.Options{EncryptedReasoning: config.id == ProviderXAI})
 		if err != nil {
 			return nil, err
 		}
 		return withPricing(generator, info), nil
 	case OpenAIChatCompletions:
-		generator, err := openai.New(openai.Config{
+		maxTokensField := openai.MaxTokensFieldCompletion
+		if config.id == ProviderDeepSeek {
+			maxTokensField = openai.MaxTokensFieldLegacy
+		}
+		generator, err := openai.NewWithOptions(openai.Config{
 			Provider:     config.id,
 			Model:        info.Model,
 			Capabilities: info.Capabilities,
@@ -215,7 +219,7 @@ func (c *Collection) Generator(info llm.ModelInfo) (llm.Generator, error) {
 			BaseURL:      config.baseURL,
 			HTTPClient:   config.httpClient,
 			Headers:      config.headers,
-		})
+		}, openai.Options{MaxTokensField: maxTokensField})
 		if err != nil {
 			return nil, err
 		}

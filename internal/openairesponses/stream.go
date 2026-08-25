@@ -212,13 +212,17 @@ func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, em
 
 	switch event.Type {
 	case "response.output_text.delta":
-		return s.consumePartDelta(event, "message", "text", llm.StreamEventTextStart, llm.StreamEventTextDelta, emit)
+		return s.consumePartDelta(event, "message", "text", false, llm.StreamEventTextStart, llm.StreamEventTextDelta, emit)
 	case "response.output_text.done":
-		return s.consumePartDone(event, "message", "text", llm.StreamEventTextStart, llm.StreamEventTextEnd, emit)
+		return s.consumePartDone(event, "message", "text", false, llm.StreamEventTextStart, llm.StreamEventTextEnd, emit)
 	case "response.reasoning_summary_text.delta":
-		return s.consumePartDelta(event, "reasoning", "reasoning", llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta, emit)
+		return s.consumePartDelta(event, "reasoning", "reasoning_summary", true, llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta, emit)
 	case "response.reasoning_summary_text.done":
-		return s.consumePartDone(event, "reasoning", "reasoning", llm.StreamEventReasoningStart, llm.StreamEventReasoningEnd, emit)
+		return s.consumePartDone(event, "reasoning", "reasoning_summary", true, llm.StreamEventReasoningStart, llm.StreamEventReasoningEnd, emit)
+	case "response.reasoning_text.delta":
+		return s.consumePartDelta(event, "reasoning", "reasoning_text", false, llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta, emit)
+	case "response.reasoning_text.done":
+		return s.consumePartDone(event, "reasoning", "reasoning_text", false, llm.StreamEventReasoningStart, llm.StreamEventReasoningEnd, emit)
 	case "response.function_call_arguments.delta":
 		return s.consumeToolArgumentDelta(event, emit)
 	case "response.function_call_arguments.done":
@@ -284,7 +288,7 @@ func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, em
 	return nil
 }
 
-func (s *streamState) partKey(event openairesponses.ResponseStreamEventUnion, expectedType, kind string) (responsePartKey, error) {
+func (s *streamState) partKey(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, summary bool) (responsePartKey, error) {
 	index, err := s.codec.outputIndex(s.op, event, kind+" event")
 	if err != nil {
 		return responsePartKey{}, err
@@ -297,9 +301,9 @@ func (s *streamState) partKey(event openairesponses.ResponseStreamEventUnion, ex
 		return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event does not match pending output item %d", kind, index)
 	}
 	var rawSubindex int64
-	if kind == "text" {
+	if !summary {
 		if !event.JSON.ContentIndex.Valid() {
-			return responsePartKey{}, s.codec.malformedResponse(s.op, "text event is missing content_index")
+			return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event is missing content_index", kind)
 		}
 		rawSubindex = event.ContentIndex
 	} else {
@@ -314,8 +318,8 @@ func (s *streamState) partKey(event openairesponses.ResponseStreamEventUnion, ex
 	return responsePartKey{outputIndex: index, subindex: int(rawSubindex), itemID: event.ItemID, kind: kind}, nil
 }
 
-func (s *streamState) consumePartDelta(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, startKind, deltaKind llm.StreamEventKind, emit internalstream.Emit) error {
-	key, err := s.partKey(event, expectedType, kind)
+func (s *streamState) consumePartDelta(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, summary bool, startKind, deltaKind llm.StreamEventKind, emit internalstream.Emit) error {
+	key, err := s.partKey(event, expectedType, kind, summary)
 	if err != nil {
 		return err
 	}
@@ -347,7 +351,7 @@ func (s *streamState) consumePartDelta(event openairesponses.ResponseStreamEvent
 	chunk := llm.Chunk{Events: events}
 	if kind == "text" {
 		chunk.Content = []llm.Part{{Kind: llm.PartText, Text: event.Delta}}
-	} else {
+	} else if summary {
 		chunk.ReasoningSummary = event.Delta
 	}
 	if !emit(chunk) {
@@ -356,8 +360,8 @@ func (s *streamState) consumePartDelta(event openairesponses.ResponseStreamEvent
 	return nil
 }
 
-func (s *streamState) consumePartDone(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, startKind, endKind llm.StreamEventKind, emit internalstream.Emit) error {
-	key, err := s.partKey(event, expectedType, kind)
+func (s *streamState) consumePartDone(event openairesponses.ResponseStreamEventUnion, expectedType, kind string, summary bool, startKind, endKind llm.StreamEventKind, emit internalstream.Emit) error {
+	key, err := s.partKey(event, expectedType, kind, summary)
 	if err != nil {
 		return err
 	}
@@ -389,7 +393,7 @@ func (s *streamState) consumePartDone(event openairesponses.ResponseStreamEventU
 		s.streamedBytes += len(event.Text)
 		if kind == "text" {
 			chunk.Content = []llm.Part{{Kind: llm.PartText, Text: event.Text}}
-		} else {
+		} else if summary {
 			chunk.ReasoningSummary = event.Text
 		}
 	}
@@ -643,7 +647,7 @@ func (s *streamState) closeOpenParts(outputIndex int) []llm.StreamEvent {
 	events := make([]llm.StreamEvent, 0, len(keys))
 	for _, key := range keys {
 		kind := llm.StreamEventTextEnd
-		if key.kind == "reasoning" {
+		if key.kind != "text" {
 			kind = llm.StreamEventReasoningEnd
 		}
 		events = append(events, llm.StreamEvent{Kind: kind, Index: key.outputIndex, Subindex: key.subindex})

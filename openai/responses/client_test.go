@@ -91,6 +91,81 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 	}
 }
 
+func TestCompatibleResponsesStreamsRawReasoningAndRequestsEncryptedState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var payload map[string]any
+		if err := jsonv2.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode body: %v", err)
+			return
+		}
+		include, _ := payload["include"].([]any)
+		if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+			t.Errorf("include = %#v", payload["include"])
+		}
+		if reasoning, _ := payload["reasoning"].(map[string]any); reasoning["summary"] != nil {
+			t.Errorf("reasoning = %#v, want no summary request", reasoning)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","content":[]}}`,
+			`{"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"item_id":"rs_1","delta":"raw thought"}`,
+			`{"type":"response.reasoning_text.done","output_index":0,"content_index":0,"item_id":"rs_1","text":"raw thought"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"raw thought"}]}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","model":"grok-test","status":"completed","output":[{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"raw thought"}],"encrypted_content":"secret"}]}}`,
+		)
+	}))
+	defer server.Close()
+	client, err := NewWithOptions(Config{
+		Model: "grok-test", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityStreaming},
+	}, Options{EncryptedReasoning: true})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error = %v", err)
+	}
+	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	var events []llm.StreamEvent
+	var summary string
+	var providerData jsontext.Value
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		events = append(events, chunk.Events...)
+		summary += chunk.ReasoningSummary
+		if len(chunk.ProviderData) != 0 {
+			providerData = append(jsontext.Value(nil), chunk.ProviderData...)
+		}
+	}
+	if summary != "" {
+		t.Fatalf("ReasoningSummary = %q, want raw reasoning kept separate", summary)
+	}
+	wantKinds := []llm.StreamEventKind{llm.StreamEventStart, llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta, llm.StreamEventReasoningEnd, llm.StreamEventDone}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("events = %#v", events)
+	}
+	for index, kind := range wantKinds {
+		if events[index].Kind != kind {
+			t.Fatalf("event %d = %#v, want %q", index, events[index], kind)
+		}
+	}
+	if events[2].Delta != "raw thought" || !strings.Contains(string(providerData), `"encrypted_content":"secret"`) {
+		t.Fatalf("raw reasoning events/provider data = (%#v, %s)", events, providerData)
+	}
+}
+
 func TestGeneratePreservesDoneOnlyText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

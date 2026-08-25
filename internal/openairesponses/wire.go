@@ -30,8 +30,9 @@ type Codec struct {
 
 // RequestOptions captures endpoint differences within the Responses protocol.
 type RequestOptions struct {
-	Subscription     bool
-	ReasoningSummary bool
+	Subscription       bool
+	ReasoningSummary   bool
+	EncryptedReasoning bool
 }
 
 type providerDataEnvelope struct {
@@ -109,9 +110,11 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		ParallelToolCalls: param.NewOpt(true),
 		Tools:             tools,
 	}
+	if options.EncryptedReasoning && request.ReasoningEffort != llm.ReasoningEffortNone {
+		params.Include = []openairesponses.ResponseIncludable{openairesponses.ResponseIncludableReasoningEncryptedContent}
+	}
 	if options.ReasoningSummary {
 		if request.ReasoningEffort != llm.ReasoningEffortNone {
-			params.Include = []openairesponses.ResponseIncludable{openairesponses.ResponseIncludableReasoningEncryptedContent}
 			params.Reasoning.Summary = shared.ReasoningSummaryAuto
 		}
 		params.Text.Verbosity = openairesponses.ResponseTextConfigVerbosityLow

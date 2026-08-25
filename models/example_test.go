@@ -31,6 +31,24 @@ func ExampleCollection() {
 	// Output: openai gpt-model
 }
 
+func ExampleBuiltinProvider() {
+	profile, ok := models.BuiltinProvider(models.ProviderDeepSeek)
+	if !ok {
+		panic("missing provider profile")
+	}
+	config := profile.Config("api-key")
+	collection, err := models.New(config)
+	if err != nil {
+		panic(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: models.ProviderDeepSeek, Model: "deepseek-model"})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(generator.Info().Provider, profile.BaseURL())
+	// Output: deepseek https://api.deepseek.com
+}
+
 func ExampleCatalog() {
 	catalog, err := models.NewCatalog(llm.Model{
 		Provider:        "openai",

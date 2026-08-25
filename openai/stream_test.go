@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -134,6 +135,163 @@ func TestStreamTranslatesTextCompletion(t *testing.T) {
 	if !ok || options["include_usage"] != true {
 		t.Fatalf("stream_options = %#v", payload["stream_options"])
 	}
+}
+
+func TestStreamTranslatesCompatibleReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, strings.Join([]string{
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"reasoning_content":"ing"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+			"data: [DONE]\n\n",
+		}, ""))
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "model", Capabilities: []llm.Capability{llm.CapabilityStreaming}, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	chunks, terminal := receiveAll(stream)
+	if terminal != io.EOF {
+		t.Fatalf("Recv() terminal = %v, want EOF", terminal)
+	}
+	assertStreamEventKinds(t, chunks, [][]llm.StreamEventKind{
+		{llm.StreamEventStart},
+		{llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta},
+		{llm.StreamEventReasoningDelta},
+		{llm.StreamEventReasoningEnd, llm.StreamEventTextStart, llm.StreamEventTextDelta},
+		{llm.StreamEventTextEnd, llm.StreamEventDone},
+	})
+	var reasoningEvents, text strings.Builder
+	var providerData []byte
+	for _, chunk := range chunks {
+		for _, event := range chunk.Events {
+			if event.Kind == llm.StreamEventReasoningDelta {
+				reasoningEvents.WriteString(event.Delta)
+			}
+		}
+		for _, part := range chunk.Content {
+			text.WriteString(part.Text)
+		}
+		if len(chunk.ProviderData) != 0 {
+			providerData = append([]byte(nil), chunk.ProviderData...)
+		}
+	}
+	if reasoningEvents.String() != "thinking" || text.String() != "answer" {
+		t.Fatalf("assembled output = reasoning events %q, text %q", reasoningEvents.String(), text.String())
+	}
+	data, err := ParseReasoningData(llm.Message{ProviderData: providerData})
+	if err != nil || data.ReasoningContent == nil || *data.ReasoningContent != "thinking" {
+		t.Fatalf("ParseReasoningData() = (%#v, %v)", data, err)
+	}
+}
+
+func TestStreamClosesReasoningBeforeToolCallsAndPreservesDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, strings.Join([]string{
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"reasoning":"thinking","reasoning_details":[{"type":"reasoning.encrypted","data":"secret"}]},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call","type":"function","function":{"name":"tool","arguments":"{}"}}],"reasoning_details":[{"type":"reasoning.text","text":"thinking"}]},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+			"data: [DONE]\n\n",
+		}, ""))
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "model", Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stream, err := client.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser}},
+		Tools:    []llm.Tool{{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	chunks, terminal := receiveAll(stream)
+	if terminal != io.EOF {
+		t.Fatalf("Recv() terminal = %v, want EOF", terminal)
+	}
+	assertStreamEventKinds(t, chunks, [][]llm.StreamEventKind{
+		{llm.StreamEventStart},
+		{llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta},
+		{llm.StreamEventReasoningEnd, llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta},
+		{llm.StreamEventToolCallEnd, llm.StreamEventDone},
+	})
+	last := chunks[len(chunks)-1]
+	data, err := ParseReasoningData(llm.Message{ProviderData: last.ProviderData})
+	if err != nil || data.Reasoning == nil || *data.Reasoning != "thinking" || len(data.ReasoningDetails) != 2 {
+		t.Fatalf("ParseReasoningData() = (%#v, %v)", data, err)
+	}
+	if len(last.ToolCalls) != 1 || last.ToolCalls[0].ID != "call" || last.ToolCalls[0].Name != "tool" || string(last.ToolCalls[0].Arguments) != `{}` {
+		t.Fatalf("ToolCalls = %#v", last.ToolCalls)
+	}
+}
+
+func TestStreamPreservesEmptyReasoningDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer,
+			`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"reasoning_details":[]},"finish_reason":null}]}`+"\n\n"+
+				`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
+				"data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "model", Capabilities: []llm.Capability{llm.CapabilityStreaming}, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	chunks, terminal := receiveAll(stream)
+	if terminal != io.EOF {
+		t.Fatalf("Recv() terminal = %v, want EOF", terminal)
+	}
+	last := chunks[len(chunks)-1]
+	data, err := ParseReasoningData(llm.Message{ProviderData: last.ProviderData})
+	if err != nil || !data.HasReasoningDetails || len(data.ReasoningDetails) != 0 {
+		t.Fatalf("ParseReasoningData() = (%#v, %v)", data, err)
+	}
+	wire, err := newChatRequest("model", llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}, {Role: llm.RoleAssistant, ProviderData: last.ProviderData}, {Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatalf("newChatRequest() error = %v", err)
+	}
+	encoded, err := jsonv2.Marshal(wire)
+	if err != nil || !strings.Contains(string(encoded), `"reasoning_details":[]`) {
+		t.Fatalf("encoded continuation = (%s, %v)", encoded, err)
+	}
+}
+
+func TestStreamRejectsReasoningAfterToolOutputStarts(t *testing.T) {
+	body := `data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call","type":"function","function":{"name":"tool","arguments":""}}]},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"reasoning":"late"},"finish_reason":null}]}` + "\n\n"
+	client := newStaticStreamClient(t, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}, http.StatusOK, "text/event-stream", body)
+	stream, err := client.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser}},
+		Tools:    []llm.Tool{{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	chunks, terminal := receiveAll(stream)
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %#v, want one tool chunk", chunks)
+	}
+	requireModelError(t, terminal, llm.KindMalformedResponse, "stream")
+	if !strings.Contains(terminal.Error(), "after text or tool output started") {
+		t.Fatalf("Recv() terminal = %v", terminal)
+	}
+	_ = stream.Close()
 }
 
 func TestStreamSDKIgnoresAmbientConfiguration(t *testing.T) {
@@ -714,6 +872,21 @@ func TestStreamClassifiesHTTPError(t *testing.T) {
 	if modelErr.HTTPStatus != http.StatusUnauthorized {
 		t.Fatalf("HTTPStatus = %d", modelErr.HTTPStatus)
 	}
+	_ = stream.Close()
+}
+
+func TestStreamClassifiesProviderInterruption(t *testing.T) {
+	body := `data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{},"finish_reason":"insufficient_system_resource"}]}` + "\n\n"
+	client := newStaticStreamClient(t, []llm.Capability{llm.CapabilityStreaming}, http.StatusOK, "text/event-stream", body)
+	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	chunks, terminal := receiveAll(stream)
+	if len(chunks) != 0 {
+		t.Fatalf("chunks = %#v, want none", chunks)
+	}
+	requireModelError(t, terminal, llm.KindProvider, "stream")
 	_ = stream.Close()
 }
 

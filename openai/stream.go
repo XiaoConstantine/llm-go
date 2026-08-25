@@ -46,11 +46,14 @@ type streamChoice struct {
 }
 
 type streamDelta struct {
-	Role         *string                  `json:"role"`
-	Content      *string                  `json:"content"`
-	Refusal      *string                  `json:"refusal"`
-	ToolCalls    []streamToolCallDelta    `json:"tool_calls"`
-	FunctionCall *streamFunctionCallDelta `json:"function_call"`
+	Role             *string                  `json:"role"`
+	Content          *string                  `json:"content"`
+	Refusal          *string                  `json:"refusal"`
+	ReasoningContent *string                  `json:"reasoning_content"`
+	Reasoning        *string                  `json:"reasoning"`
+	ReasoningDetails *[]json.RawMessage       `json:"reasoning_details"`
+	ToolCalls        []streamToolCallDelta    `json:"tool_calls"`
+	FunctionCall     *streamFunctionCallDelta `json:"function_call"`
 }
 
 type streamToolCallDelta struct {
@@ -292,24 +295,30 @@ func splitStreamLines(data []byte, atEOF bool) (advance int, token []byte, err e
 }
 
 type streamDecoder struct {
-	configuredModel string
-	format          llm.ResponseFormat
-	declaredTools   map[string]struct{}
-	id              string
-	model           string
-	emittedModel    string
-	content         strings.Builder
-	refusal         strings.Builder
-	toolMode        streamToolMode
-	toolCalls       []*streamToolCallBuilder
-	legacyCall      streamFunctionCallBuilder
-	legacyStarted   bool
-	bufferedBytes   int
-	refusalSeen     bool
-	started         bool
-	textStarted     bool
-	finished        bool
-	usageSeen       bool
+	configuredModel      string
+	format               llm.ResponseFormat
+	declaredTools        map[string]struct{}
+	id                   string
+	model                string
+	emittedModel         string
+	content              strings.Builder
+	reasoning            strings.Builder
+	reasoningField       string
+	reasoningDetails     []json.RawMessage
+	reasoningDetailsSeen bool
+	refusal              strings.Builder
+	toolMode             streamToolMode
+	toolCalls            []*streamToolCallBuilder
+	legacyCall           streamFunctionCallBuilder
+	legacyStarted        bool
+	bufferedBytes        int
+	refusalSeen          bool
+	started              bool
+	textStarted          bool
+	reasoningStarted     bool
+	reasoningEnded       bool
+	finished             bool
+	usageSeen            bool
 }
 
 type streamToolMode uint8
@@ -414,18 +423,55 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 	if choice.Delta.Role != nil && *choice.Delta.Role != string(llm.RoleAssistant) {
 		return false, malformedStream("event delta has role %q, want assistant", *choice.Delta.Role)
 	}
-	events, err := d.consumeToolDelta(*choice.Delta)
-	if err != nil {
-		return false, err
-	}
-
 	chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(false)}
 	if !d.started {
 		d.started = true
 		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventStart})
 	}
-	chunk.Events = append(chunk.Events, events...)
+	reasoning, err := reasoningFromWire(choice.Delta.ReasoningContent, choice.Delta.Reasoning)
+	if err != nil {
+		return false, malformedStream("event delta %v", err)
+	}
+	if reasoning != nil && *reasoning != "" {
+		if d.reasoningEnded || d.textStarted || d.toolMode != streamToolModeNone {
+			return false, malformedStream("reasoning delta arrived after text or tool output started")
+		}
+		field := "reasoning"
+		if choice.Delta.ReasoningContent != nil {
+			field = "reasoning_content"
+		}
+		if d.reasoningField != "" && d.reasoningField != field {
+			return false, malformedStream("reasoning field changed from %s to %s", d.reasoningField, field)
+		}
+		d.reasoningField = field
+		if err := d.buffer(&d.reasoning, *reasoning); err != nil {
+			return false, err
+		}
+		if !d.reasoningStarted {
+			d.reasoningStarted = true
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningStart, Index: 0})
+		}
+		chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningDelta, Index: 0, Delta: *reasoning})
+	}
+	if err := d.appendReasoningDetails(choice.Delta.ReasoningDetails); err != nil {
+		return false, err
+	}
+	if len(choice.Delta.ToolCalls) != 0 || choice.Delta.FunctionCall != nil {
+		if d.reasoningStarted && !d.reasoningEnded {
+			d.reasoningEnded = true
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: 0, Content: d.reasoning.String()})
+		}
+		events, err := d.consumeToolDelta(*choice.Delta)
+		if err != nil {
+			return false, err
+		}
+		chunk.Events = append(chunk.Events, events...)
+	}
 	if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+		if d.reasoningStarted && !d.reasoningEnded {
+			d.reasoningEnded = true
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: 0, Content: d.reasoning.String()})
+		}
 		if err := d.buffer(&d.content, *choice.Delta.Content); err != nil {
 			return false, err
 		}
@@ -456,6 +502,10 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 		chunk.Model = d.modelForChunk(true)
 		chunk.ToolCalls = toolCalls
 		chunk.FinishReason = finish
+		if d.reasoningStarted && !d.reasoningEnded {
+			d.reasoningEnded = true
+			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningEnd, Index: 0, Content: d.reasoning.String()})
+		}
 		if d.textStarted {
 			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: 0, Content: d.content.String()})
 		}
@@ -474,11 +524,27 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 			!jsontext.Value(d.content.String()).IsValid() {
 			return false, malformedStream("completed JSON response is not strict JSON")
 		}
-		if d.refusalSeen {
-			refusal := d.refusal.String()
-			providerData, marshalErr := marshalMessageData(MessageData{Refusal: &refusal})
+		if d.refusalSeen || d.reasoningStarted || d.reasoningDetailsSeen {
+			data := wireMessageData{}
+			if d.reasoningDetailsSeen {
+				details := cloneRawMessages(d.reasoningDetails)
+				data.ReasoningDetails = &details
+			}
+			if d.refusalSeen {
+				refusal := d.refusal.String()
+				data.Refusal = &refusal
+			}
+			if d.reasoningStarted {
+				reasoning := d.reasoning.String()
+				if d.reasoningField == "reasoning_content" {
+					data.ReasoningContent = &reasoning
+				} else {
+					data.Reasoning = &reasoning
+				}
+			}
+			providerData, marshalErr := marshalMessageData(data)
 			if marshalErr != nil {
-				return false, malformedStream("encode refusal state: %w", marshalErr)
+				return false, malformedStream("encode provider message state: %w", marshalErr)
 			}
 			chunk.ProviderData = providerData
 		}
@@ -693,6 +759,21 @@ func (d *streamDecoder) modelForChunk(fallback bool) string {
 	return d.emittedModel
 }
 
+func (d *streamDecoder) appendReasoningDetails(details *[]json.RawMessage) error {
+	if details == nil {
+		return nil
+	}
+	d.reasoningDetailsSeen = true
+	for _, detail := range *details {
+		if len(detail) > maxResponseBodyBytes-d.bufferedBytes {
+			return malformedStream("buffered stream output exceeds %d bytes", maxResponseBodyBytes)
+		}
+		d.reasoningDetails = append(d.reasoningDetails, append(json.RawMessage(nil), detail...))
+		d.bufferedBytes += len(detail)
+	}
+	return nil
+}
+
 func (d *streamDecoder) buffer(builder *strings.Builder, fragment string) error {
 	if len(fragment) > maxResponseBodyBytes-d.bufferedBytes {
 		return malformedStream("buffered stream output exceeds %d bytes", maxResponseBodyBytes)
@@ -709,6 +790,9 @@ func decodeStreamFinishReason(raw json.RawMessage) (llm.FinishReason, string, bo
 	var reason string
 	if err := jsonv2.Unmarshal(raw, &reason); err != nil {
 		return "", "", false, malformedStream("decode finish reason: %w", err)
+	}
+	if reason == "insufficient_system_resource" {
+		return "", "", false, providerInterruption("stream", reason)
 	}
 	finish, ok := finishReasonValue(reason)
 	if !ok {

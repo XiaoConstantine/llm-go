@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,11 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 				t.Fatalf("New() error = %q, want substring %q", err, test.want)
 			}
 		})
+	}
+
+	client, err := NewWithOptions(Config{Model: "model"}, Options{MaxTokensField: "future_tokens"})
+	if client != nil || err == nil || !strings.Contains(err.Error(), "max tokens field") {
+		t.Fatalf("NewWithOptions(unsupported max tokens field) = (%#v, %v)", client, err)
 	}
 }
 
@@ -110,6 +116,142 @@ func TestClientUsesConfiguredProviderIdentity(t *testing.T) {
 	}
 }
 
+func TestGenerateTranslatesCompatibleReasoningFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		message   string
+		want      string
+		wantError string
+	}{
+		{name: "reasoning content", message: `{"role":"assistant","content":"answer","reasoning_content":"thinking"}`, want: "thinking"},
+		{name: "reasoning alias", message: `{"role":"assistant","content":"answer","reasoning":"thinking"}`, want: "thinking"},
+		{name: "ambiguous", message: `{"role":"assistant","content":"answer","reasoning_content":"one","reasoning":"two"}`, wantError: "both reasoning_content and reasoning"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(writer, `{"choices":[{"index":0,"message":`+test.message+`,"finish_reason":"stop"}]}`)
+			}))
+			defer server.Close()
+			client, err := New(Config{Model: "model", BaseURL: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			response, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+			if test.wantError != "" {
+				if response != nil || err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("Generate() = (%#v, %v), want %q", response, err, test.wantError)
+				}
+				return
+			}
+			if err != nil || response == nil || response.ReasoningSummary != "" {
+				t.Fatalf("Generate() = (%#v, %v)", response, err)
+			}
+			data, err := ParseReasoningData(response.Message)
+			if err != nil {
+				t.Fatalf("ParseReasoningData() error = %v", err)
+			}
+			got := data.ReasoningContent
+			if test.name == "reasoning alias" {
+				got = data.Reasoning
+			}
+			if got == nil || *got != test.want {
+				t.Fatalf("ParseReasoningData() = %#v", data)
+			}
+		})
+	}
+}
+
+func TestCompatibleReasoningStateRoundTripsOriginalFields(t *testing.T) {
+	index := 0
+	stop := "stop"
+	content := "answer"
+	thinking := "thinking"
+	details := []json.RawMessage{
+		json.RawMessage(`{"type":"reasoning.encrypted","data":"secret"}`),
+		json.RawMessage(`{"type":"reasoning.text","text":"thinking"}`),
+	}
+	emptyDetails := []json.RawMessage{}
+	tests := []struct {
+		name        string
+		message     responseMessage
+		field       string
+		detailCount int
+	}{
+		{name: "reasoning_content", message: responseMessage{Role: "assistant", Content: &content, ReasoningContent: &thinking}, field: "reasoning_content"},
+		{name: "reasoning", message: responseMessage{Role: "assistant", Content: &content, Reasoning: &thinking}, field: "reasoning"},
+		{name: "reasoning_details", message: responseMessage{Role: "assistant", Content: &content, ReasoningDetails: &details}, field: "reasoning_details", detailCount: 2},
+		{name: "empty reasoning_details", message: responseMessage{Role: "assistant", Content: &content, ReasoningDetails: &emptyDetails}, field: "reasoning_details"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := responseFromWire("model", llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}, chatResponse{
+				Choices: []chatChoice{{Index: &index, Message: &test.message, FinishReason: &stop}},
+			})
+			if err != nil {
+				t.Fatalf("responseFromWire() error = %v", err)
+			}
+			data, err := ParseReasoningData(response.Message)
+			if err != nil {
+				t.Fatalf("ParseReasoningData() error = %v", err)
+			}
+			if test.field == "reasoning_content" && (data.ReasoningContent == nil || *data.ReasoningContent != thinking || data.Reasoning != nil) {
+				t.Fatalf("ReasoningData = %#v", data)
+			}
+			if test.field == "reasoning" && (data.Reasoning == nil || *data.Reasoning != thinking || data.ReasoningContent != nil) {
+				t.Fatalf("ReasoningData = %#v", data)
+			}
+			if test.field == "reasoning_details" {
+				if !data.HasReasoningDetails || len(data.ReasoningDetails) != test.detailCount {
+					t.Fatalf("ReasoningDetails = %s (present %t)", data.ReasoningDetails, data.HasReasoningDetails)
+				}
+				if test.detailCount != 0 {
+					if string(data.ReasoningDetails[0]) != string(details[0]) || string(data.ReasoningDetails[1]) != string(details[1]) {
+						t.Fatalf("ReasoningDetails = %s", data.ReasoningDetails)
+					}
+					data.ReasoningDetails[0][0] = '['
+					again, err := ParseReasoningData(response.Message)
+					if err != nil || string(again.ReasoningDetails[0]) != string(details[0]) {
+						t.Fatalf("second ParseReasoningData() = (%s, %v)", again.ReasoningDetails, err)
+					}
+				}
+			}
+
+			wire, err := newChatRequest("model", llm.Request{Messages: []llm.Message{
+				{Role: llm.RoleUser}, response.Message, {Role: llm.RoleUser},
+			}})
+			if err != nil {
+				t.Fatalf("newChatRequest() error = %v", err)
+			}
+			assistant := wire.Messages[1]
+			switch test.field {
+			case "reasoning_content":
+				if assistant.ReasoningContent == nil || *assistant.ReasoningContent != thinking || assistant.Reasoning != nil {
+					t.Fatalf("assistant = %#v", assistant)
+				}
+			case "reasoning":
+				if assistant.Reasoning == nil || *assistant.Reasoning != thinking || assistant.ReasoningContent != nil {
+					t.Fatalf("assistant = %#v", assistant)
+				}
+			case "reasoning_details":
+				if assistant.ReasoningDetails == nil || len(*assistant.ReasoningDetails) != test.detailCount {
+					t.Fatalf("assistant reasoning details = %v", assistant.ReasoningDetails)
+				}
+				if test.detailCount != 0 && (string((*assistant.ReasoningDetails)[0]) != string(details[0]) || string((*assistant.ReasoningDetails)[1]) != string(details[1])) {
+					t.Fatalf("assistant reasoning details = %v", assistant.ReasoningDetails)
+				}
+				if test.detailCount == 0 {
+					encoded, err := jsonv2.Marshal(wire)
+					if err != nil || !strings.Contains(string(encoded), `"reasoning_details":[]`) {
+						t.Fatalf("encoded continuation = (%s, %v)", encoded, err)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRelabelProviderErrorPreservesJoinedCauses(t *testing.T) {
 	closeErr := errors.New("close failed")
 	err := relabelProviderError(errors.Join(malformedStream("bad event"), closeErr), "ollama")
@@ -120,6 +262,23 @@ func TestRelabelProviderErrorPreservesJoinedCauses(t *testing.T) {
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("relabelProviderError() lost joined cause: %v", err)
 	}
+}
+
+func TestGenerateClassifiesProviderInterruption(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{"index":0,"message":{"role":"assistant","content":null},"finish_reason":"insufficient_system_resource"}]}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "model", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	response, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if response != nil {
+		t.Fatalf("Generate() response = %#v, want nil", response)
+	}
+	requireModelError(t, err, llm.KindProvider, "generate")
 }
 
 func TestGenerateTranslatesChatCompletion(t *testing.T) {

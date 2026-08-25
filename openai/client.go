@@ -30,6 +30,17 @@ const (
 	maxErrorBodyBytes    = 1 << 20
 )
 
+// MaxTokensField identifies the request field used for an output-token limit.
+type MaxTokensField string
+
+const (
+	// MaxTokensFieldCompletion uses max_completion_tokens, the default for
+	// current OpenAI-compatible APIs.
+	MaxTokensFieldCompletion MaxTokensField = "max_completion_tokens"
+	// MaxTokensFieldLegacy uses max_tokens for providers such as DeepSeek.
+	MaxTokensFieldLegacy MaxTokensField = "max_tokens"
+)
+
 // Config configures an OpenAI-compatible client. Model is required. Provider
 // identifies the service in ModelInfo and errors; it defaults to "openai".
 // BaseURL defaults to https://api.openai.com/v1. APIKey is optional so the
@@ -51,19 +62,31 @@ type Config struct {
 	Headers      http.Header
 }
 
+// Options configures protocol compatibility for NewWithOptions. Its zero value
+// uses current OpenAI request fields.
+type Options struct {
+	MaxTokensField MaxTokensField
+}
+
 // Client is an immutable OpenAI-compatible client. It is safe for concurrent
 // use when its configured HTTP client is safe for concurrent use.
 type Client struct {
-	provider     string
-	model        string
-	capabilities []llm.Capability
-	headers      http.Header
-	sdkChatPath  string
-	sdkClient    openaisdk.Client
+	provider       string
+	model          string
+	capabilities   []llm.Capability
+	headers        http.Header
+	maxTokensField MaxTokensField
+	sdkChatPath    string
+	sdkClient      openaisdk.Client
 }
 
-// New constructs a Client from config.
-func New(config Config) (_ *Client, err error) {
+// New constructs a Client from config using current OpenAI request fields.
+func New(config Config) (*Client, error) {
+	return NewWithOptions(config, Options{})
+}
+
+// NewWithOptions constructs a Client with explicit protocol compatibility.
+func NewWithOptions(config Config, options Options) (_ *Client, err error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
 		provider = defaultProvider
@@ -79,6 +102,15 @@ func New(config Config) (_ *Client, err error) {
 	capabilities, err := configureCapabilities(config.Capabilities)
 	if err != nil {
 		return nil, err
+	}
+	maxTokensField := options.MaxTokensField
+	if maxTokensField == "" {
+		maxTokensField = MaxTokensFieldCompletion
+	}
+	switch maxTokensField {
+	case MaxTokensFieldCompletion, MaxTokensFieldLegacy:
+	default:
+		return nil, configError("max tokens field %q is not supported", maxTokensField)
 	}
 
 	baseURL := strings.TrimSpace(config.BaseURL)
@@ -134,12 +166,13 @@ func New(config Config) (_ *Client, err error) {
 	}}
 
 	return &Client{
-		provider:     provider,
-		model:        model,
-		capabilities: capabilities,
-		headers:      headers,
-		sdkChatPath:  sdkChatPath,
-		sdkClient:    sdkClient,
+		provider:       provider,
+		model:          model,
+		capabilities:   capabilities,
+		headers:        headers,
+		maxTokensField: maxTokensField,
+		sdkChatPath:    sdkChatPath,
+		sdkClient:      sdkClient,
 	}, nil
 }
 
@@ -229,7 +262,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 		return nil, err
 	}
 
-	wrequest, err := newChatRequestFor("generate", c.model, request)
+	wrequest, err := newChatRequestFor("generate", c.model, request, c.maxTokensField)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +327,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 		return nil, err
 	}
 
-	wrequest, err := newChatRequestFor("stream", c.model, request)
+	wrequest, err := newChatRequestFor("stream", c.model, request, c.maxTokensField)
 	if err != nil {
 		return nil, err
 	}

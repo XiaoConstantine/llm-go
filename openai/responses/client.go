@@ -49,17 +49,30 @@ type Config struct {
 	Headers      http.Header
 }
 
+// Options configures compatible Responses protocol extensions.
+type Options struct {
+	// EncryptedReasoning requests opaque reasoning state for replay on later
+	// turns without requesting an OpenAI reasoning summary.
+	EncryptedReasoning bool
+}
+
 // Client is an immutable OpenAI Responses client. It is safe for concurrent
 // use when its HTTP client is safe for concurrent use.
 type Client struct {
-	provider     string
-	model        string
-	capabilities []llm.Capability
-	responses    sdkresponses.ResponseService
+	provider       string
+	model          string
+	capabilities   []llm.Capability
+	responses      sdkresponses.ResponseService
+	requestOptions internalresponses.RequestOptions
 }
 
-// New constructs a Client from config.
+// New constructs a Client from config using OpenAI defaults.
 func New(config Config) (*Client, error) {
+	return NewWithOptions(config, Options{})
+}
+
+// NewWithOptions constructs a Client with compatible protocol extensions.
+func NewWithOptions(config Config, compatibility Options) (*Client, error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
 		provider = defaultProvider
@@ -106,6 +119,9 @@ func New(config Config) (*Client, error) {
 		model:        model,
 		capabilities: capabilities,
 		responses:    sdkresponses.NewResponseService(options...),
+		requestOptions: internalresponses.RequestOptions{
+			EncryptedReasoning: compatibility.EncryptedReasoning,
+		},
 	}, nil
 }
 
@@ -213,7 +229,12 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 	if err := checkRequest(c.provider, op, request); err != nil {
 		return sdkresponses.ResponseNewParams{}, err
 	}
-	return c.codec().Request(op, c.model, request, internalresponses.RequestOptions{ReasoningSummary: supportsReasoning(c.model)})
+	options := c.requestOptions
+	if supportsReasoning(c.model) {
+		options.ReasoningSummary = true
+		options.EncryptedReasoning = true
+	}
+	return c.codec().Request(op, c.model, request, options)
 }
 
 func (c *Client) codec() internalresponses.Codec {

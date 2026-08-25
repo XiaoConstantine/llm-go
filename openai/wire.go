@@ -21,6 +21,7 @@ type chatRequest struct {
 	StreamOptions       *streamOptions      `json:"stream_options,omitempty"`
 	Temperature         *float64            `json:"temperature,omitempty"`
 	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
+	MaxTokens           *int                `json:"max_tokens,omitempty"`
 	ResponseFormat      *responseFormat     `json:"response_format,omitempty"`
 	ReasoningEffort     llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
 	TopP                *float64            `json:"top_p,omitempty"`
@@ -30,11 +31,14 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    any            `json:"content"`
-	Refusal    *string        `json:"refusal,omitzero"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	Role             string             `json:"role"`
+	Content          any                `json:"content"`
+	Refusal          *string            `json:"refusal,omitzero"`
+	ReasoningContent *string            `json:"reasoning_content,omitzero"`
+	Reasoning        *string            `json:"reasoning,omitzero"`
+	ReasoningDetails *[]json.RawMessage `json:"reasoning_details,omitzero"`
+	ToolCallID       string             `json:"tool_call_id,omitempty"`
+	ToolCalls        []chatToolCall     `json:"tool_calls,omitempty"`
 }
 
 type contentPart struct {
@@ -92,11 +96,14 @@ type chatChoice struct {
 }
 
 type responseMessage struct {
-	Role         string         `json:"role"`
-	Content      *string        `json:"content"`
-	Refusal      *string        `json:"refusal"`
-	ToolCalls    []chatToolCall `json:"tool_calls,omitempty"`
-	FunctionCall *functionCall  `json:"function_call"`
+	Role             string             `json:"role"`
+	Content          *string            `json:"content"`
+	Refusal          *string            `json:"refusal"`
+	ReasoningContent *string            `json:"reasoning_content"`
+	Reasoning        *string            `json:"reasoning"`
+	ReasoningDetails *[]json.RawMessage `json:"reasoning_details"`
+	ToolCalls        []chatToolCall     `json:"tool_calls,omitempty"`
+	FunctionCall     *functionCall      `json:"function_call"`
 }
 
 type responseUsage struct {
@@ -125,9 +132,9 @@ type errorEnvelope struct {
 const messageDataVersion = 1
 
 type messageDataEnvelope struct {
-	Provider string       `json:"provider"`
-	Version  int          `json:"version"`
-	Data     *MessageData `json:"data"`
+	Provider string           `json:"provider"`
+	Version  int              `json:"version"`
+	Data     *wireMessageData `json:"data"`
 }
 
 // MessageData is OpenAI-specific state stored in llm.Message.ProviderData.
@@ -137,52 +144,86 @@ type MessageData struct {
 	Refusal *string `json:"refusal,omitzero"`
 }
 
+// ReasoningData is opaque reasoning state returned by an OpenAI-compatible
+// provider. Exactly one of ReasoningContent and Reasoning is set, preserving
+// the provider's original text field. ReasoningDetails contains independently
+// owned raw JSON blocks in provider order.
+type ReasoningData struct {
+	ReasoningContent    *string
+	Reasoning           *string
+	ReasoningDetails    []json.RawMessage
+	HasReasoningDetails bool
+}
+
+type wireMessageData struct {
+	Refusal          *string            `json:"refusal,omitzero"`
+	ReasoningContent *string            `json:"reasoning_content,omitzero"`
+	Reasoning        *string            `json:"reasoning,omitzero"`
+	ReasoningDetails *[]json.RawMessage `json:"reasoning_details,omitzero"`
+}
+
 // ParseMessageData decodes OpenAI-specific state from message. It returns a
 // zero MessageData when message has no recognized OpenAI provider data.
 func ParseMessageData(message llm.Message) (MessageData, error) {
 	data, _, err := parseMessageData(message.ProviderData)
-	return data, err
+	return MessageData{Refusal: cloneString(data.Refusal)}, err
 }
 
-func parseMessageData(raw json.RawMessage) (MessageData, bool, error) {
+// ParseReasoningData decodes provider reasoning state from message. It returns
+// zero data when message has no recognized OpenAI-compatible provider data.
+func ParseReasoningData(message llm.Message) (ReasoningData, error) {
+	data, _, err := parseMessageData(message.ProviderData)
+	if err != nil {
+		return ReasoningData{}, err
+	}
+	return ReasoningData{
+		ReasoningContent:    cloneString(data.ReasoningContent),
+		Reasoning:           cloneString(data.Reasoning),
+		ReasoningDetails:    cloneRawMessagesPointer(data.ReasoningDetails),
+		HasReasoningDetails: data.ReasoningDetails != nil,
+	}, nil
+}
+
+func parseMessageData(raw json.RawMessage) (wireMessageData, bool, error) {
 	if len(raw) == 0 {
-		return MessageData{}, false, nil
+		return wireMessageData{}, false, nil
 	}
 	value := jsontext.Value(raw)
 	if !value.IsValid() {
-		return MessageData{}, false, fmt.Errorf("decode OpenAI message data: invalid JSON")
+		return wireMessageData{}, false, fmt.Errorf("decode OpenAI message data: invalid JSON")
 	}
 	if value.Kind() != jsontext.KindBeginObject {
-		return MessageData{}, false, nil
+		return wireMessageData{}, false, nil
 	}
 
 	var identity struct {
 		Provider string `json:"provider"`
 	}
 	if err := jsonv2.Unmarshal(raw, &identity); err != nil || identity.Provider != "openai" {
-		return MessageData{}, false, nil
+		return wireMessageData{}, false, nil
 	}
 	var header struct {
 		Version int `json:"version"`
 	}
 	if err := jsonv2.Unmarshal(raw, &header); err != nil {
-		return MessageData{}, false, fmt.Errorf("decode OpenAI message data header: %w", err)
+		return wireMessageData{}, false, fmt.Errorf("decode OpenAI message data header: %w", err)
 	}
 	if header.Version != messageDataVersion {
-		return MessageData{}, false, nil
+		return wireMessageData{}, false, nil
 	}
 
 	var envelope messageDataEnvelope
 	if err := jsonv2.Unmarshal(raw, &envelope); err != nil {
-		return MessageData{}, false, fmt.Errorf("decode OpenAI message data: %w", err)
+		return wireMessageData{}, false, fmt.Errorf("decode OpenAI message data: %w", err)
 	}
 	if envelope.Data == nil {
-		return MessageData{}, false, fmt.Errorf("decode OpenAI message data: missing data")
+		return wireMessageData{}, false, fmt.Errorf("decode OpenAI message data: missing data")
 	}
 	return *envelope.Data, true, nil
 }
 
-func marshalMessageData(data MessageData) (json.RawMessage, error) {
+func marshalMessageData(data wireMessageData) (json.RawMessage, error) {
+	data.ReasoningDetails = cloneRawMessagePointer(data.ReasoningDetails)
 	raw, err := jsonv2.Marshal(&messageDataEnvelope{
 		Provider: "openai",
 		Version:  messageDataVersion,
@@ -194,11 +235,45 @@ func marshalMessageData(data MessageData) (json.RawMessage, error) {
 	return json.RawMessage(raw), nil
 }
 
-func newChatRequest(model string, request llm.Request) (chatRequest, error) {
-	return newChatRequestFor("generate", model, request)
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
-func newChatRequestFor(op, model string, request llm.Request) (chatRequest, error) {
+func cloneRawMessagesPointer(values *[]json.RawMessage) []json.RawMessage {
+	if values == nil {
+		return nil
+	}
+	return cloneRawMessages(*values)
+}
+
+func cloneRawMessagePointer(values *[]json.RawMessage) *[]json.RawMessage {
+	if values == nil {
+		return nil
+	}
+	clone := cloneRawMessages(*values)
+	return &clone
+}
+
+func cloneRawMessages(values []json.RawMessage) []json.RawMessage {
+	if values == nil {
+		return nil
+	}
+	clone := make([]json.RawMessage, len(values))
+	for index := range values {
+		clone[index] = append(json.RawMessage(nil), values[index]...)
+	}
+	return clone
+}
+
+func newChatRequest(model string, request llm.Request) (chatRequest, error) {
+	return newChatRequestFor("generate", model, request, MaxTokensFieldCompletion)
+}
+
+func newChatRequestFor(op, model string, request llm.Request, maxTokensField MaxTokensField) (chatRequest, error) {
 	encoder := newMessageEncoder(op, request.Messages)
 	messages := make([]chatMessage, 0, len(request.Messages))
 	for _, message := range request.Messages {
@@ -235,7 +310,11 @@ func newChatRequestFor(op, model string, request llm.Request) (chatRequest, erro
 	}
 	if request.MaxOutputTokens != 0 {
 		maxTokens := request.MaxOutputTokens
-		wrequest.MaxCompletionTokens = &maxTokens
+		if maxTokensField == MaxTokensFieldLegacy {
+			wrequest.MaxTokens = &maxTokens
+		} else {
+			wrequest.MaxCompletionTokens = &maxTokens
+		}
 	}
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		wrequest.ResponseFormat = &responseFormat{Type: "json_object"}
@@ -296,12 +375,17 @@ func (e *messageEncoder) toWire(message llm.Message) ([]chatMessage, error) {
 		if err != nil {
 			return nil, requestError(e.op, "decode assistant provider data: %w", err)
 		}
-		if recognized && data.Refusal != nil {
-			refusal := *data.Refusal
-			wmessage.Refusal = &refusal
-			if len(message.Content) == 0 {
-				wmessage.Content = nil
+		if recognized {
+			if data.Refusal != nil {
+				refusal := *data.Refusal
+				wmessage.Refusal = &refusal
+				if len(message.Content) == 0 {
+					wmessage.Content = nil
+				}
 			}
+			wmessage.ReasoningContent = cloneString(data.ReasoningContent)
+			wmessage.Reasoning = cloneString(data.Reasoning)
+			wmessage.ReasoningDetails = cloneRawMessagePointer(data.ReasoningDetails)
 		}
 	}
 	if len(message.ToolCalls) != 0 {
@@ -459,10 +543,19 @@ func responseFromWire(configuredModel string, request llm.Request, response chat
 	if choice.Message.Content != nil {
 		message.Content = []llm.Part{{Text: *choice.Message.Content}}
 	}
-	if choice.Message.Refusal != nil {
-		data, err := marshalMessageData(MessageData{Refusal: choice.Message.Refusal})
+	reasoning, err := reasoningFromWire(choice.Message.ReasoningContent, choice.Message.Reasoning)
+	if err != nil {
+		return nil, malformedResponse("response message %w", err)
+	}
+	if choice.Message.Refusal != nil || reasoning != nil || choice.Message.ReasoningDetails != nil {
+		data, err := marshalMessageData(wireMessageData{
+			Refusal:          choice.Message.Refusal,
+			ReasoningContent: choice.Message.ReasoningContent,
+			Reasoning:        choice.Message.Reasoning,
+			ReasoningDetails: choice.Message.ReasoningDetails,
+		})
 		if err != nil {
-			return nil, malformedResponse("encode refusal state: %w", err)
+			return nil, malformedResponse("encode provider message state: %w", err)
 		}
 		message.ProviderData = data
 	}
@@ -530,6 +623,21 @@ func responseFromWire(configuredModel string, request llm.Request, response chat
 	}, nil
 }
 
+func reasoningFromWire(reasoningContent, reasoning *string) (*string, error) {
+	if reasoningContent != nil && reasoning != nil {
+		return nil, fmt.Errorf("contains both reasoning_content and reasoning")
+	}
+	if reasoningContent != nil {
+		value := *reasoningContent
+		return &value, nil
+	}
+	if reasoning != nil {
+		value := *reasoning
+		return &value, nil
+	}
+	return nil, nil
+}
+
 func functionCallFromWire(id string, call functionCall, label string) (llm.ToolCall, error) {
 	converted, err := functionCallValue(id, call, label)
 	if err != nil {
@@ -565,6 +673,9 @@ func declaredToolNames(tools []llm.Tool) map[string]struct{} {
 }
 
 func finishReason(reason string) (llm.FinishReason, error) {
+	if reason == "insufficient_system_resource" {
+		return "", providerInterruption("generate", reason)
+	}
 	finish, ok := finishReasonValue(reason)
 	if !ok {
 		return "", malformedResponse("response has unknown finish reason %q", reason)
@@ -584,6 +695,15 @@ func finishReasonValue(reason string) (llm.FinishReason, bool) {
 		return llm.FinishReasonContentFilter, true
 	default:
 		return "", false
+	}
+}
+
+func providerInterruption(op, reason string) error {
+	return &llm.Error{
+		Kind:     llm.KindProvider,
+		Op:       op,
+		Provider: "openai",
+		Err:      fmt.Errorf("provider interrupted generation: %s", reason),
 	}
 }
 
