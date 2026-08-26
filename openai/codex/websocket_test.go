@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	jsonv2 "encoding/json/v2"
@@ -577,22 +578,27 @@ func TestWebSocketMalformedEarlyCloseAndProviderErrors(t *testing.T) {
 
 type blockingResponseWriteConn struct {
 	net.Conn
-	upgraded  <-chan struct{}
-	blocked   chan struct{}
-	unblock   chan struct{}
-	blockOnce sync.Once
-	closeOnce sync.Once
+	handshake        []byte
+	handshakeWritten bool
+	blocked          chan struct{}
+	unblock          chan struct{}
+	blockOnce        sync.Once
+	closeOnce        sync.Once
 }
 
 func (c *blockingResponseWriteConn) Write(data []byte) (int, error) {
-	select {
-	case <-c.upgraded:
+	if c.handshakeWritten {
 		c.blockOnce.Do(func() { close(c.blocked) })
 		<-c.unblock
 		return 0, net.ErrClosed
-	default:
-		return c.Conn.Write(data)
 	}
+	n, err := c.Conn.Write(data)
+	c.handshake = append(c.handshake, data[:n]...)
+	if bytes.Contains(c.handshake, []byte("\r\n\r\n")) {
+		c.handshake = nil
+		c.handshakeWritten = true
+	}
+	return n, err
 }
 
 func (c *blockingResponseWriteConn) Close() error {
@@ -603,7 +609,6 @@ func (c *blockingResponseWriteConn) Close() error {
 func TestWebSocketCancelAndCloseInterruptBlockedResponseCreateWrite(t *testing.T) {
 	for _, operation := range []string{"cancel", "close"} {
 		t.Run(operation, func(t *testing.T) {
-			upgraded := make(chan struct{})
 			blocked := make(chan struct{})
 			unblock := make(chan struct{})
 			serverRelease := make(chan struct{})
@@ -614,7 +619,6 @@ func TestWebSocketCancelAndCloseInterruptBlockedResponseCreateWrite(t *testing.T
 					close(serverDone)
 					return
 				}
-				close(upgraded)
 				<-serverRelease // Deliberately never read the large response.create frame.
 				_ = conn.Close()
 				close(serverDone)
@@ -625,7 +629,7 @@ func TestWebSocketCancelAndCloseInterruptBlockedResponseCreateWrite(t *testing.T
 				if err != nil {
 					return nil, err
 				}
-				return &blockingResponseWriteConn{Conn: conn, upgraded: upgraded, blocked: blocked, unblock: unblock}, nil
+				return &blockingResponseWriteConn{Conn: conn, blocked: blocked, unblock: unblock}, nil
 			}}
 			client := wsClient(t, server, TransportWebSocket, func(c *Config) { c.HTTPClient = &http.Client{Transport: transport} })
 			ctx, cancel := context.WithCancel(context.Background())
