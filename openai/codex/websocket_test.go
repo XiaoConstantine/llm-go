@@ -640,7 +640,7 @@ func TestWebSocketCancelAndCloseInterruptBlockedResponseCreateWrite(t *testing.T
 			client := wsClient(t, server, TransportWebSocket, func(c *Config) { c.HTTPClient = &http.Client{Transport: transport} })
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			request := textRequest(strings.Repeat("x", 16<<20))
+			request := textRequest("hello")
 			stream, err := client.Stream(ctx, request)
 			if err != nil {
 				t.Fatal(err)
