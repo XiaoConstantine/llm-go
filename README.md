@@ -262,6 +262,9 @@ responsible for browser, callback, prompt UI, and persistent storage.
 ## Development
 
 ```sh
+make fmt       # Format Go sources.
+make fmt-check # Check formatting without changing files.
+make lint      # Run the pinned golangci-lint version used by CI.
 go test ./...
 go test -race ./...
 go vet ./...

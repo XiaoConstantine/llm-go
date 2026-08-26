@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -306,8 +307,6 @@ func cloneStoredCredential(credential StoredCredential) StoredCredential {
 	}
 	attributes := credential.Attributes
 	credential.Attributes = make(map[string]string, len(attributes))
-	for key, value := range attributes {
-		credential.Attributes[key] = value
-	}
+	maps.Copy(credential.Attributes, attributes)
 	return credential
 }

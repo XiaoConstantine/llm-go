@@ -196,9 +196,9 @@ func TestRequestAppliesModelCompatibility(t *testing.T) {
 			{name: "OpenRouter", format: llm.ThinkingFormatOpenRouter, effort: llm.ReasoningEffortHigh, wantReasoning: &reasoningOptions{Effort: llm.ReasoningEffortHigh}},
 			{name: "DeepSeek", format: llm.ThinkingFormatDeepSeek, effort: llm.ReasoningEffortHigh, support: llm.CompatibilityDisabled, wantThinking: thinkingOptions{Type: "enabled"}},
 			{name: "DeepSeek off", format: llm.ThinkingFormatDeepSeek, effort: llm.ReasoningEffortNone, wantThinking: thinkingOptions{Type: "disabled"}},
-			{name: "Together", format: llm.ThinkingFormatTogether, effort: llm.ReasoningEffortHigh, support: llm.CompatibilityDisabled, wantReasoning: &reasoningOptions{Enabled: boolPointer(true)}},
+			{name: "Together", format: llm.ThinkingFormatTogether, effort: llm.ReasoningEffortHigh, support: llm.CompatibilityDisabled, wantReasoning: &reasoningOptions{Enabled: new(true)}},
 			{name: "ZAI", format: llm.ThinkingFormatZAI, effort: llm.ReasoningEffortNone, wantThinking: thinkingOptions{Type: "disabled"}},
-			{name: "Qwen", format: llm.ThinkingFormatQwen, effort: llm.ReasoningEffortHigh, wantEnabled: boolPointer(true)},
+			{name: "Qwen", format: llm.ThinkingFormatQwen, effort: llm.ReasoningEffortHigh, wantEnabled: new(true)},
 			{name: "string", format: llm.ThinkingFormatString, effort: llm.ReasoningEffortHigh, wantThinking: "high"},
 		}
 		for _, test := range tests {
@@ -264,8 +264,6 @@ func TestRequestAppliesModelCompatibility(t *testing.T) {
 		}
 	})
 }
-
-func boolPointer(value bool) *bool { return &value }
 
 func TestClientEnforcesModelCompatibilityBeforeIO(t *testing.T) {
 	var calls atomic.Int32
@@ -1059,8 +1057,7 @@ func TestGenerateClassifiesHTTPError(t *testing.T) {
 			if test.retryAfter != "" && modelErr.RetryAfter != 3*time.Second {
 				t.Fatalf("RetryAfter = %v, want 3s", modelErr.RetryAfter)
 			}
-			var apiErr *APIError
-			if !errors.As(err, &apiErr) {
+			if _, ok := errors.AsType[*APIError](err); !ok {
 				t.Fatalf("errors.As(%v, *APIError) = false", err)
 			}
 		})
@@ -1143,8 +1140,7 @@ func TestGeneratePreservesMalformedResponseCause(t *testing.T) {
 		t.Fatalf("Generate() response = %#v, want nil", response)
 	}
 	requireModelError(t, err, llm.KindMalformedResponse, "generate")
-	var syntaxErr *jsontext.SyntacticError
-	if !errors.As(err, &syntaxErr) {
+	if _, ok := errors.AsType[*jsontext.SyntacticError](err); !ok {
 		t.Fatalf("errors.As(%v, *jsontext.SyntacticError) = false", err)
 	}
 }
@@ -1637,8 +1633,7 @@ func TestNonStreamingSDKRedirectCancellation(t *testing.T) {
 	if !errors.Is(callErr, context.Canceled) || !errors.Is(callErr, cause) || errors.Is(callErr, redirectErr) {
 		t.Fatalf("call error = %v", callErr)
 	}
-	var modelErr *llm.Error
-	if errors.As(callErr, &modelErr) {
+	if modelErr, ok := errors.AsType[*llm.Error](callErr); ok {
 		t.Fatalf("call error contains model error: %#v", modelErr)
 	}
 }

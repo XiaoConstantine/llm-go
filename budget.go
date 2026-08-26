@@ -97,8 +97,8 @@ func cloneRequest(request Request) Request {
 	clone := request
 	clone.Messages = make([]Message, len(request.Messages))
 	for index, message := range request.Messages {
-		converted := Message{Role: message.Role, ProviderData: append([]byte(nil), message.ProviderData...)}
-		converted.Content = make([]Part, len(message.Content))
+		converted := Message{Role: message.Role, ProviderData: append([]byte(nil), message.ProviderData...),
+			Content: make([]Part, len(message.Content))}
 		for partIndex, part := range message.Content {
 			converted.Content[partIndex] = clonePart(part)
 		}

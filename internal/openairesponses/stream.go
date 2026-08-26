@@ -115,12 +115,10 @@ func (c Codec) ProduceEvents(ctx context.Context, op, model string, params opena
 }
 
 func (c Codec) streamReadError(op string, err error) error {
-	var modelErr *llm.Error
-	if errors.As(err, &modelErr) {
+	if _, ok := errors.AsType[*llm.Error](err); ok {
 		return err
 	}
-	var providerEvent *ssestream.StreamError
-	if errors.As(err, &providerEvent) {
+	if providerEvent, ok := errors.AsType[*ssestream.StreamError](err); ok {
 		return c.eventError(op, providerEvent.Event.Data)
 	}
 	var syntaxErr *json.SyntaxError
@@ -789,10 +787,8 @@ func responseHasValidRefusal(output []openairesponses.ResponseOutputItemUnion) b
 		if item.Type != "message" {
 			continue
 		}
-		for _, content := range item.Content {
-			if validRefusalContent(content) {
-				return true
-			}
+		if slices.ContainsFunc(item.Content, validRefusalContent) {
+			return true
 		}
 	}
 	return false

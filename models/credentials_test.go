@@ -159,9 +159,7 @@ func TestMemoryCredentialStoreSerializesConcurrentUpdates(t *testing.T) {
 	var group sync.WaitGroup
 	errors := make(chan error, updates)
 	for range updates {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			errors <- store.Modify(context.Background(), "openai", func(current StoredCredential, found bool) (*StoredCredential, error) {
 				value, err := strconv.Atoi(current.Attributes["updates"])
 				if err != nil {
@@ -170,7 +168,7 @@ func TestMemoryCredentialStoreSerializesConcurrentUpdates(t *testing.T) {
 				current.Attributes["updates"] = strconv.Itoa(value + 1)
 				return &current, nil
 			})
-		}()
+		})
 	}
 	updatesDone := make(chan struct{})
 	go func() {
@@ -398,7 +396,7 @@ func TestMemoryCredentialStoreRejectsInvalidInputs(t *testing.T) {
 	if _, _, err := nilStore.Read(context.Background(), "openai"); err == nil {
 		t.Fatal("nil store Read() error = nil")
 	}
-	if _, _, err := store.Read(nil, "openai"); err == nil {
+	if _, _, err := store.Read(nil, "openai"); err == nil { //nolint:staticcheck // Verify nil-context rejection.
 		t.Fatal("Read(nil context) error = nil")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -113,9 +114,10 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 		}
 	}
 	encryptedReasoning := options.EncryptedReasoning
-	if modelCompatibility.EncryptedReasoning == llm.CompatibilityEnabled {
+	switch modelCompatibility.EncryptedReasoning {
+	case llm.CompatibilityEnabled:
 		encryptedReasoning = true
-	} else if modelCompatibility.EncryptedReasoning == llm.CompatibilityDisabled {
+	case llm.CompatibilityDisabled:
 		encryptedReasoning = false
 	}
 	baseURL, err := serviceBaseURL(provider, config.BaseURL)
@@ -336,12 +338,7 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 }
 
 func (c *Client) hasCapability(capability llm.Capability) bool {
-	for _, configured := range c.capabilities {
-		if configured == capability {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.capabilities, capability)
 }
 
 func checkRequest(provider, op string, request llm.Request) error {

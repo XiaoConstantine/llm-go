@@ -580,7 +580,7 @@ func TestStreamOrdersToolCallsByOutputIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var chunks []llm.Chunk
 	for {
 		chunk, err := stream.Recv()
@@ -661,7 +661,7 @@ func TestStreamEmitsReasoningSummaryChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for _, want := range []string{"Checking ", "the workspace."} {
 		chunk, err := stream.Recv()
 		if err != nil {

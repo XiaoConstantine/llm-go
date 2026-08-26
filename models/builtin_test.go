@@ -1,6 +1,7 @@
 package models
 
 import (
+	"slices"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -128,12 +129,7 @@ func TestBuiltinCatalogProtocolCapabilitiesAreUsable(t *testing.T) {
 }
 
 func hasCapability(capabilities []llm.Capability, target llm.Capability) bool {
-	for _, capability := range capabilities {
-		if capability == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(capabilities, target)
 }
 
 func TestBuiltinCatalogMatchesProviderProfiles(t *testing.T) {

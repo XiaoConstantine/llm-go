@@ -8,6 +8,35 @@ import (
 	llm "github.com/XiaoConstantine/llm-go"
 )
 
+func TestRequestOnlySerializesCallerInstructions(t *testing.T) {
+	codec := Codec{Provider: "openai"}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}}
+	params, err := codec.Request("generate", "model", request, RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := jsonv2.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"instructions"`) {
+		t.Fatalf("user-only wire contains instructions: %s", body)
+	}
+
+	request.Messages = append([]llm.Message{{Role: llm.RoleSystem, Content: []llm.Part{{Text: "Follow the caller."}}}}, request.Messages...)
+	params, err = codec.Request("generate", "model", request, RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = jsonv2.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"instructions":"Follow the caller."`) {
+		t.Fatalf("system instructions missing from wire: %s", body)
+	}
+}
+
 func TestExplicitPromptCacheWireSemantics(t *testing.T) {
 	codec := Codec{Provider: "openai", MaxProviderDataBytes: 1 << 20}
 	base := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}}

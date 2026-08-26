@@ -126,10 +126,7 @@ func (l *webSocketLease) release(keep bool, continuation *webSocketContinuation)
 	l.entry.continuation = cloneWebSocketContinuation(continuation)
 	l.entry.busy = false
 	remainingAge := l.client.webSocketMaxAge - time.Since(l.entry.createdAt)
-	delay := l.client.webSocketIdleTime
-	if remainingAge < delay {
-		delay = remainingAge
-	}
+	delay := min(remainingAge, l.client.webSocketIdleTime)
 	if delay <= 0 {
 		delete(cache.entries, l.key)
 		cache.mu.Unlock()
@@ -201,7 +198,7 @@ func (e *webSocketConnectFailure) Unwrap() error { return e.err }
 
 func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*webSocketLease, Credentials, error) {
 	if c.webSocketClosed() {
-		return nil, Credentials{}, transportError(op, errors.New("Codex WebSocket client is closed"))
+		return nil, Credentials{}, transportError(op, errors.New("codex WebSocket client is closed"))
 	}
 	credentials, err := c.currentCredentials(ctx, op, "", nil)
 	if err != nil {
@@ -221,7 +218,7 @@ func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*w
 	}
 	if !c.registerWebSocket(conn) {
 		_ = conn.Close()
-		return nil, Credentials{}, transportError(op, errors.New("Codex WebSocket client is closed"))
+		return nil, Credentials{}, transportError(op, errors.New("codex WebSocket client is closed"))
 	}
 	key = credentialCacheKey(sessionID, resolved)
 	if sessionID == "" || attemptScoped {
@@ -233,7 +230,7 @@ func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*w
 	if c.webSockets.closed {
 		c.webSockets.mu.Unlock()
 		c.closeWebSocket(conn)
-		return nil, Credentials{}, transportError(op, errors.New("Codex WebSocket client is closed"))
+		return nil, Credentials{}, transportError(op, errors.New("codex WebSocket client is closed"))
 	}
 	if current := c.webSockets.entries[key]; current != nil {
 		// Another request won the connection race. Keep its session connection and
@@ -335,7 +332,7 @@ func (c *Client) currentCredentials(ctx context.Context, op, rejected string, re
 func (c *Client) connectWebSocket(ctx context.Context, op, sessionID string, initial Credentials) (*websocket.Conn, Credentials, error) {
 	credentials := initial
 	var rejectedErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		headers, err := c.webSocketHeaders(ctx, credentials, sessionID)
 		if err != nil {
 			return nil, Credentials{}, transportError(op, err)

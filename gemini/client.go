@@ -301,13 +301,11 @@ func sdkError(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var panicErr *sdkPanicError
-	if errors.As(err, &panicErr) {
+	if _, ok := errors.AsType[*sdkPanicError](err); ok {
 		return &llm.Error{Kind: llm.KindMalformedResponse, Op: op, Provider: defaultProvider, Err: err}
 	}
 
-	var apiErr genai.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[genai.APIError](err); ok {
 		return &llm.Error{
 			Kind:       classifyAPIError(apiErr),
 			Op:         op,

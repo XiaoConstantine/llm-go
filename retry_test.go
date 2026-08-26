@@ -211,7 +211,7 @@ func TestRetryStreamProviderTerminalRacingCloseWins(t *testing.T) {
 	go func() { closeDone <- stream.Close() }()
 	<-underlying.closeStarted
 	close(underlying.releaseClose)
-	_ = <-closeDone
+	<-closeDone
 	if err := <-recvDone; !errors.Is(err, providerErr) {
 		t.Fatalf("Recv() = %v", err)
 	}
@@ -460,15 +460,13 @@ func TestRetryAttemptHookConcurrentIsolation(t *testing.T) {
 	}
 	var wait sync.WaitGroup
 	for index := range calls {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
+		wait.Go(func() {
 			value := fmt.Sprintf("trace-%d", index)
 			ctx := context.WithValue(context.Background(), traceKey{}, value)
 			if _, err := retrying.Generate(ctx, validGenerationRequest()); err != nil {
 				t.Errorf("Generate() error = %v", err)
 			}
-		}()
+		})
 	}
 	wait.Wait()
 	close(seen)

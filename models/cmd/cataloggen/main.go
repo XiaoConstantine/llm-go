@@ -2,12 +2,11 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
 	"go/format"
-	"io"
 	"math"
 	"os"
 	"sort"
@@ -149,14 +148,9 @@ func load(path string) (int, []llm.Model, error) {
 	if err != nil {
 		return 0, nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	var source sourceCatalog
-	if err := decoder.Decode(&source); err != nil {
+	if err := jsonv2.Unmarshal(data, &source, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return 0, nil, fmt.Errorf("decode %s: %w", path, err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return 0, nil, errors.New("catalog source must contain exactly one JSON value")
 	}
 	if source.SchemaVersion != schemaVersion {
 		return 0, nil, fmt.Errorf("schema_version is %d, want %d", source.SchemaVersion, schemaVersion)

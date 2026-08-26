@@ -1,0 +1,4 @@
+# Local live-test leftovers
+*.env
+.env
+.env.*

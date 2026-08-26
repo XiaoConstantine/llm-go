@@ -54,13 +54,13 @@ func TestRequestToWireMapsImagesThinkingToolChoiceAndCache(t *testing.T) {
 
 func TestAnthropicThinkingResponseReplay(t *testing.T) {
 	response, err := responseFromWire("claude", llm.Request{}, nil, messageResponse{
-		ID: "msg", Type: "message", Role: "assistant", Model: "claude", StopReason: stringPointer("end_turn"),
+		ID: "msg", Type: "message", Role: "assistant", Model: "claude", StopReason: new("end_turn"),
 		Content: &[]responseBlock{
-			{Type: "thinking", Thinking: stringPointer("considering"), Signature: stringPointer("signed")},
-			{Type: "redacted_thinking", Data: stringPointer("opaque")},
-			{Type: "text", Text: stringPointer("answer")},
+			{Type: "thinking", Thinking: new("considering"), Signature: new("signed")},
+			{Type: "redacted_thinking", Data: new("opaque")},
+			{Type: "text", Text: new("answer")},
 		},
-		Usage: &responseUsage{InputTokens: intPointer(1), OutputTokens: intPointer(2)},
+		Usage: &responseUsage{InputTokens: new(1), OutputTokens: new(2)},
 	})
 	if err != nil {
 		t.Fatalf("responseFromWire() error = %v", err)
@@ -126,7 +126,7 @@ func TestStreamEmitsSignedThinkingEventsAndReplayData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var kinds []llm.StreamEventKind
 	var reasoning string
 	var providerData []byte
@@ -195,7 +195,7 @@ func TestThinkingReplayUsesConfiguredAliasGenerateAndStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var providerData []byte
 	for {
 		chunk, err := stream.Recv()
@@ -369,7 +369,7 @@ func TestBudgetOnlyThinkingBetaHeaderGenerateAndStream(t *testing.T) {
 }
 
 func TestEmptyThinkingReplayPreservesRequiredWireField(t *testing.T) {
-	response := messageResponse{ID: "msg", Type: "message", Role: "assistant", Model: "served", StopReason: stringPointer("end_turn"), Content: &[]responseBlock{{Type: "thinking", Thinking: stringPointer(""), Signature: stringPointer("signed")}}, Usage: &responseUsage{InputTokens: intPointer(1), OutputTokens: intPointer(1)}}
+	response := messageResponse{ID: "msg", Type: "message", Role: "assistant", Model: "served", StopReason: new("end_turn"), Content: &[]responseBlock{{Type: "thinking", Thinking: new(""), Signature: new("signed")}}, Usage: &responseUsage{InputTokens: new(1), OutputTokens: new(1)}}
 	converted, err := responseFromWire("alias", llm.Request{}, nil, response)
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +388,7 @@ func TestEmptyThinkingReplayPreservesRequiredWireField(t *testing.T) {
 }
 
 func TestNonstreamEmptyThinkingSignatureCompatibility(t *testing.T) {
-	response := messageResponse{ID: "msg", Type: "message", Role: "assistant", Model: "served", StopReason: stringPointer("end_turn"), Content: &[]responseBlock{{Type: "thinking", Thinking: stringPointer("think"), Signature: stringPointer("")}}, Usage: &responseUsage{InputTokens: intPointer(1), OutputTokens: intPointer(1)}}
+	response := messageResponse{ID: "msg", Type: "message", Role: "assistant", Model: "served", StopReason: new("end_turn"), Content: &[]responseBlock{{Type: "thinking", Thinking: new("think"), Signature: new("")}}, Usage: &responseUsage{InputTokens: new(1), OutputTokens: new(1)}}
 	if _, err := responseFromWire("alias", llm.Request{}, nil, response); err == nil || !strings.Contains(err.Error(), "empty signature") {
 		t.Fatalf("strict empty signature error = %v", err)
 	}
@@ -429,6 +429,3 @@ func TestAnthropicOAuthIdentityWire(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-func stringPointer(value string) *string { return &value }
-func intPointer(value int) *int          { return &value }

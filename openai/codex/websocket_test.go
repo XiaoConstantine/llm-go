@@ -97,7 +97,7 @@ func TestWebSocketHandshakeBodyAndTypedDecoding(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		body := readCreate(t, conn)
 		if body["type"] != "response.create" || body["store"] != false || body["stream"] != true || body["model"] != "gpt-codex" {
 			t.Errorf("body = %#v", body)
@@ -177,7 +177,7 @@ func TestOwnedHeadersReplaceEveryCaseOnSSEAndWebSocket(t *testing.T) {
 					if err != nil {
 						return
 					}
-					defer conn.Close()
+					defer func() { _ = conn.Close() }()
 					_, _, _ = conn.ReadMessage()
 					completeWS(t, conn, "resp", "ok")
 					return
@@ -209,7 +209,7 @@ func TestWebSocketAttemptHeadersUseTransientConnections(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _, _ = conn.ReadMessage()
 		completeWS(t, conn, "resp", "ok")
 	}))
@@ -218,7 +218,6 @@ func TestWebSocketAttemptHeadersUseTransientConnections(t *testing.T) {
 	request := textRequest("hello")
 	request.SessionID = "session"
 	for _, trace := range []string{"first", "second"} {
-		trace := trace
 		generator, err := llm.WithRetry(client, llm.RetryPolicy{MaxAttempts: 1, Hook: func(context.Context, llm.Attempt) (http.Header, error) { return http.Header{"X-Trace": {trace}}, nil }})
 		if err != nil {
 			t.Fatal(err)
@@ -295,7 +294,7 @@ func TestWebSocketSessionCapacityUsesTransientWhenAllBusy(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		if _, _, err := conn.ReadMessage(); err != nil {
 			return
 		}
@@ -361,7 +360,7 @@ func TestConfiguredWebSocketDialerIsUsedAndOwned(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _, _ = conn.ReadMessage()
 		completeWS(t, conn, "resp", "ok")
 	}))
@@ -404,7 +403,7 @@ func TestWebSocketConnectionReuseAndNoSessionIsolation(t *testing.T) {
 			return
 		}
 		connections.Add(1)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for i := 0; ; i++ {
 			_, data, err := conn.ReadMessage()
 			if err != nil {
@@ -455,8 +454,8 @@ func TestWebSocketCachedDeltaAndMismatchFullContext(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		for i := 0; i < 3; i++ {
+		defer func() { _ = conn.Close() }()
+		for i := range 3 {
 			body := readCreate(t, conn)
 			bodies <- body
 			completeWS(t, conn, fmt.Sprintf("resp%d", i+1), fmt.Sprintf("answer%d", i+1))
@@ -500,7 +499,7 @@ func TestWebSocketPreviousResponseNotFoundRetriesFullContext(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			body := readCreate(t, conn)
 			bodies <- body
@@ -561,7 +560,7 @@ func TestWebSocketMalformedEarlyCloseAndProviderErrors(t *testing.T) {
 				if e != nil {
 					return
 				}
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_, _, _ = c.ReadMessage()
 				test.action(t, c)
 			}))
@@ -688,7 +687,7 @@ func TestWebSocketCancellationAndStreamCloseCloseConnection(t *testing.T) {
 			return
 		}
 		defer close(connectionClosed)
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_, _, _ = c.ReadMessage()
 		close(requestSeen)
 		for {
@@ -729,7 +728,7 @@ func TestWebSocketContextCancellationClosesConnection(t *testing.T) {
 			return
 		}
 		defer close(connectionClosed)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _, _ = conn.ReadMessage()
 		close(requestSeen)
 		for {
@@ -770,7 +769,7 @@ func TestWebSocketBusySessionUsesTransientConnection(t *testing.T) {
 			return
 		}
 		connections.Add(1)
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_, _, _ = c.ReadMessage()
 		started <- struct{}{}
 		<-release
@@ -807,7 +806,7 @@ func TestWebSocketFailedCachedWriteIsNotRetried(t *testing.T) {
 			return
 		}
 		connections.Add(1)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
@@ -858,7 +857,7 @@ func TestWebSocketDoesNotReuseProviderErrorOrIncompleteResponse(t *testing.T) {
 					return
 				}
 				connections.Add(1)
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				if _, _, err := conn.ReadMessage(); err != nil {
 					return
 				}
@@ -900,7 +899,7 @@ func TestWebSocketEventSizeLimit(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _, _ = conn.ReadMessage()
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"`+strings.Repeat("x", maxProviderDataBytes)+`"}`))
 	}))
@@ -918,7 +917,7 @@ func TestWebSocketSessionCredentialAndClientIsolation(t *testing.T) {
 			return
 		}
 		connections.Add(1)
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		for {
 			if _, _, e = c.ReadMessage(); e != nil {
 				return
@@ -935,9 +934,9 @@ func TestWebSocketSessionCredentialAndClientIsolation(t *testing.T) {
 		}}
 	}
 	first, _ := New(config())
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 	second, _ := New(config())
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	request := textRequest("hello")
 	request.SessionID = "one"
 	if _, e := first.Generate(context.Background(), request); e != nil {
@@ -976,7 +975,7 @@ func TestWebSocketIdleAndMaximumAgeCleanup(t *testing.T) {
 				}
 				connections.Add(1)
 				defer func() { closed <- struct{}{} }()
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				for {
 					if _, _, e = c.ReadMessage(); e != nil {
 						return
@@ -1085,7 +1084,7 @@ func TestAutoFallbackOnlyBeforeWebSocketCommitment(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			_, _, _ = conn.ReadMessage()
 			_ = conn.WriteMessage(websocket.TextMessage, []byte("{"))
 		}))
@@ -1156,7 +1155,7 @@ func TestWebSocketHandshakeUnauthorizedRefreshesOnce(t *testing.T) {
 		if e != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_, _, _ = c.ReadMessage()
 		completeWS(t, c, "resp", "ok")
 	}))
@@ -1195,7 +1194,7 @@ func TestClientCloseIdempotentClosesCachedSockets(t *testing.T) {
 			return
 		}
 		defer close(closed)
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_, _, _ = c.ReadMessage()
 		completeWS(t, c, "resp", "ok")
 		for {

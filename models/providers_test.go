@@ -90,7 +90,7 @@ func TestBuiltinProfileConfigsConstructGenerators(t *testing.T) {
 func TestXAIProfileRequestsEncryptedReasoning(t *testing.T) {
 	payloads := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		defer request.Body.Close()
+		defer func() { _ = request.Body.Close() }()
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			t.Errorf("read request: %v", err)
@@ -135,7 +135,7 @@ func TestXAIProfileRequestsEncryptedReasoning(t *testing.T) {
 func TestDeepSeekProfileUsesLegacyLimitAndPreservesReasoning(t *testing.T) {
 	requests := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		defer request.Body.Close()
+		defer func() { _ = request.Body.Close() }()
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			t.Errorf("read request: %v", err)

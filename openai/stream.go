@@ -364,10 +364,11 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 			}
 			finish := llm.FinishReasonStop
 			providerFinish := "stop"
-			if d.toolMode == streamToolModeModern {
+			switch d.toolMode {
+			case streamToolModeModern:
 				finish = llm.FinishReasonToolCall
 				providerFinish = "tool_calls"
-			} else if d.toolMode == streamToolModeLegacy {
+			case streamToolModeLegacy:
 				finish = llm.FinishReasonToolCall
 				providerFinish = "function_call"
 			}

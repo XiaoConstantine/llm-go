@@ -40,7 +40,9 @@ type OAuthAuthorization struct {
 // AnthropicOAuth implements Anthropic's provider-private Claude subscription
 // PKCE flow without owning a browser, callback server, or user interface. Its
 // default endpoint and client ID are unofficial, unstable, and replaceable via
-// the corresponding fields.
+// the corresponding fields. It retains but never closes HTTPClient and starts
+// no background work. Do not mutate its fields during use; HTTPClient and Now
+// must support any concurrent calls made by the application.
 type AnthropicOAuth struct {
 	HTTPClient   *http.Client
 	AuthorizeURL string
@@ -51,7 +53,10 @@ type AnthropicOAuth struct {
 
 // CodexOAuth implements OpenAI's provider-private ChatGPT Codex PKCE flow
 // without owning interactive UI. Its default endpoint and client ID are
-// unofficial, unstable, and replaceable via the corresponding fields.
+// unofficial, unstable, and replaceable via the corresponding fields. It
+// retains but never closes HTTPClient and starts no background work. Do not
+// mutate its fields during use; HTTPClient and Now must support any concurrent
+// calls made by the application.
 type CodexOAuth struct {
 	HTTPClient   *http.Client
 	AuthorizeURL string
@@ -64,6 +69,8 @@ type CodexOAuth struct {
 	Now        func() time.Time
 }
 
+// Begin creates an Anthropic authorization URL and caller-owned PKCE state.
+// Applications must retain the returned value and compare it during Exchange.
 func (o AnthropicOAuth) Begin(redirectURI string) (OAuthAuthorization, error) {
 	verifier, challenge, err := newPKCE()
 	if err != nil {
@@ -87,12 +94,14 @@ func (o AnthropicOAuth) Begin(redirectURI string) (OAuthAuthorization, error) {
 	return authorization(defaultString(o.AuthorizeURL, anthropicAuthorizeURL), redirectURI, state, verifier, values)
 }
 
+// Exchange validates the retained authorization and callback values before
+// exchanging an Anthropic authorization code. Invalid inputs perform no I/O.
 func (o AnthropicOAuth) Exchange(ctx context.Context, authorization OAuthAuthorization, code, state string) (StoredCredential, error) {
 	if ctx == nil {
-		return StoredCredential{}, fmt.Errorf("Anthropic OAuth context must not be nil")
+		return StoredCredential{}, fmt.Errorf("anthropic OAuth context must not be nil")
 	}
-	if state != authorization.State {
-		return StoredCredential{}, fmt.Errorf("Anthropic OAuth state mismatch")
+	if err := validateOAuthExchange("Anthropic", authorization, code, state); err != nil {
+		return StoredCredential{}, err
 	}
 	body := map[string]string{
 		"grant_type": "authorization_code", "client_id": defaultString(o.ClientID, anthropicOAuthClientID),
@@ -101,17 +110,21 @@ func (o AnthropicOAuth) Exchange(ctx context.Context, authorization OAuthAuthori
 	return oauthJSON(ctx, o.client(), defaultString(o.TokenURL, anthropicTokenURL), body, StoredCredential{}, o.now())
 }
 
+// Refresh exchanges a current Anthropic OAuth refresh token. The returned
+// credential is caller-owned.
 func (o AnthropicOAuth) Refresh(ctx context.Context, current StoredCredential) (StoredCredential, error) {
 	if ctx == nil {
-		return StoredCredential{}, fmt.Errorf("Anthropic OAuth context must not be nil")
+		return StoredCredential{}, fmt.Errorf("anthropic OAuth context must not be nil")
 	}
 	if current.Type != CredentialOAuth || strings.TrimSpace(current.RefreshToken) == "" {
-		return StoredCredential{}, fmt.Errorf("Anthropic OAuth refresh token is required")
+		return StoredCredential{}, fmt.Errorf("anthropic OAuth refresh token is required")
 	}
 	body := map[string]string{"grant_type": "refresh_token", "client_id": defaultString(o.ClientID, anthropicOAuthClientID), "refresh_token": current.RefreshToken}
 	return oauthJSON(ctx, o.client(), defaultString(o.TokenURL, anthropicTokenURL), body, current, o.now())
 }
 
+// Begin creates a Codex authorization URL and caller-owned PKCE state.
+// Applications must retain the returned value and compare it during Exchange.
 func (o CodexOAuth) Begin(redirectURI string) (OAuthAuthorization, error) {
 	verifier, challenge, err := newPKCE()
 	if err != nil {
@@ -133,12 +146,14 @@ func (o CodexOAuth) Begin(redirectURI string) (OAuthAuthorization, error) {
 	return authorization(defaultString(o.AuthorizeURL, codexAuthorizeURL), redirectURI, state, verifier, values)
 }
 
+// Exchange validates the retained authorization and callback values before
+// exchanging a Codex authorization code. Invalid inputs perform no I/O.
 func (o CodexOAuth) Exchange(ctx context.Context, authorization OAuthAuthorization, code, state string) (StoredCredential, error) {
 	if ctx == nil {
-		return StoredCredential{}, fmt.Errorf("Codex OAuth context must not be nil")
+		return StoredCredential{}, fmt.Errorf("codex OAuth context must not be nil")
 	}
-	if state != authorization.State {
-		return StoredCredential{}, fmt.Errorf("Codex OAuth state mismatch")
+	if err := validateOAuthExchange("Codex", authorization, code, state); err != nil {
+		return StoredCredential{}, err
 	}
 	values := url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {defaultString(o.ClientID, codexOAuthClientID)},
@@ -147,25 +162,51 @@ func (o CodexOAuth) Exchange(ctx context.Context, authorization OAuthAuthorizati
 	return oauthForm(ctx, o.client(), defaultString(o.TokenURL, codexTokenURL), values, StoredCredential{}, o.now())
 }
 
+// Refresh exchanges a current Codex OAuth refresh token. The returned
+// credential is caller-owned.
 func (o CodexOAuth) Refresh(ctx context.Context, current StoredCredential) (StoredCredential, error) {
 	if ctx == nil {
-		return StoredCredential{}, fmt.Errorf("Codex OAuth context must not be nil")
+		return StoredCredential{}, fmt.Errorf("codex OAuth context must not be nil")
 	}
 	if current.Type != CredentialOAuth || strings.TrimSpace(current.RefreshToken) == "" {
-		return StoredCredential{}, fmt.Errorf("Codex OAuth refresh token is required")
+		return StoredCredential{}, fmt.Errorf("codex OAuth refresh token is required")
 	}
 	values := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}, "client_id": {defaultString(o.ClientID, codexOAuthClientID)}}
 	return oauthForm(ctx, o.client(), defaultString(o.TokenURL, codexTokenURL), values, current, o.now())
 }
 
-// RefreshConfig returns a CredentialManager configuration for Anthropic.
+// RefreshConfig returns a CredentialManager configuration that retains a copy
+// of o and invokes its Anthropic refresh flow.
 func (o AnthropicOAuth) RefreshConfig(provider string, before time.Duration) CredentialRefreshConfig {
 	return CredentialRefreshConfig{Provider: provider, RefreshBefore: before, Refresh: o.Refresh}
 }
 
-// RefreshConfig returns a CredentialManager configuration for Codex.
+// RefreshConfig returns a CredentialManager configuration that retains a copy
+// of o and invokes its Codex refresh flow.
 func (o CodexOAuth) RefreshConfig(provider string, before time.Duration) CredentialRefreshConfig {
 	return CredentialRefreshConfig{Provider: provider, RefreshBefore: before, Refresh: o.Refresh}
+}
+
+func validateOAuthExchange(provider string, authorization OAuthAuthorization, code, state string) error {
+	if strings.TrimSpace(authorization.State) == "" {
+		return fmt.Errorf("%s OAuth expected state is required", provider)
+	}
+	if strings.TrimSpace(state) == "" {
+		return fmt.Errorf("%s OAuth callback state is required", provider)
+	}
+	if state != authorization.State {
+		return fmt.Errorf("%s OAuth state mismatch", provider)
+	}
+	if strings.TrimSpace(code) == "" {
+		return fmt.Errorf("%s OAuth authorization code is required", provider)
+	}
+	if strings.TrimSpace(authorization.Verifier) == "" {
+		return fmt.Errorf("%s OAuth PKCE verifier is required", provider)
+	}
+	if strings.TrimSpace(authorization.RedirectURI) == "" {
+		return fmt.Errorf("%s OAuth redirect URI is required", provider)
+	}
+	return nil
 }
 
 func authorization(rawURL, redirectURI, state, verifier string, values url.Values) (OAuthAuthorization, error) {
@@ -237,7 +278,7 @@ func executeOAuth(client *http.Client, request *http.Request, current StoredCred
 	if err != nil {
 		return StoredCredential{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxOAuthResponseBytes+1))
 	if err != nil {
 		return StoredCredential{}, fmt.Errorf("read OAuth response: %w", err)

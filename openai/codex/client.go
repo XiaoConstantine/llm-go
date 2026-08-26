@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -520,12 +521,7 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 }
 
 func (c *Client) hasCapability(capability llm.Capability) bool {
-	for _, configured := range c.capabilities {
-		if configured == capability {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.capabilities, capability)
 }
 
 func checkRequest(op string, request llm.Request) error {

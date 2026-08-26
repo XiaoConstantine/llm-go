@@ -717,12 +717,7 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 }
 
 func (c *Client) hasCapability(target llm.Capability) bool {
-	for _, capability := range c.capabilities {
-		if capability == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.capabilities, target)
 }
 
 func checkRequest(op string, request llm.Request) error {

@@ -183,10 +183,10 @@ func TestStreamSDKConfigurationAndSingleAttempt(t *testing.T) {
 			request.URL.RawQuery != "" || !request.URL.ForceQuery {
 			t.Fatalf("request URL = %#v", request.URL)
 		}
-		if values := request.Header["x-stream-header"]; len(values) != 1 || values[0] != "owned" {
+		if values := request.Header["x-stream-header"]; len(values) != 1 || values[0] != "owned" { //nolint:staticcheck // Verify caller key casing.
 			t.Fatalf("x-stream-header = %#v", values)
 		}
-		if values := request.Header["x-api-key"]; len(values) != 1 || values[0] != "header-key" {
+		if values := request.Header["x-api-key"]; len(values) != 1 || values[0] != "header-key" { //nolint:staticcheck // Verify caller key casing.
 			t.Fatalf("x-api-key = %#v", values)
 		}
 		authVariants := 0
@@ -272,8 +272,7 @@ func TestStreamSDKRedirectCancellation(t *testing.T) {
 	if !errors.Is(terminal, context.Canceled) || !errors.Is(terminal, cause) || errors.Is(terminal, redirectErr) {
 		t.Fatalf("Recv() terminal = %v", terminal)
 	}
-	var modelErr *llm.Error
-	if errors.As(terminal, &modelErr) {
+	if modelErr, ok := errors.AsType[*llm.Error](terminal); ok {
 		t.Fatalf("Recv() error contains model error: %#v", modelErr)
 	}
 	if err := stream.Close(); err != nil {
@@ -579,8 +578,7 @@ func TestStreamPreservesMalformedEventCause(t *testing.T) {
 	}
 	_, terminal := receiveAll(stream)
 	requireModelError(t, terminal, llm.KindMalformedResponse, "stream")
-	var syntaxErr *jsontext.SyntacticError
-	if !errors.As(terminal, &syntaxErr) {
+	if _, ok := errors.AsType[*jsontext.SyntacticError](terminal); !ok {
 		t.Fatalf("errors.As(%v, *jsontext.SyntacticError) = false", terminal)
 	}
 	_ = stream.Close()

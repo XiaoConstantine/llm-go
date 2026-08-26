@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -79,7 +79,7 @@ func (r *FactoryRegistry) APIs() []llm.API {
 	for api := range r.factories {
 		apis = append(apis, api)
 	}
-	sort.Slice(apis, func(i, j int) bool { return apis[i] < apis[j] })
+	slices.Sort(apis)
 	return apis
 }
 

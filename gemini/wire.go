@@ -651,7 +651,7 @@ func inlineDataFromSDK(op string, index int, blob *genai.Blob) (llm.Part, error)
 	if err != nil {
 		return llm.Part{}, malformedResponseFor(op, "response inline data part %d has invalid media type %q", index, blob.MIMEType)
 	}
-	kind := llm.PartKind(255)
+	var kind llm.PartKind
 	switch {
 	case strings.HasPrefix(strings.ToLower(mediaType), "image/"):
 		kind = llm.PartImage

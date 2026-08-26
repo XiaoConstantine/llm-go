@@ -134,10 +134,10 @@ func TestCollectionUsesValidatedFactoryInfoOnlyOnce(t *testing.T) {
 	const api llm.API = "custom-info-once"
 	var base *panicOnSecondInfoGenerator
 	factory := func(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
-		base = &panicOnSecondInfoGenerator{registryGenerator: registryGenerator{info: llm.ModelInfo{
+		base = &panicOnSecondInfoGenerator{info: llm.ModelInfo{
 			Provider: config.Provider, Model: config.Model.Model, API: api,
 			Capabilities: []llm.Capability{llm.CapabilityGeneration},
-		}}}
+		}}
 		return base, nil
 	}
 	registry, _ := NewFactoryRegistry(FactoryRegistration{API: api, Factory: factory})

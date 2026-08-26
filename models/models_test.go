@@ -137,12 +137,10 @@ func TestManagedAnthropicOAuthRefreshIsLiveAndCoalesced(t *testing.T) {
 	var group sync.WaitGroup
 	errorsSeen := make(chan error, 2)
 	for range 2 {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			_, err := generator.Generate(context.Background(), request)
 			errorsSeen <- err
-		}()
+		})
 	}
 	group.Wait()
 	close(errorsSeen)

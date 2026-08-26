@@ -194,15 +194,13 @@ func TestCredentialManagerCoalescesConcurrentRefresh(t *testing.T) {
 	var group sync.WaitGroup
 	results := make(chan error, callers)
 	for range callers {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			credential, found, err := manager.Resolve(context.Background(), "openai")
 			if err == nil && (!found || credential.AccessToken != "access") {
 				err = errors.New("resolved credential is missing refreshed access token")
 			}
 			results <- err
-		}()
+		})
 	}
 	waitSignal(t, entered, "credential refresher entry")
 	waitCredentialManagerWaiters(t, manager, "openai", callers-1)
@@ -257,12 +255,10 @@ func TestCredentialManagerCoalescesConcurrentRefreshFailure(t *testing.T) {
 	var group sync.WaitGroup
 	results := make(chan error, callers)
 	for range callers {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			_, _, err := manager.Resolve(context.Background(), "openai")
 			results <- err
-		}()
+		})
 	}
 	waitSignal(t, entered, "failing credential refresher entry")
 	waitCredentialManagerWaiters(t, manager, "openai", callers-1)

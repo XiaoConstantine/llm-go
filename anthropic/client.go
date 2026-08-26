@@ -486,12 +486,7 @@ func requestUsesTools(request llm.Request) bool {
 }
 
 func (c *Client) hasCapability(target llm.Capability) bool {
-	for _, capability := range c.capabilities {
-		if capability == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.capabilities, target)
 }
 
 func (c *Client) executeRaw(ctx context.Context, payload []byte, headers http.Header) (*http.Response, error, error) {
@@ -527,7 +522,7 @@ func (c *Client) requestHeaders(request llm.Request) http.Header {
 
 func splitHeaderValues(value string) []string {
 	var values []string
-	for _, item := range strings.Split(value, ",") {
+	for item := range strings.SplitSeq(value, ",") {
 		if item = strings.TrimSpace(item); item != "" {
 			values = append(values, item)
 		}
@@ -536,10 +531,8 @@ func splitHeaderValues(value string) []string {
 }
 
 func appendUnique(values []string, value string) []string {
-	for _, current := range values {
-		if current == value {
-			return values
-		}
+	if slices.Contains(values, value) {
+		return values
 	}
 	return append(values, value)
 }

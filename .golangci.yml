@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  exclusions:
+    warn-unused: true
+    rules:
+      # These helpers always assert the supplied error. Some callers use the
+      # returned *llm.Error for additional checks; the rest intentionally do not.
+      - path: _test\.go
+        source: '^\s*require(Model|Response)Error\('
+        linters: [errcheck]

@@ -60,7 +60,7 @@ func TestNewConfiguresClientWithoutMutatingHeaders(t *testing.T) {
 	if client.headers.Get("Anthropic-Version") != "2026-08-01" || client.headers.Get("Content-Type") != "application/json" {
 		t.Fatalf("protocol headers = %#v", client.headers)
 	}
-	if _, exists := client.headers["x-lower-case"]; !exists {
+	if _, exists := client.headers["x-lower-case"]; !exists { //nolint:staticcheck // Verify noncanonical caller key casing.
 		t.Fatalf("Client changed custom header casing: %#v", client.headers)
 	}
 	if values, exists := client.headers["X-Nil"]; !exists || values != nil {
@@ -220,8 +220,7 @@ func TestNewPreservesConfigurationCause(t *testing.T) {
 		t.Fatalf("New() client = %#v, want nil", client)
 	}
 	requireModelError(t, err, llm.KindInvalidRequest, "configure")
-	var parseErr *time.ParseError
-	if !errors.As(err, &parseErr) {
+	if _, ok := errors.AsType[*time.ParseError](err); !ok {
 		t.Fatalf("errors.As(%v, *time.ParseError) = false", err)
 	}
 }
@@ -362,7 +361,7 @@ func TestGenerateUsesHeaderOwnedAPIKeyCaseInsensitively(t *testing.T) {
 		t.Fatalf("Generate() = (%#v, %v)", response, err)
 	}
 	request := <-requests
-	if values := request.Header["x-api-key"]; len(values) != 1 || values[0] != "header-key" {
+	if values := request.Header["x-api-key"]; len(values) != 1 || values[0] != "header-key" { //nolint:staticcheck // Verify caller key casing.
 		t.Fatalf("x-api-key = %#v, want header-owned key", values)
 	}
 	if request.URL.Path != "/prefix/v1/messages" {
@@ -399,7 +398,7 @@ func TestGeneratePreservesHeaderMapSemantics(t *testing.T) {
 		t.Fatalf("Generate() = (%#v, %v)", response, err)
 	}
 	got := (<-requests).Header
-	if values, exists := got["X-API-KEY"]; !exists || len(values) != 1 || values[0] != "header-key" {
+	if values, exists := got["X-API-KEY"]; !exists || len(values) != 1 || values[0] != "header-key" { //nolint:staticcheck // Verify distinct caller keys.
 		t.Fatalf("X-API-KEY = %#v, exists = %v", values, exists)
 	}
 	if values, exists := got["X-Api-Key"]; !exists || values != nil {
@@ -892,8 +891,7 @@ func TestGenerateTransportAndCancellation(t *testing.T) {
 		if response != nil || !errors.Is(err, context.Canceled) || !errors.Is(err, cause) || errors.Is(err, redirectErr) {
 			t.Fatalf("Generate() = (%#v, %v)", response, err)
 		}
-		var modelErr *llm.Error
-		if errors.As(err, &modelErr) {
+		if modelErr, ok := errors.AsType[*llm.Error](err); ok {
 			t.Fatalf("Generate() error contains model error: %#v", modelErr)
 		}
 	})

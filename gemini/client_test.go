@@ -77,7 +77,7 @@ func TestInfoCopiesCapabilitiesAndRelabelsProvider(t *testing.T) {
 	}
 
 	_, err = client.Generate(context.Background(), llm.Request{})
-	requireModelError(t, err, llm.KindInvalidRequest, "validate", "")
+	_ = requireModelError(t, err, llm.KindInvalidRequest, "validate", "")
 }
 
 func TestRequestTranslatesReasoningEffort(t *testing.T) {
@@ -356,7 +356,7 @@ func TestGenerateRejectsMalformedAndNonStrictJSONResponses(t *testing.T) {
 		if response != nil {
 			t.Fatalf("Generate() response = %#v, want nil", response)
 		}
-		requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
+		_ = requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
 	})
 
 	t.Run("malformed provider shape", func(t *testing.T) {
@@ -369,7 +369,7 @@ func TestGenerateRejectsMalformedAndNonStrictJSONResponses(t *testing.T) {
 		if response != nil {
 			t.Fatalf("Generate() response = %#v, want nil", response)
 		}
-		requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
+		_ = requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
 	})
 
 	t.Run("cached tokens exceed prompt tokens", func(t *testing.T) {
@@ -382,7 +382,7 @@ func TestGenerateRejectsMalformedAndNonStrictJSONResponses(t *testing.T) {
 		if response != nil {
 			t.Fatalf("Generate() response = %#v, want nil", response)
 		}
-		requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
+		_ = requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
 	})
 
 	t.Run("non-strict JSON content", func(t *testing.T) {
@@ -397,7 +397,7 @@ func TestGenerateRejectsMalformedAndNonStrictJSONResponses(t *testing.T) {
 		if response != nil {
 			t.Fatalf("Generate() response = %#v, want nil", response)
 		}
-		requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
+		_ = requireModelError(t, err, llm.KindMalformedResponse, "generate", defaultProvider)
 	})
 }
 
@@ -432,7 +432,7 @@ func TestGeneratePreflightAvoidsProviderIO(t *testing.T) {
 			if response != nil {
 				t.Fatalf("Generate() response = %#v, want nil", response)
 			}
-			requireModelError(t, err, test.kind, "generate", defaultProvider)
+			_ = requireModelError(t, err, test.kind, "generate", defaultProvider)
 		})
 	}
 
@@ -465,7 +465,7 @@ func TestGenerateClassifiesCustomTransportError(t *testing.T) {
 	if response != nil {
 		t.Fatalf("Generate() response = %#v, want nil", response)
 	}
-	requireModelError(t, err, llm.KindTransport, "generate", defaultProvider)
+	_ = requireModelError(t, err, llm.KindTransport, "generate", defaultProvider)
 	if !errors.Is(err, transportErr) {
 		t.Fatalf("Generate() error = %v, want transport cause", err)
 	}
@@ -492,7 +492,7 @@ func TestGenerateClassifiesResponseReadError(t *testing.T) {
 	if response != nil {
 		t.Fatalf("Generate() response = %#v, want nil", response)
 	}
-	requireModelError(t, err, llm.KindTransport, "generate", defaultProvider)
+	_ = requireModelError(t, err, llm.KindTransport, "generate", defaultProvider)
 	if !errors.Is(err, readErr) {
 		t.Fatalf("Generate() error = %v, want read cause", err)
 	}

@@ -19,7 +19,7 @@ import (
 	openairesponses "github.com/openai/openai-go/v3/responses"
 )
 
-var errRawErrorResponse = errors.New("Codex SDK returned a raw error response")
+var errRawErrorResponse = errors.New("codex SDK returned a raw error response")
 
 // APIError is a provider error reported by the Codex Responses endpoint.
 type APIError = internalresponses.APIError
@@ -51,7 +51,7 @@ func (c *Client) produceSSE(ctx context.Context, op string, params openairespons
 func (c *Client) openStream(ctx context.Context, op string, params openairesponses.ResponseNewParams, sessionID string) (*sdkResponseStream, error) {
 	rejected := ""
 	var rejectedErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		credentials, err := c.resolveCredentials(ctx, rejected)
 		if err != nil {
 			if contextErr := contextErr(ctx); contextErr != nil {
@@ -245,28 +245,6 @@ func classifyResponse(status int, apiErr *APIError) llm.ErrorKind {
 		}
 		return llm.KindInvalidRequest
 	case http.StatusNotFound, http.StatusMethodNotAllowed:
-		return llm.KindInvalidRequest
-	default:
-		return llm.KindProvider
-	}
-}
-
-func classifyAPIError(apiErr *APIError) llm.ErrorKind {
-	if apiErr == nil {
-		return llm.KindProvider
-	}
-	if isContextLimitError(apiErr) {
-		return llm.KindContextLimit
-	}
-	detail := strings.ToLower(apiErr.Type + " " + apiErr.Code)
-	switch {
-	case strings.Contains(detail, "auth"), strings.Contains(detail, "invalid_api_key"):
-		return llm.KindAuthentication
-	case strings.Contains(detail, "permission"), strings.Contains(detail, "forbidden"):
-		return llm.KindPermission
-	case strings.Contains(detail, "rate_limit"), strings.Contains(detail, "usage_limit"), strings.Contains(detail, "quota"):
-		return llm.KindRateLimit
-	case strings.Contains(detail, "invalid_request"):
 		return llm.KindInvalidRequest
 	default:
 		return llm.KindProvider

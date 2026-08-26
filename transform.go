@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -48,8 +49,8 @@ func TransformHistory(source, target ModelInfo, history []Message) ([]Message, [
 			return nil, warnings, &Error{Kind: KindUnsupported, Op: "transform", Provider: target.Provider,
 				Err: fmt.Errorf("messages[%d] contains tool history unsupported by target model", messageIndex)}
 		}
-		converted := Message{Role: message.Role}
-		converted.Content = make([]Part, len(message.Content))
+		converted := Message{Role: message.Role,
+			Content: make([]Part, len(message.Content))}
 		for partIndex, part := range message.Content {
 			converted.Content[partIndex], warnings = transformPart(part, targetVision, targetAudio,
 				fmt.Sprintf("messages[%d].content[%d]", messageIndex, partIndex), warnings)
@@ -112,10 +113,5 @@ func supportsImageToolResults(info ModelInfo) bool {
 }
 
 func modelHasCapability(info ModelInfo, target Capability) bool {
-	for _, capability := range info.Capabilities {
-		if capability == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(info.Capabilities, target)
 }

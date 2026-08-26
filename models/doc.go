@@ -9,14 +9,15 @@
 // API registration and explicitly configured mixed-protocol provider routes.
 // CatalogManager atomically publishes validated immutable snapshots from static
 // baselines, persisted provider overlays, and conditional provider sources.
-// BuiltinCatalog provides generated,
-// validated metadata from the versioned source in models/catalogsource.
+// BuiltinCatalog provides generated, validated metadata from the versioned
+// source in models/catalogsource.
 // Built-in profiles configure OpenRouter, Groq, DeepSeek, xAI, Cerebras, and
 // Fireworks endpoints and protocol compatibility. CredentialStore defines
 // concurrency-safe persistence, while CredentialManager coalesces provider OAuth
 // refreshes and can be attached to Collection. AnthropicOAuth and CodexOAuth
 // provide non-interactive PKCE exchange and refresh primitives; their default
 // subscription endpoints/client IDs are provider-private, unofficial, unstable,
-// and replaceable. Applications own browser, callback, and prompt UI. The concrete provider packages remain available
-// for protocol-specific configuration that this package does not expose.
+// and replaceable. Applications own browser, callback, and prompt UI. The
+// concrete provider packages remain available for protocol-specific
+// configuration that this package does not expose.
 package models

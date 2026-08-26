@@ -74,7 +74,9 @@ func TestLoadRejectsInvalidSources(t *testing.T) {
 	}{
 		{"schema", `{"schema_version":2,"revision":1,"models":[]}`, "schema_version"},
 		{"revision", `{"schema_version":1,"revision":0,"models":[]}`, "revision"},
-		{"unknown field", `{"schema_version":1,"revision":1,"models":[],"extra":true}`, "unknown field"},
+		{"unknown field", `{"schema_version":1,"revision":1,"models":[],"extra":true}`, "unknown object member"},
+		{"duplicate field", `{"schema_version":1,"schema_version":1,"revision":1,"models":[]}`, "duplicate"},
+		{"invalid UTF-8", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"` + string([]byte{0xff}) + `","api":"openai-responses"}]}`, "invalid UTF-8"},
 		{"surrounding whitespace", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M ","api":"openai-responses"}]}`, "surrounding whitespace"},
 		{"missing required model field", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses"}]}`, "are required"},
 		{"unknown provider", `{"schema_version":1,"revision":1,"models":[{"provider":"unknown","id":"m","name":"M","api":"openai-responses",` + required + `}]}`, "unsupported built-in provider"},

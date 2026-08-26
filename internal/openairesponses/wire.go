@@ -104,10 +104,6 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 			}
 		}
 	}
-	if len(instructions) == 0 {
-		instructions = append(instructions, "You are a helpful assistant.")
-	}
-
 	tools := make([]openairesponses.ToolUnionParam, 0, len(request.Tools))
 	for i, tool := range request.Tools {
 		if jsontext.Value(tool.InputSchema).Kind() != jsontext.KindBeginObject {
@@ -125,10 +121,12 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 	params := openairesponses.ResponseNewParams{
 		Model:             shared.ResponsesModel(model),
 		Store:             param.NewOpt(false),
-		Instructions:      param.NewOpt(strings.Join(instructions, "\n\n")),
 		Input:             openairesponses.ResponseNewParamsInputUnion{OfInputItemList: input},
 		ParallelToolCalls: param.NewOpt(true),
 		Tools:             tools,
+	}
+	if len(instructions) != 0 {
+		params.Instructions = param.NewOpt(strings.Join(instructions, "\n\n"))
 	}
 	if options.EncryptedReasoning && request.ReasoningEffort != llm.ReasoningEffortNone {
 		params.Include = []openairesponses.ResponseIncludable{openairesponses.ResponseIncludableReasoningEncryptedContent}
@@ -161,9 +159,10 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 			params.PromptCacheKey = param.NewOpt(key)
 		}
 	}
-	if request.CacheRetention == llm.CacheRetentionLong {
+	switch request.CacheRetention {
+	case llm.CacheRetentionLong:
 		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetention24h
-	} else if request.CacheRetention == llm.CacheRetentionShort {
+	case llm.CacheRetentionShort:
 		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetentionInMemory
 	}
 	if request.ReasoningEffort != llm.ReasoningEffortDefault {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type MemoryCatalogStore struct {
 	entries map[string]CatalogStoreEntry
 }
 
+// NewMemoryCatalogStore returns a store that owns a validated copy of initial.
 func NewMemoryCatalogStore(initial map[string]CatalogStoreEntry) (*MemoryCatalogStore, error) {
 	store := &MemoryCatalogStore{entries: make(map[string]CatalogStoreEntry, len(initial))}
 	for rawProvider, entry := range initial {
@@ -55,6 +57,7 @@ func NewMemoryCatalogStore(initial map[string]CatalogStoreEntry) (*MemoryCatalog
 	return store, nil
 }
 
+// Read returns an owned copy of one provider entry.
 func (s *MemoryCatalogStore) Read(ctx context.Context, provider string) (CatalogStoreEntry, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return CatalogStoreEntry{}, false, err
@@ -68,6 +71,7 @@ func (s *MemoryCatalogStore) Read(ctx context.Context, provider string) (Catalog
 	return cloneCatalogEntry(entry), ok, nil
 }
 
+// Write validates and stores an owned copy of entry.
 func (s *MemoryCatalogStore) Write(ctx context.Context, provider string, entry CatalogStoreEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -112,8 +116,10 @@ type CatalogSource interface {
 	Fetch(context.Context, CatalogFetchRequest) (CatalogFetchResponse, error)
 }
 
+// CatalogSourceFunc adapts a function to CatalogSource.
 type CatalogSourceFunc func(context.Context, CatalogFetchRequest) (CatalogFetchResponse, error)
 
+// Fetch calls f with the supplied context and request.
 func (f CatalogSourceFunc) Fetch(ctx context.Context, request CatalogFetchRequest) (CatalogFetchResponse, error) {
 	return f(ctx, request)
 }
@@ -146,6 +152,9 @@ type CatalogManagerConfig struct {
 	Now         func() time.Time
 }
 
+// CatalogManager atomically publishes immutable catalog snapshots. It is safe
+// for concurrent use. Refresh performs all work before returning, leaves no
+// background goroutines, and therefore requires no Close method.
 type CatalogManager struct {
 	baseline    []llm.Model
 	store       CatalogStore
@@ -175,6 +184,9 @@ type catalogProviderState struct {
 	publishMu  sync.Mutex
 }
 
+// NewCatalogManager validates config and owns snapshots of its baseline and
+// provider metadata. It retains configured stores, managers, sources, filters,
+// and callbacks, which must remain concurrency-safe while in use.
 func NewCatalogManager(config CatalogManagerConfig) (*CatalogManager, error) {
 	baseline := config.Baseline
 	if baseline == nil {
@@ -226,6 +238,8 @@ func (m *CatalogManager) Snapshot() *Catalog {
 	return m.snapshot.Load()
 }
 
+// Models returns caller-owned models from the current snapshot. An empty
+// provider returns all models.
 func (m *CatalogManager) Models(provider string) []llm.Model {
 	if snapshot := m.Snapshot(); snapshot != nil {
 		return snapshot.Models(provider)
@@ -233,6 +247,7 @@ func (m *CatalogManager) Models(provider string) []llm.Model {
 	return nil
 }
 
+// Model returns a caller-owned model from the current snapshot.
 func (m *CatalogManager) Model(provider, model string) (llm.Model, bool) {
 	if snapshot := m.Snapshot(); snapshot != nil {
 		return snapshot.Model(provider, model)
@@ -247,6 +262,7 @@ type CatalogRefreshOptions struct {
 	NoNetwork bool
 }
 
+// ProviderRefreshResult describes one selected provider refresh.
 type ProviderRefreshResult struct {
 	Provider    string
 	Restored    bool
@@ -257,11 +273,14 @@ type ProviderRefreshResult struct {
 	Err         error
 }
 
+// CatalogRefreshResult contains provider results in selection order.
 type CatalogRefreshResult struct{ Providers []ProviderRefreshResult }
 
 // Refresh restores persisted state before optional network work. Omitted
 // Providers refreshes configured dynamic providers; selective unknown/static
 // providers and duplicate provider entries return deterministic skipped results.
+// It runs selected providers concurrently and waits for all of them. A newer
+// refresh supersedes and cancels older work for the same provider.
 func (m *CatalogManager) Refresh(ctx context.Context, options CatalogRefreshOptions) CatalogRefreshResult {
 	if m == nil || ctx == nil {
 		return CatalogRefreshResult{Providers: []ProviderRefreshResult{{Err: errors.New("catalog manager or context is nil")}}}
@@ -294,14 +313,12 @@ func (m *CatalogManager) Refresh(ctx context.Context, options CatalogRefreshOpti
 			results[index] = ProviderRefreshResult{Provider: provider, Err: context.Canceled}
 			continue
 		}
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
+		wait.Go(func() {
 			if m.beforeProviderBegin != nil {
 				m.beforeProviderBegin(provider, invocation)
 			}
 			results[index] = m.refreshProvider(ctx, state, options, invocation)
-		}()
+		})
 	}
 	wait.Wait()
 	return CatalogRefreshResult{Providers: results}
@@ -679,12 +696,11 @@ func cloneStringMap(input map[string]string) map[string]string {
 		return nil
 	}
 	result := make(map[string]string, len(input))
-	for key, value := range input {
-		result[key] = value
-	}
+	maps.Copy(result, input)
 	return result
 }
 
+// ErrorMap returns the last non-nil error for each provider in the result.
 func (r CatalogRefreshResult) ErrorMap() map[string]error {
 	result := make(map[string]error)
 	for _, provider := range r.Providers {

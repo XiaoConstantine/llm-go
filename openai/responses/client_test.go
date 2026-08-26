@@ -168,12 +168,12 @@ func TestJSONModeRequiresCapabilityBeforeIO(t *testing.T) {
 	if response != nil {
 		t.Fatalf("Generate() response = %#v, want nil", response)
 	}
-	requireResponseError(t, err, llm.KindUnsupported, "generate", "JSON capability")
+	_ = requireResponseError(t, err, llm.KindUnsupported, "generate", "JSON capability")
 	stream, err := client.Stream(context.Background(), request)
 	if stream != nil {
 		t.Fatalf("Stream() = %#v, want nil", stream)
 	}
-	requireResponseError(t, err, llm.KindUnsupported, "stream", "JSON capability")
+	_ = requireResponseError(t, err, llm.KindUnsupported, "stream", "JSON capability")
 	if calls.Load() != 0 {
 		t.Fatalf("HTTP calls = %d, want zero", calls.Load())
 	}
@@ -206,7 +206,7 @@ func TestGenerateJSONModeRejectsMalformedCompletedOutput(t *testing.T) {
 			if response != nil {
 				t.Fatalf("Generate() response = %#v, want nil", response)
 			}
-			requireResponseError(t, err, llm.KindMalformedResponse, "generate", "not strict JSON")
+			_ = requireResponseError(t, err, llm.KindMalformedResponse, "generate", "not strict JSON")
 		})
 	}
 }
@@ -239,7 +239,7 @@ func TestGenerateJSONModeSkipsValidationForRefusalIncompleteAndError(t *testing.
 		if response != nil {
 			t.Fatalf("Generate(error) response = %#v, want nil", response)
 		}
-		requireResponseError(t, err, llm.KindProvider, "generate", "failed")
+		_ = requireResponseError(t, err, llm.KindProvider, "generate", "failed")
 	})
 }
 
@@ -276,7 +276,7 @@ func TestGenerateJSONModeRefusalCannotExemptMalformedText(t *testing.T) {
 			if response != nil {
 				t.Fatalf("Generate() response = %#v, want nil", response)
 			}
-			requireResponseError(t, err, llm.KindMalformedResponse, "generate", "not strict JSON")
+			_ = requireResponseError(t, err, llm.KindMalformedResponse, "generate", "not strict JSON")
 		})
 	}
 }
@@ -353,7 +353,7 @@ func TestStreamJSONModeTerminalAndStickyBehavior(t *testing.T) {
 				}
 			}
 			if test.malformed {
-				requireResponseError(t, err, llm.KindMalformedResponse, "stream", "not strict JSON")
+				_ = requireResponseError(t, err, llm.KindMalformedResponse, "stream", "not strict JSON")
 				if successfulTerminal {
 					t.Fatal("Stream emitted a successful terminal chunk for malformed JSON")
 				}
@@ -417,7 +417,7 @@ func TestCompatibleResponsesStreamsRawReasoningAndRequestsEncryptedState(t *test
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var events []llm.StreamEvent
 	var summary string
 	var providerData jsontext.Value
@@ -565,7 +565,7 @@ func TestStreamEmitsPartialToolArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var chunks []llm.Chunk
 	for {
 		chunk, err := stream.Recv()
@@ -615,7 +615,7 @@ func TestStreamEndsInterruptedToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var chunks []llm.Chunk
 	for {
 		chunk, err := stream.Recv()
@@ -820,7 +820,7 @@ func TestStreamRejectsDuplicateToolCallIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if _, err := stream.Recv(); err != nil {
 		t.Fatalf("first Recv() error = %v", err)
 	}

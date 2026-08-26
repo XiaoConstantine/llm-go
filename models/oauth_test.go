@@ -87,7 +87,7 @@ func TestConcreteOAuthPKCEExchangeAndRefresh(t *testing.T) {
 	}
 }
 
-func TestOAuthRejectsNilContextAndStateMismatchWithoutIO(t *testing.T) {
+func TestOAuthRejectsInvalidExchangeWithoutIO(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
 	defer server.Close()
@@ -100,22 +100,61 @@ func TestOAuthRejectsNilContextAndStateMismatchWithoutIO(t *testing.T) {
 	codex := CodexOAuth{TokenURL: server.URL, HTTPClient: server.Client()}
 	for name, call := range map[string]func() error{
 		"Anthropic Exchange": func() error {
-			_, err := anthropic.Exchange(nil, authorization, "code", authorization.State)
+			_, err := anthropic.Exchange(nil, authorization, "code", authorization.State) //nolint:staticcheck // Verify nil-context rejection.
 			return err
 		},
-		"Anthropic Refresh": func() error { _, err := anthropic.Refresh(nil, credential); return err },
-		"Codex Exchange":    func() error { _, err := codex.Exchange(nil, authorization, "code", authorization.State); return err },
-		"Codex Refresh":     func() error { _, err := codex.Refresh(nil, credential); return err },
+		"Anthropic Refresh": func() error {
+			_, err := anthropic.Refresh(nil, credential) //nolint:staticcheck // Verify nil-context rejection.
+			return err
+		},
+		"Codex Exchange": func() error {
+			_, err := codex.Exchange(nil, authorization, "code", authorization.State) //nolint:staticcheck // Verify nil-context rejection.
+			return err
+		},
+		"Codex Refresh": func() error {
+			_, err := codex.Refresh(nil, credential) //nolint:staticcheck // Verify nil-context rejection.
+			return err
+		},
 	} {
 		if err := call(); err == nil {
 			t.Errorf("%s(nil context) succeeded", name)
 		}
 	}
-	if _, err := anthropic.Exchange(context.Background(), authorization, "code", "wrong"); err == nil {
-		t.Fatal("Anthropic state mismatch succeeded")
+	exchanges := []struct {
+		name string
+		call func(OAuthAuthorization, string, string) error
+	}{
+		{name: "Anthropic", call: func(authorization OAuthAuthorization, code, state string) error {
+			_, err := anthropic.Exchange(context.Background(), authorization, code, state)
+			return err
+		}},
+		{name: "Codex", call: func(authorization OAuthAuthorization, code, state string) error {
+			_, err := codex.Exchange(context.Background(), authorization, code, state)
+			return err
+		}},
 	}
-	if _, err := codex.Exchange(context.Background(), authorization, "code", "wrong"); err == nil {
-		t.Fatal("Codex state mismatch succeeded")
+	invalid := []struct {
+		name  string
+		alter func(*OAuthAuthorization, *string, *string)
+	}{
+		{name: "empty expected state", alter: func(authorization *OAuthAuthorization, _, _ *string) { authorization.State = "" }},
+		{name: "empty callback state", alter: func(_ *OAuthAuthorization, _, state *string) { *state = "" }},
+		{name: "state mismatch", alter: func(_ *OAuthAuthorization, _, state *string) { *state = "wrong" }},
+		{name: "empty code", alter: func(_ *OAuthAuthorization, code, _ *string) { *code = "" }},
+		{name: "empty verifier", alter: func(authorization *OAuthAuthorization, _, _ *string) { authorization.Verifier = "" }},
+		{name: "empty redirect URI", alter: func(authorization *OAuthAuthorization, _, _ *string) { authorization.RedirectURI = "" }},
+	}
+	for _, exchange := range exchanges {
+		for _, test := range invalid {
+			t.Run(exchange.name+"/"+test.name, func(t *testing.T) {
+				candidate := authorization
+				code, state := "code", authorization.State
+				test.alter(&candidate, &code, &state)
+				if err := exchange.call(candidate, code, state); err == nil {
+					t.Fatal("Exchange() succeeded")
+				}
+			})
+		}
 	}
 	if requests != 0 {
 		t.Fatalf("token endpoint requests = %d, want zero", requests)

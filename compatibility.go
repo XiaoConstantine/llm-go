@@ -1,6 +1,9 @@
 package llm
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // CompatibilityToggle is a tri-state model compatibility override. Default
 // leaves protocol behavior unchanged; Enabled and Disabled explicitly opt in or
@@ -48,9 +51,6 @@ const (
 	ThinkingFormatString     ThinkingFormat = "string-thinking"
 )
 
-// CacheControlFormat identifies a prompt-cache marker convention. Empty means
-// the protocol default. Metadata support does not by itself add cache markers
-// to a request that contains none.
 // SessionAffinityFormat identifies provider session-affinity header conventions.
 // The zero value is resolved from the configured provider endpoint.
 type SessionAffinityFormat string
@@ -62,6 +62,9 @@ const (
 	SessionAffinityOpenRouter      SessionAffinityFormat = "openrouter"
 )
 
+// CacheControlFormat identifies a prompt-cache marker convention. Empty means
+// the protocol default. Metadata support does not by itself add cache markers
+// to a request that contains none.
 type CacheControlFormat string
 
 const (
@@ -164,10 +167,10 @@ func (c *ModelCompatibility) Validate(api API) error {
 	}
 	if c.Anthropic != nil {
 		if api != APIAnthropicMessages {
-			return fmt.Errorf("Anthropic compatibility requires API %q", APIAnthropicMessages)
+			return fmt.Errorf("anthropic compatibility requires API %q", APIAnthropicMessages)
 		}
 		if err := c.Anthropic.validate(); err != nil {
-			return fmt.Errorf("Anthropic compatibility: %w", err)
+			return fmt.Errorf("anthropic compatibility: %w", err)
 		}
 	}
 	return nil
@@ -221,10 +224,8 @@ func validateToggles(values ...CompatibilityToggle) error {
 }
 
 func validateEnum(name, value string, allowed ...string) error {
-	for _, candidate := range allowed {
-		if value == candidate {
-			return nil
-		}
+	if slices.Contains(allowed, value) {
+		return nil
 	}
 	return fmt.Errorf("%s %q is invalid", name, value)
 }
