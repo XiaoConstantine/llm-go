@@ -578,27 +578,33 @@ func TestWebSocketMalformedEarlyCloseAndProviderErrors(t *testing.T) {
 
 type blockingResponseWriteConn struct {
 	net.Conn
-	handshake        []byte
-	handshakeWritten bool
-	blocked          chan struct{}
-	unblock          chan struct{}
-	blockOnce        sync.Once
-	closeOnce        sync.Once
+	handshakeResponse []byte
+	handshakeRead     atomic.Bool
+	blocked           chan struct{}
+	unblock           chan struct{}
+	blockOnce         sync.Once
+	closeOnce         sync.Once
+}
+
+func (c *blockingResponseWriteConn) Read(data []byte) (int, error) {
+	n, err := c.Conn.Read(data)
+	if !c.handshakeRead.Load() {
+		c.handshakeResponse = append(c.handshakeResponse, data[:n]...)
+		if bytes.Contains(c.handshakeResponse, []byte("\r\n\r\n")) {
+			c.handshakeResponse = nil
+			c.handshakeRead.Store(true)
+		}
+	}
+	return n, err
 }
 
 func (c *blockingResponseWriteConn) Write(data []byte) (int, error) {
-	if c.handshakeWritten {
+	if c.handshakeRead.Load() {
 		c.blockOnce.Do(func() { close(c.blocked) })
 		<-c.unblock
 		return 0, net.ErrClosed
 	}
-	n, err := c.Conn.Write(data)
-	c.handshake = append(c.handshake, data[:n]...)
-	if bytes.Contains(c.handshake, []byte("\r\n\r\n")) {
-		c.handshake = nil
-		c.handshakeWritten = true
-	}
-	return n, err
+	return c.Conn.Write(data)
 }
 
 func (c *blockingResponseWriteConn) Close() error {
