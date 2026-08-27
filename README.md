@@ -85,7 +85,7 @@ These helpers are opt-in and do not change provider defaults.
 | `llm.WithRetry` | Bounded retries; streams retry only before their first chunk; attempt hooks may add validated headers |
 | `llm.Collect` | Closes and assembles a stream, preserves partial results, and validates completed tool calls |
 | `llm.Tool.Strictness` | Requests `prefer` or `require` constrained tool arguments while retaining legacy `Tool.Strict` behavior |
-| `llm.TransformHistory` | Returns an owned cross-model history plus warnings for lossy changes |
+| `llm.TransformHistory` | Owns cross-model history, normalizes tool IDs, repairs missing/orphaned results, and reports every change |
 | `llm.BudgetRequest` | Uses a caller-supplied token estimator and model limits to clamp an owned request copy |
 
 Tool inputs use JSON Schema 2020-12 by default, support declared drafts and

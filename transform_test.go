@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -83,4 +84,163 @@ func TestTransformHistoryChatToolResultImageCompatibility(t *testing.T) {
 	if len(warnings) != 0 || converted[2].ToolResults[0].Content[0].Kind != PartImage {
 		t.Fatalf("enabled transform = %#v, warnings %#v", converted, warnings)
 	}
+}
+
+func TestTransformHistoryRepairsMissingAndOrphanedToolResults(t *testing.T) {
+	model := ModelInfo{Provider: "provider", Model: "model", API: APIOpenAIChatCompletions,
+		Capabilities: []Capability{CapabilityGeneration, CapabilityTools}}
+	history := []Message{
+		{Role: RoleUser, Content: []Part{{Text: "start"}}},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call_one", Name: "one", Arguments: []byte(`{}`)},
+			{ID: "call_two", Name: "two", Arguments: []byte(`{}`)},
+		}},
+		{Role: RoleTool, ToolResults: []ToolResult{{CallID: "call_one", Name: "one", Content: []Part{{Text: "done"}}}}},
+		{Role: RoleUser, Content: []Part{{Text: "continue"}}},
+		{Role: RoleTool, ToolResults: []ToolResult{{CallID: "orphan", Name: "missing", Content: []Part{{Text: "late"}}}}},
+	}
+	output, warnings, err := TransformHistory(model, model, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output) != 5 || output[3].Role != RoleTool || len(output[3].ToolResults) != 1 ||
+		output[3].ToolResults[0].CallID != "call_two" || !output[3].ToolResults[0].IsError || output[4].Role != RoleUser {
+		t.Fatalf("repaired output = %#v", output)
+	}
+	if got := fmt.Sprint(warningCodes(warnings)); got != "[added_missing_tool_result removed_orphan_tool_result]" {
+		t.Fatalf("warning codes = %s", got)
+	}
+	if err := (Request{Messages: output}).Validate(); err != nil {
+		t.Fatalf("repaired output does not validate: %v", err)
+	}
+}
+
+func TestTransformHistoryNormalizesToolCallIDsAndMatchingResults(t *testing.T) {
+	source := ModelInfo{Provider: "google", Model: "source", API: APIGeminiGenerateContent,
+		Capabilities: []Capability{CapabilityGeneration, CapabilityTools}}
+	target := ModelInfo{Provider: "openai", Model: "target", API: APIOpenAIChatCompletions,
+		Capabilities: []Capability{CapabilityGeneration, CapabilityTools}}
+	longID := strings.Repeat("a", 80)
+	history := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call|unsafe", Name: "first", Arguments: []byte(`{}`)},
+			{ID: longID, Name: "second", Arguments: []byte(`{}`)},
+			{Name: "third", Arguments: []byte(`{}`)},
+		}},
+		{Role: RoleTool, ToolResults: []ToolResult{
+			{CallID: "call|unsafe", Name: "wrong"},
+			{CallID: longID, Name: "second"},
+			{Name: "third"},
+		}},
+	}
+	output, warnings, err := TransformHistory(source, target, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := output[0].ToolCalls
+	results := output[1].ToolResults
+	if len(calls) != 3 || len(results) != 3 {
+		t.Fatalf("calls/results = %#v / %#v", calls, results)
+	}
+	seen := make(map[string]struct{}, len(calls))
+	for index, call := range calls {
+		if call.ID == "" || len(call.ID) > 40 || strings.ContainsAny(call.ID, "|") {
+			t.Errorf("calls[%d].ID = %q", index, call.ID)
+		}
+		if _, duplicate := seen[call.ID]; duplicate {
+			t.Errorf("duplicate normalized ID %q", call.ID)
+		}
+		seen[call.ID] = struct{}{}
+		if results[index].CallID != call.ID {
+			t.Errorf("results[%d].CallID = %q, want %q", index, results[index].CallID, call.ID)
+		}
+	}
+	if results[0].Name != "first" {
+		t.Fatalf("corrected result name = %q", results[0].Name)
+	}
+	if got := fmt.Sprint(warningCodes(warnings)); got != "[normalized_tool_call_id normalized_tool_call_id normalized_tool_call_id corrected_tool_result_name]" {
+		t.Fatalf("warning codes = %s", got)
+	}
+}
+
+func TestTransformHistoryNormalizesDuplicateToolCallIDs(t *testing.T) {
+	model := ModelInfo{Provider: "openai", Model: "model", API: APIOpenAIChatCompletions,
+		Capabilities: []Capability{CapabilityGeneration, CapabilityTools}}
+	history := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "duplicate", Name: "one", Arguments: []byte(`{}`)},
+			{ID: "duplicate", Name: "two", Arguments: []byte(`{}`)},
+			{ID: "duplicate", Name: "three", Arguments: []byte(`{}`)},
+		}},
+		{Role: RoleTool, ToolResults: []ToolResult{
+			{CallID: "duplicate", Name: "one"},
+			{CallID: "duplicate", Name: "two"},
+			{CallID: "duplicate", Name: "three"},
+		}},
+	}
+	output, warnings, err := TransformHistory(model, model, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]struct{})
+	for index, call := range output[0].ToolCalls {
+		if _, duplicate := seen[call.ID]; duplicate {
+			t.Fatalf("tool call %d repeats normalized ID %q", index, call.ID)
+		}
+		seen[call.ID] = struct{}{}
+		if output[1].ToolResults[index].CallID != call.ID {
+			t.Fatalf("tool result %d ID = %q, want %q", index, output[1].ToolResults[index].CallID, call.ID)
+		}
+	}
+	if got := fmt.Sprint(warningCodes(warnings)); got != "[normalized_tool_call_id normalized_tool_call_id]" {
+		t.Fatalf("warning codes = %s", got)
+	}
+}
+
+func TestTransformHistoryPreservesDeferredToolMarkersWithoutDefinitions(t *testing.T) {
+	model := ModelInfo{Provider: "anthropic", Model: "model", API: APIAnthropicMessages,
+		Capabilities: []Capability{CapabilityGeneration, CapabilityTools}}
+	history := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call", Name: "search", Arguments: []byte(`{}`)}}},
+		{Role: RoleTool, ToolResults: []ToolResult{{CallID: "call", Name: "search", AddedToolNames: []string{"loaded"}}}},
+	}
+	output, warnings, err := TransformHistory(model, model, history)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("TransformHistory() = (%#v, %#v, %v)", output, warnings, err)
+	}
+	if got := fmt.Sprint(output[1].ToolResults[0].AddedToolNames); got != "[loaded]" {
+		t.Fatalf("AddedToolNames = %s", got)
+	}
+	output[1].ToolResults[0].AddedToolNames[0] = "changed"
+	if history[1].ToolResults[0].AddedToolNames[0] != "loaded" {
+		t.Fatal("output aliases source AddedToolNames")
+	}
+}
+
+func TestTransformHistoryDropsProviderDataFromRepairedSameModelMessage(t *testing.T) {
+	model := ModelInfo{Provider: "provider", Model: "model", API: APIOpenAIChatCompletions,
+		Capabilities: []Capability{CapabilityGeneration, CapabilityTools}}
+	history := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call", Name: "search", Arguments: []byte(`{}`)}}},
+		{Role: RoleTool, ProviderData: []byte(`{"call_id":"call","name":"wrong"}`),
+			ToolResults: []ToolResult{{CallID: "call", Name: "wrong"}}},
+	}
+	output, warnings, err := TransformHistory(model, model, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output[1].ToolResults[0].Name != "search" || len(output[1].ProviderData) != 0 {
+		t.Fatalf("repaired output = %#v", output)
+	}
+	if got := fmt.Sprint(warningCodes(warnings)); got != "[corrected_tool_result_name removed_provider_data]" {
+		t.Fatalf("warning codes = %s", got)
+	}
+}
+
+func warningCodes(warnings []TransformWarning) []TransformWarningCode {
+	codes := make([]TransformWarningCode, len(warnings))
+	for index, warning := range warnings {
+		codes[index] = warning.Code
+	}
+	return codes
 }
