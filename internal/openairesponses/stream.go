@@ -178,9 +178,20 @@ func isContextLimitError(apiErr *APIError) bool {
 
 func declaredToolNames(params openairesponses.ResponseNewParams) map[string]struct{} {
 	names := make(map[string]struct{}, len(params.Tools))
-	for _, tool := range params.Tools {
-		if tool.OfFunction != nil {
-			names[tool.OfFunction.Name] = struct{}{}
+	add := func(tools []openairesponses.ToolUnionParam) {
+		for _, tool := range tools {
+			if tool.OfFunction != nil {
+				names[tool.OfFunction.Name] = struct{}{}
+			}
+		}
+	}
+	add(params.Tools)
+	for _, item := range params.Input.OfInputItemList {
+		switch {
+		case item.OfAdditionalTools != nil:
+			add(item.OfAdditionalTools.Tools)
+		case item.OfToolSearchOutput != nil:
+			add(item.OfToolSearchOutput.Tools)
 		}
 	}
 	return names

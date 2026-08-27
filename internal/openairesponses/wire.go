@@ -1,7 +1,9 @@
 package openairesponses
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/deferredtools"
 	"github.com/openai/openai-go/v3/packages/param"
 	openairesponses "github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
@@ -37,6 +40,8 @@ type RequestOptions struct {
 	NamedToolChoice     bool
 	StrictTools         bool
 	ExplicitPromptCache bool
+	AdditionalTools     bool
+	ToolSearch          bool
 	InputAudio          *InputAudioOptions
 }
 
@@ -58,6 +63,13 @@ type providerDataEnvelope struct {
 func (c Codec) Request(op, model string, request llm.Request, options RequestOptions) (openairesponses.ResponseNewParams, error) {
 	instructions := make([]string, 0, 1)
 	input := make(openairesponses.ResponseInputParam, 0, len(request.Messages))
+	deferredMode := ""
+	if options.AdditionalTools {
+		deferredMode = "additional_tools"
+	} else if options.ToolSearch {
+		deferredMode = "tool_search"
+	}
+	toolPlan := deferredtools.Build(request, deferredMode != "", false)
 	for i, message := range request.Messages {
 		text := message.Text()
 		switch message.Role {
@@ -101,21 +113,37 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 				} else {
 					input = append(input, openairesponses.ResponseInputItemParamOfFunctionCallOutput(result.CallID, toolResultText(result)))
 				}
+				introduced := toolPlan.After(i, resultIndex)
+				if len(introduced) == 0 {
+					continue
+				}
+				wireTools, err := c.toolsToWire(op, introduced, options.StrictTools, deferredMode == "tool_search")
+				if err != nil {
+					return openairesponses.ResponseNewParams{}, err
+				}
+				switch deferredMode {
+				case "additional_tools":
+					input = append(input, openairesponses.ResponseInputItemUnionParam{OfAdditionalTools: &openairesponses.ResponseInputItemAdditionalToolsParam{Tools: wireTools}})
+				case "tool_search":
+					callID := deferredToolSearchCallID(i, resultIndex, result, introduced)
+					input = append(input,
+						openairesponses.ResponseInputItemUnionParam{OfToolSearchCall: &openairesponses.ResponseInputItemToolSearchCallParam{
+							Arguments: map[string]any{"query": strings.Join(toolNames(introduced), " "), "limit": len(introduced)},
+							CallID:    param.NewOpt(callID), Execution: "client", Status: "completed",
+						}},
+						openairesponses.ResponseInputItemUnionParam{OfToolSearchOutput: &openairesponses.ResponseToolSearchOutputItemParam{
+							Tools: wireTools, CallID: param.NewOpt(callID),
+							Execution: openairesponses.ResponseToolSearchOutputItemParamExecutionClient,
+							Status:    openairesponses.ResponseToolSearchOutputItemParamStatusCompleted,
+						}},
+					)
+				}
 			}
 		}
 	}
-	tools := make([]openairesponses.ToolUnionParam, 0, len(request.Tools))
-	for i, tool := range request.Tools {
-		if jsontext.Value(tool.InputSchema).Kind() != jsontext.KindBeginObject {
-			return openairesponses.ResponseNewParams{}, c.unsupported(op, fmt.Sprintf("tool %d uses a boolean JSON Schema, which OpenAI function tools do not support", i))
-		}
-		var schema map[string]any
-		if err := jsonv2.Unmarshal(tool.InputSchema, &schema); err != nil {
-			return openairesponses.ResponseNewParams{}, c.requestError(op, "decode tool %d input schema: %v", i, err)
-		}
-		wireTool := openairesponses.ToolParamOfFunction(tool.Name, schema, tool.StrictEnabled(options.StrictTools))
-		wireTool.OfFunction.Description = param.NewOpt(tool.Description)
-		tools = append(tools, wireTool)
+	tools, err := c.toolsToWire(op, toolPlan.Immediate, options.StrictTools, false)
+	if err != nil {
+		return openairesponses.ResponseNewParams{}, err
 	}
 
 	params := openairesponses.ResponseNewParams{
@@ -184,6 +212,40 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		}
 	}
 	return params, nil
+}
+
+func (c Codec) toolsToWire(op string, tools []llm.Tool, strictTools, deferLoading bool) ([]openairesponses.ToolUnionParam, error) {
+	wire := make([]openairesponses.ToolUnionParam, 0, len(tools))
+	for i, tool := range tools {
+		if jsontext.Value(tool.InputSchema).Kind() != jsontext.KindBeginObject {
+			return nil, c.unsupported(op, fmt.Sprintf("tool %d uses a boolean JSON Schema, which OpenAI function tools do not support", i))
+		}
+		var schema map[string]any
+		if err := jsonv2.Unmarshal(tool.InputSchema, &schema); err != nil {
+			return nil, c.requestError(op, "decode tool %d input schema: %v", i, err)
+		}
+		wireTool := openairesponses.ToolParamOfFunction(tool.Name, schema, tool.StrictEnabled(strictTools))
+		wireTool.OfFunction.Description = param.NewOpt(tool.Description)
+		if deferLoading {
+			wireTool.OfFunction.DeferLoading = param.NewOpt(true)
+		}
+		wire = append(wire, wireTool)
+	}
+	return wire, nil
+}
+
+func deferredToolSearchCallID(messageIndex, resultIndex int, result llm.ToolResult, tools []llm.Tool) string {
+	seed := fmt.Sprintf("%d:%d:%s:%s:%s", messageIndex, resultIndex, result.CallID, result.Name, strings.Join(toolNames(tools), ","))
+	digest := sha256.Sum256([]byte(seed))
+	return "llm_go_tool_load_" + hex.EncodeToString(digest[:8])
+}
+
+func toolNames(tools []llm.Tool) []string {
+	names := make([]string, len(tools))
+	for index, tool := range tools {
+		names[index] = tool.Name
+	}
+	return names
 }
 
 func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, audioOptions *InputAudioOptions) (openairesponses.ResponseInputMessageContentListParam, bool, error) {

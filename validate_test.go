@@ -58,6 +58,26 @@ func TestRequestValidateAllowsUnansweredToolCall(t *testing.T) {
 	}
 }
 
+func TestRequestValidateDeferredToolMarkers(t *testing.T) {
+	request := Request{
+		Messages: []Message{
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call", Name: "lookup", Arguments: []byte(`{}`)}}},
+			{Role: RoleTool, ToolResults: []ToolResult{{CallID: "call", AddedToolNames: []string{"loaded"}}}},
+		},
+		Tools: []Tool{
+			{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)},
+			{Name: "loaded", InputSchema: []byte(`{"type":"object"}`)},
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	request.Messages[1].ToolResults[0].AddedToolNames[0] = "no-longer-declared"
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a marker for a removed tool: %v", err)
+	}
+}
+
 func TestRequestValidateReasoningEffort(t *testing.T) {
 	request := Request{
 		Messages:        []Message{{Role: RoleUser, Content: []Part{{Text: "hello"}}}},

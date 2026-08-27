@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 6,
+  "revision": 7,
   "models": [
     {
       "provider": "anthropic",
@@ -24,7 +24,8 @@
       "compatibility": {
         "anthropic": {
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -99,7 +100,8 @@
       },
       "compatibility": {
         "anthropic": {
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -124,7 +126,8 @@
       },
       "compatibility": {
         "anthropic": {
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -150,7 +153,8 @@
       "compatibility": {
         "anthropic": {
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -177,7 +181,8 @@
         "anthropic": {
           "temperature": false,
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -204,7 +209,8 @@
         "anthropic": {
           "temperature": false,
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -231,7 +237,8 @@
         "anthropic": {
           "temperature": false,
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -256,7 +263,8 @@
       },
       "compatibility": {
         "anthropic": {
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -281,7 +289,8 @@
       },
       "compatibility": {
         "anthropic": {
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -307,7 +316,8 @@
       "compatibility": {
         "anthropic": {
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -333,7 +343,8 @@
       "compatibility": {
         "anthropic": {
           "adaptive_thinking": true,
-          "strict_tools": true
+          "strict_tools": true,
+          "tool_references": true
         }
       }
     },
@@ -925,7 +936,9 @@
       },
       "compatibility": {
         "openai_responses": {
-          "strict_tools": true
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
         }
       }
     },
@@ -950,7 +963,9 @@
       },
       "compatibility": {
         "openai_responses": {
-          "strict_tools": true
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
         }
       }
     },
@@ -1009,7 +1024,9 @@
       },
       "compatibility": {
         "openai_responses": {
-          "strict_tools": true
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
         }
       }
     },
@@ -1043,7 +1060,9 @@
       },
       "compatibility": {
         "openai_responses": {
-          "strict_tools": true
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
         }
       }
     },
@@ -1112,6 +1131,8 @@
       "compatibility": {
         "openai_responses": {
           "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true,
           "explicit_prompt_cache_mode": true
         }
       }
@@ -1147,6 +1168,8 @@
       "compatibility": {
         "openai_responses": {
           "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true,
           "explicit_prompt_cache_mode": true
         }
       }
@@ -1182,6 +1205,8 @@
       "compatibility": {
         "openai_responses": {
           "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true,
           "explicit_prompt_cache_mode": true
         }
       }

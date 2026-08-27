@@ -97,3 +97,78 @@ func TestPreferredToolStrictnessFollowsRequestOptions(t *testing.T) {
 		t.Fatal("supported prefer omitted strict")
 	}
 }
+
+func TestDeferredToolsUseAdditionalToolsBeforeToolSearch(t *testing.T) {
+	request := deferredToolRequest()
+	codec := Codec{Provider: "openai"}
+	params, err := codec.Request("generate", "model", request, RequestOptions{AdditionalTools: true, ToolSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Tools) != 1 || params.Tools[0].OfFunction == nil || params.Tools[0].OfFunction.Name != "lookup" {
+		t.Fatalf("top-level tools = %#v", params.Tools)
+	}
+	wire := marshalWire(t, params)
+	for _, want := range []string{`"type":"additional_tools"`, `"role":"developer"`, `"name":"loaded"`} {
+		if !strings.Contains(wire, want) {
+			t.Errorf("wire = %s, want %s", wire, want)
+		}
+	}
+	if strings.Contains(wire, `"type":"tool_search_call"`) || strings.Contains(wire, `"defer_loading":true`) {
+		t.Fatalf("additional_tools wire contains tool-search fields: %s", wire)
+	}
+}
+
+func TestDeferredToolsUseClientToolSearchFallback(t *testing.T) {
+	params, err := (Codec{Provider: "openai"}).Request("generate", "model", deferredToolRequest(), RequestOptions{ToolSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := marshalWire(t, params)
+	for _, want := range []string{`"type":"tool_search_call"`, `"type":"tool_search_output"`, `"execution":"client"`,
+		`"status":"completed"`, `"name":"loaded"`, `"defer_loading":true`} {
+		if !strings.Contains(wire, want) {
+			t.Errorf("wire = %s, want %s", wire, want)
+		}
+	}
+	if strings.Contains(wire, `"type":"additional_tools"`) {
+		t.Fatalf("tool-search wire contains additional_tools: %s", wire)
+	}
+}
+
+func TestDeferredToolMarkersFallBackToImmediateDefinitions(t *testing.T) {
+	params, err := (Codec{Provider: "compatible"}).Request("generate", "model", deferredToolRequest(), RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Tools) != 2 {
+		t.Fatalf("top-level tools = %#v", params.Tools)
+	}
+	wire := marshalWire(t, params)
+	if strings.Contains(wire, `"type":"additional_tools"`) || strings.Contains(wire, `"type":"tool_search_call"`) {
+		t.Fatalf("unsupported wire contains deferred items: %s", wire)
+	}
+}
+
+func deferredToolRequest() llm.Request {
+	return llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.Part{{Text: "start"}}},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "lookup", Arguments: []byte(`{}`)}}},
+			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: "call", Name: "lookup", AddedToolNames: []string{"loaded"}}}},
+		},
+		Tools: []llm.Tool{
+			{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)},
+			{Name: "loaded", InputSchema: []byte(`{"type":"object"}`)},
+		},
+	}
+}
+
+func marshalWire(t *testing.T, value any) string {
+	t.Helper()
+	body, err := jsonv2.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}

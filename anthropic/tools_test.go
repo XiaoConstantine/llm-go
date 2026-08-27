@@ -391,3 +391,39 @@ func TestPreferredToolStrictnessFollowsCompatibility(t *testing.T) {
 		t.Fatal("supported prefer omitted strict")
 	}
 }
+
+func TestDeferredToolReferencesKeepResultContentAsSiblingBlocks(t *testing.T) {
+	request := llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.Part{{Text: "start"}}},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "lookup", Arguments: []byte(`{}`)}}},
+			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{
+				CallID: "call", Name: "lookup", Content: []llm.Part{{Text: "loaded tools"}}, AddedToolNames: []string{"loaded"},
+			}}},
+		},
+		Tools: []llm.Tool{
+			{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)},
+			{Name: "loaded", InputSchema: []byte(`{"type":"object"}`)},
+		},
+	}
+	wire, _, err := requestToWireWithCompatibility("generate", "model", 1024, request,
+		llm.AnthropicCompatibility{ToolReferences: llm.CompatibilityEnabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Tools) != 2 || wire.Tools[0].Name != "lookup" || wire.Tools[0].DeferLoading ||
+		wire.Tools[1].Name != "loaded" || !wire.Tools[1].DeferLoading {
+		t.Fatalf("wire tools = %#v", wire.Tools)
+	}
+	blocks, ok := wire.Messages[2].Content.([]inputContentBlock)
+	if !ok || len(blocks) != 2 || blocks[0].Type != "tool_result" || blocks[1].Type != "text" {
+		t.Fatalf("tool message content = %#v", wire.Messages[2].Content)
+	}
+	references, ok := blocks[0].Content.([]inputContentBlock)
+	if !ok || len(references) != 1 || references[0].Type != "tool_reference" || references[0].ToolName != "loaded" {
+		t.Fatalf("tool result references = %#v", blocks[0].Content)
+	}
+	if blocks[1].Text == nil || *blocks[1].Text != "loaded tools" {
+		t.Fatalf("sibling content = %#v", blocks[1])
+	}
+}

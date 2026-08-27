@@ -97,9 +97,15 @@ type OpenAIChatCompatibility struct {
 // OpenAIResponsesCompatibility describes model-specific differences among
 // OpenAI Responses-compatible APIs.
 type OpenAIResponsesCompatibility struct {
-	DeveloperRole           CompatibilityToggle
-	EncryptedReasoning      CompatibilityToggle
-	StrictTools             CompatibilityToggle
+	DeveloperRole      CompatibilityToggle
+	EncryptedReasoning CompatibilityToggle
+	StrictTools        CompatibilityToggle
+	// AdditionalTools enables replaying deferred tool definitions as
+	// additional_tools input items.
+	AdditionalTools CompatibilityToggle
+	// ToolSearch enables client tool-search call/output replay when
+	// AdditionalTools is not enabled.
+	ToolSearch              CompatibilityToggle
 	LongCacheRetention      CompatibilityToggle
 	ExplicitPromptCacheMode CompatibilityToggle
 	// SessionAffinityFormat selects the SessionID header convention. Its zero
@@ -118,6 +124,9 @@ type AnthropicCompatibility struct {
 	AdaptiveThinking        CompatibilityToggle
 	EmptyThinkingSignature  CompatibilityToggle
 	StrictTools             CompatibilityToggle
+	// ToolReferences enables defer_loading definitions and tool_reference
+	// result content.
+	ToolReferences CompatibilityToggle
 }
 
 // ModelCompatibility contains at most one protocol-specific compatibility
@@ -201,7 +210,8 @@ func (c OpenAIResponsesCompatibility) validate() error {
 	if err := validateSessionAffinityFormat(c.SessionAffinityFormat); err != nil {
 		return err
 	}
-	return validateToggles(c.DeveloperRole, c.EncryptedReasoning, c.StrictTools, c.LongCacheRetention, c.ExplicitPromptCacheMode)
+	return validateToggles(c.DeveloperRole, c.EncryptedReasoning, c.StrictTools, c.AdditionalTools,
+		c.ToolSearch, c.LongCacheRetention, c.ExplicitPromptCacheMode)
 }
 
 func validateSessionAffinityFormat(value SessionAffinityFormat) error {
@@ -211,7 +221,8 @@ func validateSessionAffinityFormat(value SessionAffinityFormat) error {
 
 func (c AnthropicCompatibility) validate() error {
 	return validateToggles(c.EagerToolInputStreaming, c.LongCacheRetention, c.SessionAffinity,
-		c.CacheControlOnTools, c.Temperature, c.AdaptiveThinking, c.EmptyThinkingSignature, c.StrictTools)
+		c.CacheControlOnTools, c.Temperature, c.AdaptiveThinking, c.EmptyThinkingSignature, c.StrictTools,
+		c.ToolReferences)
 }
 
 func validateToggles(values ...CompatibilityToggle) error {

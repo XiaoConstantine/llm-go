@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/deferredtools"
 )
 
 const maxMessages = 100_000
@@ -75,6 +76,7 @@ type inputContentBlock struct {
 	Name         string          `json:"name,omitempty"`
 	Input        json.RawMessage `json:"input,omitzero"`
 	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	ToolName     string          `json:"tool_name,omitempty"`
 	Content      any             `json:"content,omitempty"`
 	IsError      bool            `json:"is_error,omitzero"`
 	Thinking     *string         `json:"thinking,omitzero"`
@@ -89,6 +91,7 @@ type toolDefinition struct {
 	InputSchema         json.RawMessage `json:"input_schema"`
 	Strict              bool            `json:"strict,omitzero"`
 	EagerInputStreaming bool            `json:"eager_input_streaming,omitzero"`
+	DeferLoading        bool            `json:"defer_loading,omitzero"`
 	CacheControl        *cacheControl   `json:"cache_control,omitempty"`
 }
 
@@ -240,8 +243,14 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 			Type: "text", Text: "You are Claude Code, Anthropic's official CLI for Claude.", CacheControl: cache,
 		})
 	}
-	wrequest.Tools = make([]toolDefinition, len(request.Tools))
-	for index, tool := range request.Tools {
+	toolPlan := deferredtools.Build(request, compatibility.ToolReferences == llm.CompatibilityEnabled, true)
+	orderedTools := append(append([]llm.Tool(nil), toolPlan.Immediate...), toolPlan.Deferred...)
+	deferredNames := make(map[string]struct{}, len(toolPlan.Deferred))
+	for _, tool := range toolPlan.Deferred {
+		deferredNames[tool.Name] = struct{}{}
+	}
+	wrequest.Tools = make([]toolDefinition, len(orderedTools))
+	for index, tool := range orderedTools {
 		wrequest.Tools[index] = toolDefinition{
 			Name:                tool.Name,
 			Description:         tool.Description,
@@ -249,7 +258,8 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 			Strict:              tool.StrictEnabled(compatibility.StrictTools != llm.CompatibilityDisabled),
 			EagerInputStreaming: compatibility.EagerToolInputStreaming != llm.CompatibilityDisabled,
 		}
-		if cache != nil && index == len(request.Tools)-1 && compatibility.CacheControlOnTools != llm.CompatibilityDisabled {
+		_, wrequest.Tools[index].DeferLoading = deferredNames[tool.Name]
+		if cache != nil && index == len(orderedTools)-1 && compatibility.CacheControlOnTools != llm.CompatibilityDisabled {
 			wrequest.Tools[index].CacheControl = cache
 		}
 	}
@@ -258,14 +268,14 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 		return messageRequest{}, nil, err
 	}
 	encoder := newMessageEncoder(op, request.Messages, model, compatibility.EmptyThinkingSignature == llm.CompatibilityEnabled)
-	for _, message := range request.Messages {
+	for messageIndex, message := range request.Messages {
 		if message.Role == llm.RoleSystem {
 			for _, part := range message.Content {
 				wrequest.System = append(wrequest.System, contentBlock{Type: "text", Text: part.Text})
 			}
 			continue
 		}
-		converted, err := encoder.toWire(message)
+		converted, err := encoder.toWire(message, messageIndex, toolPlan)
 		if err != nil {
 			return messageRequest{}, nil, err
 		}
@@ -432,9 +442,10 @@ func newMessageEncoder(op string, messages []llm.Message, model string, allowEmp
 	}
 }
 
-func (encoder *messageEncoder) toWire(message llm.Message) (inputMessage, error) {
+func (encoder *messageEncoder) toWire(message llm.Message, messageIndex int, toolPlan deferredtools.Plan) (inputMessage, error) {
 	if message.Role == llm.RoleTool {
 		blocks := make([]inputContentBlock, 0, len(message.ToolResults))
+		var siblingContent []inputContentBlock
 		for index, result := range message.ToolResults {
 			callID, err := encoder.resultID(result)
 			if err != nil {
@@ -444,14 +455,23 @@ func (encoder *messageEncoder) toWire(message llm.Message) (inputMessage, error)
 			if err != nil {
 				return inputMessage{}, fmt.Errorf("tool result %d: %w", index, err)
 			}
+			introduced := toolPlan.After(messageIndex, index)
 			var value any
-			if allTextParts(result.Content) {
+			if len(introduced) != 0 {
+				references := make([]inputContentBlock, len(introduced))
+				for referenceIndex, tool := range introduced {
+					references[referenceIndex] = inputContentBlock{Type: "tool_reference", ToolName: tool.Name}
+				}
+				value = references
+				siblingContent = append(siblingContent, content...)
+			} else if allTextParts(result.Content) {
 				value = optionalTextContent(result.Content)
 			} else if len(content) != 0 {
 				value = content
 			}
 			blocks = append(blocks, inputContentBlock{Type: "tool_result", ToolUseID: callID, Content: value, IsError: result.IsError})
 		}
+		blocks = append(blocks, siblingContent...)
 		return inputMessage{Role: string(llm.RoleUser), Content: blocks}, nil
 	}
 

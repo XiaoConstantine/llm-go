@@ -127,11 +127,17 @@ type ToolCall struct {
 // when its ID is available. Otherwise, Name must match the call and results are
 // paired with preceding unmatched ID-less calls of that name in order. When
 // both CallID and Name are set, both must identify the same call.
+// AddedToolNames records tool definitions introduced after this result while
+// replaying a transcript. Names absent from the current Request.Tools are
+// ignored. Providers that support deferred tool loading may serialize available
+// definitions at this position; other providers ignore the marker and send all
+// request tools normally.
 type ToolResult struct {
-	CallID  string
-	Name    string
-	Content []Part
-	IsError bool
+	CallID         string
+	Name           string
+	Content        []Part
+	IsError        bool
+	AddedToolNames []string
 }
 
 // ToolChoiceMode controls whether and which tools the model may call. The zero

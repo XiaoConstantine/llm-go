@@ -108,7 +108,8 @@ func cloneRequest(request Request) Request {
 		}
 		converted.ToolResults = make([]ToolResult, len(message.ToolResults))
 		for resultIndex, result := range message.ToolResults {
-			convertedResult := ToolResult{CallID: result.CallID, Name: result.Name, IsError: result.IsError, Content: make([]Part, len(result.Content))}
+			convertedResult := ToolResult{CallID: result.CallID, Name: result.Name, IsError: result.IsError,
+				Content: make([]Part, len(result.Content)), AddedToolNames: append([]string(nil), result.AddedToolNames...)}
 			for partIndex, part := range result.Content {
 				convertedResult.Content[partIndex] = clonePart(part)
 			}

@@ -94,6 +94,8 @@ type sourceOpenAIResponses struct {
 	DeveloperRole           *bool                     `json:"developer_role,omitempty"`
 	EncryptedReasoning      *bool                     `json:"encrypted_reasoning,omitempty"`
 	StrictTools             *bool                     `json:"strict_tools,omitempty"`
+	AdditionalTools         *bool                     `json:"additional_tools,omitempty"`
+	ToolSearch              *bool                     `json:"tool_search,omitempty"`
 	LongCacheRetention      *bool                     `json:"long_cache_retention,omitempty"`
 	ExplicitPromptCacheMode *bool                     `json:"explicit_prompt_cache_mode,omitempty"`
 	SessionAffinityFormat   llm.SessionAffinityFormat `json:"session_affinity_format,omitempty"`
@@ -108,6 +110,7 @@ type sourceAnthropic struct {
 	AdaptiveThinking        *bool `json:"adaptive_thinking,omitempty"`
 	EmptyThinkingSignature  *bool `json:"empty_thinking_signature,omitempty"`
 	StrictTools             *bool `json:"strict_tools,omitempty"`
+	ToolReferences          *bool `json:"tool_references,omitempty"`
 }
 
 func main() {
@@ -303,6 +306,7 @@ func (source *sourceCompatibility) model() *llm.ModelCompatibility {
 	if value := source.OpenAIResponses; value != nil {
 		compatibility.OpenAIResponses = &llm.OpenAIResponsesCompatibility{DeveloperRole: toggle(value.DeveloperRole),
 			EncryptedReasoning: toggle(value.EncryptedReasoning), StrictTools: toggle(value.StrictTools),
+			AdditionalTools: toggle(value.AdditionalTools), ToolSearch: toggle(value.ToolSearch),
 			LongCacheRetention: toggle(value.LongCacheRetention), ExplicitPromptCacheMode: toggle(value.ExplicitPromptCacheMode),
 			SessionAffinityFormat: value.SessionAffinityFormat}
 	}
@@ -311,7 +315,7 @@ func (source *sourceCompatibility) model() *llm.ModelCompatibility {
 			LongCacheRetention: toggle(value.LongCacheRetention), SessionAffinity: toggle(value.SessionAffinity),
 			CacheControlOnTools: toggle(value.CacheControlOnTools), Temperature: toggle(value.Temperature),
 			AdaptiveThinking: toggle(value.AdaptiveThinking), EmptyThinkingSignature: toggle(value.EmptyThinkingSignature),
-			StrictTools: toggle(value.StrictTools)}
+			StrictTools: toggle(value.StrictTools), ToolReferences: toggle(value.ToolReferences)}
 	}
 	return compatibility
 }
@@ -391,13 +395,14 @@ func renderCompatibility(output *bytes.Buffer, compatibility *llm.ModelCompatibi
 		output.WriteString("},")
 	}
 	if value := compatibility.OpenAIResponses; value != nil {
-		fmt.Fprintf(output, "OpenAIResponses:&llm.OpenAIResponsesCompatibility{DeveloperRole:llm.CompatibilityToggle(%q),EncryptedReasoning:llm.CompatibilityToggle(%q),StrictTools:llm.CompatibilityToggle(%q),LongCacheRetention:llm.CompatibilityToggle(%q),ExplicitPromptCacheMode:llm.CompatibilityToggle(%q),SessionAffinityFormat:llm.SessionAffinityFormat(%q)},",
-			value.DeveloperRole, value.EncryptedReasoning, value.StrictTools, value.LongCacheRetention, value.ExplicitPromptCacheMode, value.SessionAffinityFormat)
+		fmt.Fprintf(output, "OpenAIResponses:&llm.OpenAIResponsesCompatibility{DeveloperRole:llm.CompatibilityToggle(%q),EncryptedReasoning:llm.CompatibilityToggle(%q),StrictTools:llm.CompatibilityToggle(%q),AdditionalTools:llm.CompatibilityToggle(%q),ToolSearch:llm.CompatibilityToggle(%q),LongCacheRetention:llm.CompatibilityToggle(%q),ExplicitPromptCacheMode:llm.CompatibilityToggle(%q),SessionAffinityFormat:llm.SessionAffinityFormat(%q)},",
+			value.DeveloperRole, value.EncryptedReasoning, value.StrictTools, value.AdditionalTools, value.ToolSearch,
+			value.LongCacheRetention, value.ExplicitPromptCacheMode, value.SessionAffinityFormat)
 	}
 	if value := compatibility.Anthropic; value != nil {
-		fmt.Fprintf(output, "Anthropic:&llm.AnthropicCompatibility{EagerToolInputStreaming:llm.CompatibilityToggle(%q),LongCacheRetention:llm.CompatibilityToggle(%q),SessionAffinity:llm.CompatibilityToggle(%q),CacheControlOnTools:llm.CompatibilityToggle(%q),Temperature:llm.CompatibilityToggle(%q),AdaptiveThinking:llm.CompatibilityToggle(%q),EmptyThinkingSignature:llm.CompatibilityToggle(%q),StrictTools:llm.CompatibilityToggle(%q)},",
+		fmt.Fprintf(output, "Anthropic:&llm.AnthropicCompatibility{EagerToolInputStreaming:llm.CompatibilityToggle(%q),LongCacheRetention:llm.CompatibilityToggle(%q),SessionAffinity:llm.CompatibilityToggle(%q),CacheControlOnTools:llm.CompatibilityToggle(%q),Temperature:llm.CompatibilityToggle(%q),AdaptiveThinking:llm.CompatibilityToggle(%q),EmptyThinkingSignature:llm.CompatibilityToggle(%q),StrictTools:llm.CompatibilityToggle(%q),ToolReferences:llm.CompatibilityToggle(%q)},",
 			value.EagerToolInputStreaming, value.LongCacheRetention, value.SessionAffinity, value.CacheControlOnTools,
-			value.Temperature, value.AdaptiveThinking, value.EmptyThinkingSignature, value.StrictTools)
+			value.Temperature, value.AdaptiveThinking, value.EmptyThinkingSignature, value.StrictTools, value.ToolReferences)
 	}
 	output.WriteString("}")
 }

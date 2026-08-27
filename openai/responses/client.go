@@ -160,6 +160,8 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 			NamedToolChoice:     true,
 			StrictTools:         modelCompatibility.StrictTools != llm.CompatibilityDisabled,
 			ExplicitPromptCache: modelCompatibility.ExplicitPromptCacheMode == llm.CompatibilityEnabled,
+			AdditionalTools:     modelCompatibility.AdditionalTools == llm.CompatibilityEnabled,
+			ToolSearch:          modelCompatibility.ToolSearch == llm.CompatibilityEnabled,
 		},
 		compatibility:           modelCompatibility,
 		compatibilityConfigured: configuredCompatibility != nil,

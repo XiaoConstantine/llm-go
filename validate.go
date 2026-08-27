@@ -321,6 +321,22 @@ func validateToolResult(result ToolResult) error {
 			return fmt.Errorf("content[%d]: %w", i, err)
 		}
 	}
+	seen := make(map[string]struct{}, len(result.AddedToolNames))
+	for i, name := range result.AddedToolNames {
+		if name == "" {
+			return fmt.Errorf("added tool names[%d] must not be empty", i)
+		}
+		if !utf8.ValidString(name) {
+			return fmt.Errorf("added tool names[%d] must be valid UTF-8", i)
+		}
+		if name != strings.TrimSpace(name) {
+			return fmt.Errorf("added tool names[%d] must not contain surrounding whitespace", i)
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("added tool names[%d] %q is duplicated", i, name)
+		}
+		seen[name] = struct{}{}
+	}
 	return nil
 }
 
