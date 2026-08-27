@@ -4,9 +4,14 @@
 package responses
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"slices"
@@ -20,6 +25,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaioption "github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	sdkresponses "github.com/openai/openai-go/v3/responses"
 )
 
@@ -28,6 +34,7 @@ const (
 	defaultBaseURL       = "https://api.openai.com/v1"
 	providerDataAPI      = "openai-responses"
 	maxProviderDataBytes = 16 << 20
+	maxBackgroundBody    = 2 * maxProviderDataBytes
 )
 
 // APIError is an error reported in a Responses event stream.
@@ -264,6 +271,223 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 		return c.produce(producerCtx, "stream", params, request.SessionID, emit)
 	})
 	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
+}
+
+// StartBackground starts a stored OpenAI Responses job and returns its durable
+// handle without waiting for terminal output.
+func (c *Client) StartBackground(ctx context.Context, request llm.Request) (*llm.BackgroundResult, error) {
+	const op = "start_background"
+	params, err := c.prepare(ctx, op, request, false)
+	if err != nil {
+		return nil, err
+	}
+	params.Background = param.NewOpt(true)
+	params.Store = param.NewOpt(true)
+	var observed *sdkresponses.Response
+	options := append(sessionAffinityOptions(c.compatibility.SessionAffinityFormat, request.SessionID),
+		backgroundResponseOptions(&observed)...)
+	response, err := c.responses.New(ctx, params, options...)
+	if err != nil {
+		if contextErr := internalresponses.ContextError(ctx); contextErr != nil && observed != nil && observed.ID != "" {
+			handle := llm.BackgroundHandle{Provider: c.provider, Model: c.model, API: llm.APIOpenAIResponses,
+				ID: observed.ID, Tools: cloneTools(request.Tools), ResponseFormat: request.ResponseFormat}
+			result, _ := c.backgroundResult(op, handle, *observed)
+			return result, contextErr
+		}
+		return nil, c.backgroundSDKError(ctx, op, err)
+	}
+	if response == nil || response.ID == "" {
+		if contextErr := internalresponses.ContextError(ctx); contextErr != nil {
+			return nil, contextErr
+		}
+		return nil, c.backgroundMalformed(op, "response has no ID")
+	}
+	handle := llm.BackgroundHandle{Provider: c.provider, Model: c.model, API: llm.APIOpenAIResponses,
+		ID: response.ID, Tools: cloneTools(request.Tools), ResponseFormat: request.ResponseFormat}
+	result, resultErr := c.backgroundResult(op, handle, *response)
+	if err := internalresponses.ContextError(ctx); err != nil {
+		return result, err
+	}
+	return result, resultErr
+}
+
+// FetchBackground retrieves the current state of an OpenAI Responses job.
+func (c *Client) FetchBackground(ctx context.Context, handle llm.BackgroundHandle) (*llm.BackgroundResult, error) {
+	const op = "fetch_background"
+	handle, err := c.validateBackgroundHandle(op, handle)
+	if err != nil {
+		return nil, err
+	}
+	if err := internalresponses.ContextError(ctx); err != nil {
+		return nil, err
+	}
+	var observed *sdkresponses.Response
+	response, err := c.responses.Get(ctx, handle.ID, sdkresponses.ResponseGetParams{},
+		backgroundResponseOptions(&observed)...)
+	if err != nil {
+		if contextErr := internalresponses.ContextError(ctx); contextErr != nil && observed != nil {
+			result, _ := c.backgroundResult(op, handle, *observed)
+			return result, contextErr
+		}
+		return nil, c.backgroundSDKError(ctx, op, err)
+	}
+	if response == nil {
+		if contextErr := internalresponses.ContextError(ctx); contextErr != nil {
+			return nil, contextErr
+		}
+		return nil, c.backgroundMalformed(op, "provider returned no response")
+	}
+	result, resultErr := c.backgroundResult(op, handle, *response)
+	if err := internalresponses.ContextError(ctx); err != nil {
+		return result, err
+	}
+	return result, resultErr
+}
+
+// CancelBackground requests cancellation and returns the provider's resulting
+// job state. A job that completed concurrently may return completed output.
+func (c *Client) CancelBackground(ctx context.Context, handle llm.BackgroundHandle) (*llm.BackgroundResult, error) {
+	const op = "cancel_background"
+	handle, err := c.validateBackgroundHandle(op, handle)
+	if err != nil {
+		return nil, err
+	}
+	if err := internalresponses.ContextError(ctx); err != nil {
+		return nil, err
+	}
+	var observed *sdkresponses.Response
+	response, err := c.responses.Cancel(ctx, handle.ID, backgroundResponseOptions(&observed)...)
+	if err != nil {
+		if contextErr := internalresponses.ContextError(ctx); contextErr != nil && observed != nil {
+			result, _ := c.backgroundResult(op, handle, *observed)
+			return result, contextErr
+		}
+		return nil, c.backgroundSDKError(ctx, op, err)
+	}
+	if response == nil {
+		if contextErr := internalresponses.ContextError(ctx); contextErr != nil {
+			return nil, contextErr
+		}
+		return nil, c.backgroundMalformed(op, "provider returned no response")
+	}
+	result, resultErr := c.backgroundResult(op, handle, *response)
+	if err := internalresponses.ContextError(ctx); err != nil {
+		return result, err
+	}
+	return result, resultErr
+}
+
+func (c *Client) validateBackgroundHandle(op string, handle llm.BackgroundHandle) (llm.BackgroundHandle, error) {
+	if err := handle.Validate(); err != nil {
+		return llm.BackgroundHandle{}, &llm.Error{Kind: llm.KindInvalidRequest, Op: op, Provider: c.provider, Err: err}
+	}
+	if handle.Provider != c.provider || handle.Model != c.model || handle.API != llm.APIOpenAIResponses {
+		return llm.BackgroundHandle{}, &llm.Error{Kind: llm.KindInvalidRequest, Op: op, Provider: c.provider,
+			Err: fmt.Errorf("background handle belongs to provider/model/API %q/%q/%q", handle.Provider, handle.Model, handle.API)}
+	}
+	handle.Tools = cloneTools(handle.Tools)
+	return handle, nil
+}
+
+func (c *Client) backgroundResult(op string, handle llm.BackgroundHandle, response sdkresponses.Response) (*llm.BackgroundResult, error) {
+	result := &llm.BackgroundResult{Handle: cloneBackgroundHandle(handle), Status: llm.BackgroundStatus(response.Status)}
+	if response.ID == "" || response.ID != handle.ID {
+		return result, c.backgroundMalformed(op, "response ID %q does not match handle ID %q", response.ID, handle.ID)
+	}
+	if !response.JSON.Status.Valid() || !response.JSON.Output.Valid() {
+		return result, c.backgroundMalformed(op, "response is missing status or output")
+	}
+	switch result.Status {
+	case llm.BackgroundQueued, llm.BackgroundInProgress, llm.BackgroundCancelled:
+		return result, nil
+	case llm.BackgroundFailed:
+		return result, c.codec().FailedResponse(op, response)
+	case llm.BackgroundCompleted, llm.BackgroundIncomplete:
+		converted, err := c.codec().FullResponse(op, c.model, handle.Tools, handle.ResponseFormat, response)
+		if err != nil {
+			return result, err
+		}
+		if err := llm.ValidateToolCalls(handle.Tools, converted.Message.ToolCalls); err != nil {
+			return result, &llm.Error{Kind: llm.KindMalformedResponse, Op: op, Provider: c.provider,
+				Err: fmt.Errorf("validate tool call arguments: %w", err)}
+		}
+		result.Response = converted
+		return result, nil
+	default:
+		return result, c.backgroundMalformed(op, "response has unknown status %q", response.Status)
+	}
+}
+
+func (c *Client) backgroundMalformed(op, format string, args ...any) *llm.Error {
+	return &llm.Error{Kind: llm.KindMalformedResponse, Op: op, Provider: c.provider, Err: fmt.Errorf(format, args...)}
+}
+
+func (c *Client) backgroundSDKError(ctx context.Context, op string, err error) error {
+	if contextErr := internalresponses.ContextError(ctx); contextErr != nil {
+		return contextErr
+	}
+	var wireErr *backgroundResponseError
+	if errors.As(err, &wireErr) {
+		return c.backgroundMalformed(op, "%v", wireErr)
+	}
+	return c.classifySDKError(op, err)
+}
+
+type backgroundResponseError struct {
+	err error
+}
+
+func (e *backgroundResponseError) Error() string { return e.err.Error() }
+func (e *backgroundResponseError) Unwrap() error { return e.err }
+
+func backgroundResponseOptions(observed **sdkresponses.Response) []openaioption.RequestOption {
+	return []openaioption.RequestOption{
+		openaioption.WithHeader("Accept", "application/json"),
+		openaioption.WithMiddleware(func(request *http.Request, next openaioption.MiddlewareNext) (*http.Response, error) {
+			response, err := next(request)
+			if err != nil || response == nil {
+				return response, err
+			}
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, maxBackgroundBody+1))
+			_ = response.Body.Close()
+			response.Body = io.NopCloser(bytes.NewReader(body))
+			if readErr != nil {
+				return response, fmt.Errorf("read response body: %w", readErr)
+			}
+			if len(body) > maxBackgroundBody {
+				return response, &backgroundResponseError{err: fmt.Errorf("response body exceeds %d bytes", maxBackgroundBody)}
+			}
+			if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+				mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+				if parseErr != nil || mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+					return response, &backgroundResponseError{err: fmt.Errorf("response content type %q is not JSON", response.Header.Get("Content-Type"))}
+				}
+				if !jsontext.Value(body).IsValid() {
+					return response, &backgroundResponseError{err: errors.New("response body does not contain strict JSON")}
+				}
+				var decoded sdkresponses.Response
+				if err := json.Unmarshal(body, &decoded); err != nil {
+					return response, &backgroundResponseError{err: fmt.Errorf("decode response body: %w", err)}
+				}
+				*observed = &decoded
+			}
+			return response, nil
+		}),
+	}
+}
+
+func cloneBackgroundHandle(handle llm.BackgroundHandle) llm.BackgroundHandle {
+	handle.Tools = cloneTools(handle.Tools)
+	return handle
+}
+
+func cloneTools(tools []llm.Tool) []llm.Tool {
+	cloned := make([]llm.Tool, len(tools))
+	for index, tool := range tools {
+		cloned[index] = tool
+		cloned[index].InputSchema = append([]byte(nil), tool.InputSchema...)
+	}
+	return cloned
 }
 
 func (c *Client) prepare(ctx context.Context, op string, request llm.Request, requireStreaming bool) (sdkresponses.ResponseNewParams, error) {
@@ -566,3 +790,8 @@ func unsupported(provider, op, message string) *llm.Error {
 func transportError(provider, op string, err error) *llm.Error {
 	return &llm.Error{Kind: llm.KindTransport, Op: op, Provider: provider, Err: err}
 }
+
+var (
+	_ llm.Generator           = (*Client)(nil)
+	_ llm.BackgroundGenerator = (*Client)(nil)
+)

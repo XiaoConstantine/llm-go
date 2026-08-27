@@ -92,6 +92,197 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 	}
 }
 
+func TestBackgroundLifecycleUsesStoredNonStreamingResponses(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/responses":
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Errorf("read body: %v", err)
+				return
+			}
+			var payload map[string]any
+			if err := jsonv2.Unmarshal(body, &payload); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			if payload["background"] != true || payload["store"] != true || payload["stream"] == true {
+				t.Errorf("background/store/stream = %#v/%#v/%#v; body = %s", payload["background"], payload["store"], payload["stream"], body)
+			}
+			_, _ = io.WriteString(writer, `{"id":"resp_bg","object":"response","created_at":1,"model":"model","status":"queued","output":[]}`)
+		case request.Method == http.MethodGet && request.URL.Path == "/responses/resp_bg":
+			_, _ = io.WriteString(writer, `{"id":"resp_bg","object":"response","created_at":1,"model":"served-model","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]},{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{\"path\":\"file\"}"}],"usage":{"input_tokens":2,"input_tokens_details":{"cached_tokens":1},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":3}}`)
+		case request.Method == http.MethodPost && request.URL.Path == "/responses/resp_bg/cancel":
+			_, _ = io.WriteString(writer, `{"id":"resp_bg","object":"response","created_at":1,"model":"model","status":"cancelled","output":[]}`)
+		default:
+			t.Errorf("unexpected request %s %s", request.Method, request.URL.Path)
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityTools}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backgroundRequest := llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "work"}}}},
+		Tools:    []llm.Tool{{Name: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)}},
+	}
+	started, err := client.StartBackground(context.Background(), backgroundRequest)
+	if err != nil || started.Status != llm.BackgroundQueued || started.Response != nil || started.Handle.ID != "resp_bg" {
+		t.Fatalf("StartBackground() = (%#v, %v)", started, err)
+	}
+	backgroundRequest.Tools[0].InputSchema[0] = '['
+	if started.Handle.Tools[0].InputSchema[0] != '{' {
+		t.Fatal("StartBackground() handle aliases request tool schema")
+	}
+	fetched, err := client.FetchBackground(context.Background(), started.Handle)
+	if err != nil || fetched.Status != llm.BackgroundCompleted || fetched.Response == nil || fetched.Response.Text() != "done" ||
+		fetched.Response.Model != "served-model" || fetched.Response.FinishReason != llm.FinishReasonToolCall ||
+		len(fetched.Response.Message.ToolCalls) != 1 || fetched.Response.Message.ToolCalls[0].Name != "read" ||
+		fetched.Response.Usage == nil || fetched.Response.Usage.CacheReadTokens != 1 {
+		t.Fatalf("FetchBackground() = (%#v, %v)", fetched, err)
+	}
+	if len(fetched.Response.Message.ProviderData) == 0 {
+		t.Fatal("FetchBackground() omitted replayable provider data")
+	}
+	cancelled, err := client.CancelBackground(context.Background(), started.Handle)
+	if err != nil || cancelled.Status != llm.BackgroundCancelled || cancelled.Response != nil {
+		t.Fatalf("CancelBackground() = (%#v, %v)", cancelled, err)
+	}
+
+	wrong := started.Handle
+	wrong.Model = "other"
+	if result, err := client.FetchBackground(context.Background(), wrong); result != nil || err == nil {
+		t.Fatalf("FetchBackground(wrong handle) = (%#v, %v)", result, err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("HTTP calls = %d, want 3", calls.Load())
+	}
+}
+
+func TestBackgroundFailedResponseReturnsStateAndProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"resp_failed","object":"response","created_at":1,"model":"model","status":"failed","output":[],"error":{"code":"server_error","message":"job failed"}}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.StartBackground(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if result == nil || result.Status != llm.BackgroundFailed || result.Handle.ID != "resp_failed" {
+		t.Fatalf("StartBackground() result = %#v", result)
+	}
+	_ = requireResponseError(t, err, llm.KindProvider, "start_background", "job failed")
+}
+
+func TestBackgroundRejectsNonStrictJSONBeforeSDKDecoding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"resp_duplicate","object":"response","created_at":1,"model":"model","status":"queued","status":"completed","output":[]}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.StartBackground(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if result != nil {
+		t.Fatalf("StartBackground() result = %#v, want nil", result)
+	}
+	_ = requireResponseError(t, err, llm.KindMalformedResponse, "start_background", "strict JSON")
+}
+
+func TestBackgroundReturnsObservedHandleWithOutputOrCancellationError(t *testing.T) {
+	t.Run("malformed output", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"id":"resp_bad_output","object":"response","created_at":1,"model":"model","status":"completed","output":[{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{\"path\":1}"}]}`)
+		}))
+		defer server.Close()
+		client, err := New(Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+			Capabilities: []llm.Capability{llm.CapabilityTools}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.StartBackground(context.Background(), llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser}},
+			Tools:    []llm.Tool{{Name: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)}},
+		})
+		if result == nil || result.Handle.ID != "resp_bad_output" || result.Status != llm.BackgroundCompleted || result.Response != nil {
+			t.Fatalf("StartBackground() result = %#v", result)
+		}
+		_ = requireResponseError(t, err, llm.KindMalformedResponse, "start_background", "validate tool call")
+	})
+
+	t.Run("missing output item ID", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"id":"resp_missing_item_id","object":"response","created_at":1,"model":"model","status":"completed","output":[{"type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{}"}]}`)
+		}))
+		defer server.Close()
+		client, err := New(Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+			Capabilities: []llm.Capability{llm.CapabilityTools}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.StartBackground(context.Background(), llm.Request{
+			Messages: []llm.Message{{Role: llm.RoleUser}},
+			Tools:    []llm.Tool{{Name: "read", InputSchema: []byte(`{"type":"object"}`)}},
+		})
+		if result == nil || result.Handle.ID != "resp_missing_item_id" || result.Status != llm.BackgroundCompleted || result.Response != nil {
+			t.Fatalf("StartBackground() result = %#v", result)
+		}
+		_ = requireResponseError(t, err, llm.KindMalformedResponse, "start_background", "has no ID")
+	})
+
+	t.Run("body close error after complete response", func(t *testing.T) {
+		body := `{"id":"resp_close_error","object":"response","created_at":1,"model":"model","status":"queued","output":[]}`
+		client, err := New(Config{Model: "model", APIKey: "key", BaseURL: "https://example.com/v1",
+			HTTPClient: &http.Client{Transport: backgroundRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Request: request,
+					Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body:   &errorOnCloseBody{Reader: strings.NewReader(body), err: errors.New("close failed")}}, nil
+			})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.StartBackground(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+		if err != nil || result == nil || result.Handle.ID != "resp_close_error" || result.Status != llm.BackgroundQueued {
+			t.Fatalf("StartBackground() = (%#v, %v)", result, err)
+		}
+	})
+
+	t.Run("cancellation after response", func(t *testing.T) {
+		cause := errors.New("caller stopped waiting")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		body := `{"id":"resp_cancel_race","object":"response","created_at":1,"model":"model","status":"queued","output":[]}`
+		client, err := New(Config{Model: "model", APIKey: "key", BaseURL: "https://example.com/v1",
+			HTTPClient: &http.Client{Transport: backgroundRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Request: request,
+					Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body:   &cancelOnCloseBody{Reader: strings.NewReader(body), cancel: func() { cancel(cause) }}}, nil
+			})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.StartBackground(ctx, llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+		if result == nil || result.Handle.ID != "resp_cancel_race" || result.Status != llm.BackgroundQueued {
+			t.Fatalf("StartBackground() = (%#v, %v)", result, err)
+		}
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, cause) {
+			t.Fatalf("StartBackground() error = %v, want cancellation and cause", err)
+		}
+	})
+}
+
 func TestJSONCapabilityConfigurationAndInfoCopy(t *testing.T) {
 	client, err := New(Config{
 		Model: "json-model", APIKey: "key",
@@ -882,3 +1073,26 @@ func writeSSE(t *testing.T, writer io.Writer, events ...string) {
 		}
 	}
 }
+
+type backgroundRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function backgroundRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+type cancelOnCloseBody struct {
+	io.Reader
+	cancel func()
+}
+
+func (body *cancelOnCloseBody) Close() error {
+	body.cancel()
+	return nil
+}
+
+type errorOnCloseBody struct {
+	io.Reader
+	err error
+}
+
+func (body *errorOnCloseBody) Close() error { return body.err }

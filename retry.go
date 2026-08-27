@@ -67,7 +67,11 @@ func WithRetry(generator Generator, policy RetryPolicy) (Generator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &retryGenerator{generator: generator, policy: normalized}, nil
+	retrying := &retryGenerator{generator: generator, policy: normalized}
+	if background, ok := generator.(BackgroundGenerator); ok {
+		return &retryBackgroundGenerator{retryGenerator: retrying, background: background}, nil
+	}
+	return retrying, nil
 }
 
 func normalizeRetryPolicy(policy RetryPolicy) (RetryPolicy, error) {
@@ -167,6 +171,79 @@ func (g *retryGenerator) Stream(ctx context.Context, request Request) (Stream, e
 		}
 	}
 	cancel()
+	return nil, last
+}
+
+type retryBackgroundGenerator struct {
+	*retryGenerator
+	background BackgroundGenerator
+}
+
+func (g *retryBackgroundGenerator) StartBackground(ctx context.Context, request Request) (*BackgroundResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	return g.doBackground(ctx, "start_background", func(attemptCtx context.Context) (*BackgroundResult, error) {
+		return g.background.StartBackground(attemptCtx, request)
+	})
+}
+
+func (g *retryBackgroundGenerator) FetchBackground(ctx context.Context, handle BackgroundHandle) (*BackgroundResult, error) {
+	if err := g.validateBackgroundHandle("fetch_background", handle); err != nil {
+		return nil, err
+	}
+	return g.doBackground(ctx, "fetch_background", func(attemptCtx context.Context) (*BackgroundResult, error) {
+		return g.background.FetchBackground(attemptCtx, handle)
+	})
+}
+
+func (g *retryBackgroundGenerator) CancelBackground(ctx context.Context, handle BackgroundHandle) (*BackgroundResult, error) {
+	if err := g.validateBackgroundHandle("cancel_background", handle); err != nil {
+		return nil, err
+	}
+	return g.doBackground(ctx, "cancel_background", func(attemptCtx context.Context) (*BackgroundResult, error) {
+		return g.background.CancelBackground(attemptCtx, handle)
+	})
+}
+
+func (g *retryBackgroundGenerator) validateBackgroundHandle(operation string, handle BackgroundHandle) error {
+	info := g.generator.Info()
+	if err := handle.validate(); err != nil {
+		return &Error{Kind: KindInvalidRequest, Op: operation, Provider: info.Provider, Err: err}
+	}
+	if handle.Provider != info.Provider || handle.Model != info.Model || handle.API != info.API {
+		return &Error{Kind: KindInvalidRequest, Op: operation, Provider: info.Provider,
+			Err: fmt.Errorf("background handle belongs to provider/model/API %q/%q/%q", handle.Provider, handle.Model, handle.API)}
+	}
+	return nil
+}
+
+func (g *retryBackgroundGenerator) doBackground(ctx context.Context, operation string, call func(context.Context) (*BackgroundResult, error)) (*BackgroundResult, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	var last error
+	for attempt := 1; attempt <= g.policy.MaxAttempts; attempt++ {
+		attemptCtx, err := g.attemptContext(ctx, operation, attempt)
+		if err != nil {
+			return nil, err
+		}
+		result, err := call(attemptCtx)
+		if err == nil {
+			return result, nil
+		}
+		last = err
+		if result != nil || attempt == g.policy.MaxAttempts || !g.retryable(err) {
+			return result, err
+		}
+		delay, delayErr := g.delay(attempt, err)
+		if delayErr != nil {
+			return nil, delayErr
+		}
+		if err := waitRetry(ctx, delay); err != nil {
+			return nil, errors.Join(err, last)
+		}
+	}
 	return nil, last
 }
 
@@ -528,5 +605,8 @@ func cloneInfo(info ModelInfo) ModelInfo {
 	return info
 }
 
-var _ Generator = (*retryGenerator)(nil)
+var (
+	_ Generator           = (*retryGenerator)(nil)
+	_ BackgroundGenerator = (*retryBackgroundGenerator)(nil)
+)
 var _ Stream = (*retryStream)(nil)

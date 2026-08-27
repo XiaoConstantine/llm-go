@@ -3,6 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"unicode/utf8"
 )
 
 // Generator produces model responses. A Generator is configured for the model
@@ -23,6 +26,88 @@ type Generator interface {
 	Info() ModelInfo
 	Generate(ctx context.Context, request Request) (*Response, error)
 	Stream(ctx context.Context, request Request) (Stream, error)
+}
+
+// BackgroundStatus describes the lifecycle of a durable provider-side
+// generation. The zero value is invalid.
+type BackgroundStatus string
+
+const (
+	BackgroundQueued     BackgroundStatus = "queued"
+	BackgroundInProgress BackgroundStatus = "in_progress"
+	BackgroundCompleted  BackgroundStatus = "completed"
+	BackgroundIncomplete BackgroundStatus = "incomplete"
+	BackgroundCancelled  BackgroundStatus = "cancelled"
+	BackgroundFailed     BackgroundStatus = "failed"
+)
+
+// BackgroundHandle contains the durable identity and output-validation contract
+// for a provider-side generation. Tools and their schemas are retained so a
+// fetched response receives the same validation as Generate. Handles returned by
+// implementations are caller-owned and may be persisted. Callers must not modify
+// a handle concurrently with FetchBackground or CancelBackground.
+type BackgroundHandle struct {
+	Provider       string
+	Model          string
+	API            API
+	ID             string
+	Tools          []Tool
+	ResponseFormat ResponseFormat
+}
+
+// Validate reports whether h has complete identity and valid output-validation
+// metadata.
+func (h BackgroundHandle) Validate() error {
+	if err := h.validate(); err != nil {
+		return &Error{Kind: KindInvalidRequest, Op: "validate_background_handle", Provider: h.Provider, Err: err}
+	}
+	return nil
+}
+
+func (h BackgroundHandle) validate() error {
+	for _, field := range []struct{ name, value string }{
+		{"provider", h.Provider}, {"model", h.Model}, {"API", string(h.API)}, {"ID", h.ID},
+	} {
+		if field.value == "" {
+			return fmt.Errorf("%s must not be empty", field.name)
+		}
+		if !utf8.ValidString(field.value) {
+			return fmt.Errorf("%s must be valid UTF-8", field.name)
+		}
+		if field.value != strings.TrimSpace(field.value) {
+			return fmt.Errorf("%s must not contain surrounding whitespace", field.name)
+		}
+	}
+	if err := validateTools(h.Tools); err != nil {
+		return err
+	}
+	return validateResponseFormat(h.ResponseFormat)
+}
+
+// BackgroundResult is one observed state of a background generation. Response
+// is non-nil only when Status is BackgroundCompleted or BackgroundIncomplete
+// and output conversion succeeds. Handle and all nested response storage are
+// caller-owned. Callers must retain a non-nil result even when the accompanying
+// error is non-nil, because StartBackground may have created a durable job.
+type BackgroundResult struct {
+	Handle   BackgroundHandle
+	Status   BackgroundStatus
+	Response *Response
+}
+
+// BackgroundGenerator starts, fetches, and cancels durable provider-side
+// generations. A handle passed to FetchBackground or CancelBackground must
+// match the provider, model, and API reported by Info. Implementations validate
+// requests and handles before I/O and are safe for concurrent use. A failed
+// provider generation returns a result with BackgroundFailed together with its
+// provider error. Malformed output or cancellation that races with an observed
+// provider response may also return its handle and status with an error;
+// transport errors before a response is observed return a nil result.
+type BackgroundGenerator interface {
+	Generator
+	StartBackground(context.Context, Request) (*BackgroundResult, error)
+	FetchBackground(context.Context, BackgroundHandle) (*BackgroundResult, error)
+	CancelBackground(context.Context, BackgroundHandle) (*BackgroundResult, error)
 }
 
 // StreamEventKind identifies one semantic event in a generation stream.

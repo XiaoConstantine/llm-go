@@ -98,6 +98,32 @@ func TestRetryGenerateDoesNotRetryUnsafeFailure(t *testing.T) {
 	}
 }
 
+func TestRetryPreservesAndRetriesBackgroundCapability(t *testing.T) {
+	base := &backgroundRetryStub{scriptedGenerator: &scriptedGenerator{}}
+	var operations []string
+	retrying, err := WithRetry(base, RetryPolicy{
+		MaxAttempts: 2, InitialBackoff: time.Nanosecond, MaxBackoff: time.Nanosecond,
+		Hook: func(_ context.Context, attempt Attempt) (http.Header, error) {
+			operations = append(operations, attempt.Operation)
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	background, ok := retrying.(BackgroundGenerator)
+	if !ok {
+		t.Fatalf("retry generator type = %T, want BackgroundGenerator", retrying)
+	}
+	result, err := background.StartBackground(context.Background(), validGenerationRequest())
+	if err != nil || result == nil || result.Status != BackgroundQueued || base.calls != 2 {
+		t.Fatalf("StartBackground() = (%#v, %v), calls = %d", result, err, base.calls)
+	}
+	if fmt.Sprint(operations) != "[start_background start_background]" {
+		t.Fatalf("hook operations = %v", operations)
+	}
+}
+
 func TestRetryGenerateCancellationDuringDelay(t *testing.T) {
 	started := make(chan struct{}, 1)
 	providerErr := &Error{Kind: KindRateLimit, RetryAfter: 30 * time.Minute, Err: errors.New("wait")}
@@ -477,4 +503,25 @@ func TestRetryAttemptHookConcurrentIsolation(t *testing.T) {
 	if len(values) != calls {
 		t.Fatalf("isolated header count = %d, want %d: %#v", len(values), calls, values)
 	}
+}
+
+type backgroundRetryStub struct {
+	*scriptedGenerator
+	calls int
+}
+
+func (g *backgroundRetryStub) StartBackground(context.Context, Request) (*BackgroundResult, error) {
+	g.calls++
+	if g.calls == 1 {
+		return nil, retryableTestError()
+	}
+	return &BackgroundResult{Status: BackgroundQueued}, nil
+}
+
+func (*backgroundRetryStub) FetchBackground(context.Context, BackgroundHandle) (*BackgroundResult, error) {
+	return &BackgroundResult{Status: BackgroundInProgress}, nil
+}
+
+func (*backgroundRetryStub) CancelBackground(context.Context, BackgroundHandle) (*BackgroundResult, error) {
+	return &BackgroundResult{Status: BackgroundCancelled}, nil
 }

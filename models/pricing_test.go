@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -111,6 +112,42 @@ func TestPricedGeneratorInfoOwnsPricing(t *testing.T) {
 	}
 }
 
+func TestPricedGeneratorPreservesBackgroundCapability(t *testing.T) {
+	usage := &llm.Usage{InputTokens: 500, OutputTokens: 100, TotalTokens: 600}
+	base := &pricingBackgroundStub{pricingGeneratorStub: &pricingGeneratorStub{info: llm.ModelInfo{
+		Provider: "provider", Model: "model", API: llm.APIOpenAIResponses,
+	}}}
+	info := base.info
+	info.Cost = &llm.ModelCost{Input: 2, Output: 8}
+	generator := withPricing(base, info)
+	background, ok := generator.(llm.BackgroundGenerator)
+	if !ok {
+		t.Fatalf("priced generator type = %T, want BackgroundGenerator", generator)
+	}
+	base.result = &llm.BackgroundResult{Status: llm.BackgroundCompleted,
+		Response: &llm.Response{Usage: usage}}
+	result, err := background.StartBackground(context.Background(), llm.Request{})
+	if err != nil || result.Response.Usage.Cost == nil || result.Response.Usage.Cost.Total == 0 {
+		t.Fatalf("StartBackground() = (%#v, %v)", result, err)
+	}
+	if usage.Cost != nil {
+		t.Fatal("pricing wrapper mutated underlying background usage")
+	}
+	providerErr := errors.New("context ended after response")
+	base.err = providerErr
+	result, err = background.FetchBackground(context.Background(), llm.BackgroundHandle{})
+	if result == nil || result.Response.Usage.Cost == nil || !errors.Is(err, providerErr) {
+		t.Fatalf("FetchBackground() with observed response = (%#v, %v)", result, err)
+	}
+	base.err = nil
+	base.result = &llm.BackgroundResult{Status: llm.BackgroundCompleted,
+		Response: &llm.Response{Usage: &llm.Usage{InputTokens: 2, TotalTokens: 1}}}
+	result, err = background.FetchBackground(context.Background(), llm.BackgroundHandle{})
+	if result == nil || err == nil {
+		t.Fatalf("FetchBackground() = (%#v, %v), want observed result and pricing error", result, err)
+	}
+}
+
 type pricingGeneratorStub struct {
 	info     llm.ModelInfo
 	response *llm.Response
@@ -141,6 +178,29 @@ func (g *pricingGeneratorStub) Stream(context.Context, llm.Request) (llm.Stream,
 		}
 	}
 	return &pricingStreamStub{chunks: chunks}, nil
+}
+
+type pricingBackgroundStub struct {
+	*pricingGeneratorStub
+	result *llm.BackgroundResult
+	err    error
+}
+
+func (g *pricingBackgroundStub) StartBackground(context.Context, llm.Request) (*llm.BackgroundResult, error) {
+	result := *g.result
+	response := *g.result.Response
+	usage := *g.result.Response.Usage
+	response.Usage = &usage
+	result.Response = &response
+	return &result, g.err
+}
+
+func (g *pricingBackgroundStub) FetchBackground(context.Context, llm.BackgroundHandle) (*llm.BackgroundResult, error) {
+	return g.StartBackground(context.Background(), llm.Request{})
+}
+
+func (g *pricingBackgroundStub) CancelBackground(context.Context, llm.BackgroundHandle) (*llm.BackgroundResult, error) {
+	return &llm.BackgroundResult{Status: llm.BackgroundCancelled}, nil
 }
 
 type pricingStreamStub struct {

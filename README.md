@@ -35,22 +35,25 @@ go get github.com/XiaoConstantine/llm-go
 `llm-go` separates wire-protocol adapters from model and provider metadata. Every
 adapter supports generation, typed stream events, classified errors, and token
 usage. In the matrix below, ✓ means the adapter implements the feature and —
-means it does not. Optional features must still be declared by the configured
+means it does not. Model-scoped features must still be declared by the configured
 model; a ✓ does not imply that every model exposed by an endpoint supports it.
 
-| Package / protocol | Streaming | Tools | JSON mode | Image input | Audio input | Reasoning | Cache tokens | Authentication |
-| --- | :---: | :---: | :---: | :---: | :---: | --- | --- | --- |
-| [`openai/responses`](./openai/responses) · OpenAI Responses | ✓ | ✓ | ✓ | ✓ | — | Summaries and encrypted replay | Read/write | API key |
-| [`openai`](./openai) · OpenAI-compatible Chat Completions | ✓ | ✓ | ✓ | ✓ | WAV/MP3 input | Controls and provider-state replay | Read/write | API key or custom headers |
-| [`openai/codex`](./openai/codex) · ChatGPT subscription Codex Responses | ✓ | ✓ | — | ✓ | WAV/MP3/M4A/WebM/Ogg input | Summaries and encrypted replay | Read/write | Access token or credential resolver |
-| [`anthropic`](./anthropic) · Anthropic-compatible Messages | ✓ | ✓ | — | ✓ | — | Signed thinking replay | Read/write, including 1h writes | API key, OAuth token, or custom headers |
-| [`gemini`](./gemini) · Gemini Developer API | ✓ | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key |
+| Package / protocol | Streaming | Background | Tools | JSON mode | Image input | Audio input | Reasoning | Cache tokens | Authentication |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | --- | --- | --- |
+| [`openai/responses`](./openai/responses) · OpenAI Responses | ✓ | ✓ | ✓ | ✓ | ✓ | — | Summaries and encrypted replay | Read/write | API key |
+| [`openai`](./openai) · OpenAI-compatible Chat Completions | ✓ | — | ✓ | ✓ | ✓ | WAV/MP3 input | Controls and provider-state replay | Read/write | API key or custom headers |
+| [`openai/codex`](./openai/codex) · ChatGPT subscription Codex Responses | ✓ | — | ✓ | — | ✓ | WAV/MP3/M4A/WebM/Ogg input | Summaries and encrypted replay | Read/write | Access token or credential resolver |
+| [`anthropic`](./anthropic) · Anthropic-compatible Messages | ✓ | — | ✓ | — | ✓ | — | Signed thinking replay | Read/write, including 1h writes | API key, OAuth token, or custom headers |
+| [`gemini`](./gemini) · Gemini Developer API | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key |
 
 JSON mode refers to `llm.ResponseFormatJSON`, not tool argument schemas. Tool
 calls are available in both generation and streaming; protocols that expose
 partial arguments emit `llm.StreamEventToolCallDelta`, and `llm.Tool.Strict` is
-forwarded when model compatibility permits it. Reasoning controls and replay are
-model-dependent and preserved in `llm.Message.ProviderData`. `CacheRetention`,
+forwarded when model compatibility permits it. `ToolResult.AddedToolNames`
+replays deferred definitions through OpenAI additional tools/tool search or
+Anthropic tool references on supported models. OpenAI Responses background jobs
+use `llm.BackgroundGenerator` start, fetch, and cancel handles. Reasoning controls
+and replay are model-dependent and preserved in `llm.Message.ProviderData`. `CacheRetention`,
 `CacheKey`, and `SessionID` provide independent prompt-cache partition and
 session-affinity controls where a provider mapping is verified. Both may be set;
 `CacheRetentionNone` disables cache-key emission while preserving session

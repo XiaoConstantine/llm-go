@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -39,7 +40,11 @@ func withPricingInfo(generator llm.Generator, info, actual llm.ModelInfo) llm.Ge
 	configured.Reasoning = info.Reasoning
 	configured.Cost = cost
 	configured.Compatibility = cloneCompatibility(info.Compatibility)
-	return &pricedGenerator{generator: generator, info: configured, cost: cost}
+	priced := &pricedGenerator{generator: generator, info: configured, cost: cost}
+	if background, ok := generator.(llm.BackgroundGenerator); ok {
+		return &pricedBackgroundGenerator{pricedGenerator: priced, background: background}
+	}
+	return priced
 }
 
 func (g *pricedGenerator) Info() llm.ModelInfo {
@@ -92,6 +97,38 @@ func (g *pricedGenerator) price(usage llm.Usage) (llm.Usage, error) {
 	return usage, nil
 }
 
+type pricedBackgroundGenerator struct {
+	*pricedGenerator
+	background llm.BackgroundGenerator
+}
+
+func (g *pricedBackgroundGenerator) StartBackground(ctx context.Context, request llm.Request) (*llm.BackgroundResult, error) {
+	result, err := g.background.StartBackground(ctx, request)
+	return g.priceBackground(result, err)
+}
+
+func (g *pricedBackgroundGenerator) FetchBackground(ctx context.Context, handle llm.BackgroundHandle) (*llm.BackgroundResult, error) {
+	result, err := g.background.FetchBackground(ctx, handle)
+	return g.priceBackground(result, err)
+}
+
+func (g *pricedBackgroundGenerator) CancelBackground(ctx context.Context, handle llm.BackgroundHandle) (*llm.BackgroundResult, error) {
+	result, err := g.background.CancelBackground(ctx, handle)
+	return g.priceBackground(result, err)
+}
+
+func (g *pricedBackgroundGenerator) priceBackground(result *llm.BackgroundResult, err error) (*llm.BackgroundResult, error) {
+	if result == nil || result.Response == nil || result.Response.Usage == nil || g.cost == nil {
+		return result, err
+	}
+	usage, priceErr := g.price(*result.Response.Usage)
+	if priceErr != nil {
+		return result, errors.Join(err, priceErr)
+	}
+	result.Response.Usage = &usage
+	return result, err
+}
+
 type pricedStream struct {
 	llm.Stream
 	generator    *pricedGenerator
@@ -138,5 +175,8 @@ func (s *pricedStream) Close() error {
 	return s.Stream.Close()
 }
 
-var _ llm.Generator = (*pricedGenerator)(nil)
+var (
+	_ llm.Generator           = (*pricedGenerator)(nil)
+	_ llm.BackgroundGenerator = (*pricedBackgroundGenerator)(nil)
+)
 var _ llm.Stream = (*pricedStream)(nil)
