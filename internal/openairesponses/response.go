@@ -153,7 +153,7 @@ func (c Codec) FullResponse(op, configuredModel string, tools []llm.Tool, format
 	if len(message.ToolCalls) != 0 && reason == llm.FinishReasonStop {
 		reason = llm.FinishReasonToolCall
 	}
-	if format == llm.ResponseFormatJSON && reason == llm.FinishReasonStop && !(outputText.Len() == 0 && refusalSeen) &&
+	if format == llm.ResponseFormatJSON && reason == llm.FinishReasonStop && (outputText.Len() != 0 || !refusalSeen) &&
 		!jsontext.Value(outputText.String()).IsValid() {
 		return nil, c.malformedResponse(op, "completed JSON response is not strict JSON")
 	}
