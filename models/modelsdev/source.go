@@ -343,7 +343,7 @@ func (s *Source) doFetch(ctx context.Context, req models.CatalogFetchRequest, ca
 			Err:      err,
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotModified {
 		etag := resp.Header.Get("ETag")

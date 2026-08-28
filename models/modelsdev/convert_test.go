@@ -7,7 +7,6 @@ import (
 )
 
 func floatPtr(v float64) *float64 { return &v }
-func intPtr(v int) *int           { return &v }
 
 func TestDefaultProviderAPI(t *testing.T) {
 	tests := []struct {
