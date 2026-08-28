@@ -614,7 +614,26 @@ func catalogOperationError(op, provider string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return &llm.Error{Kind: llm.KindProvider, Op: op, Provider: provider, Err: err}
+	kind := llm.KindProvider
+	var httpStatus int
+	var retryAfter time.Duration
+	var retryable *bool
+	var existing *llm.Error
+	if errors.As(err, &existing) {
+		kind = existing.Kind
+		httpStatus = existing.HTTPStatus
+		retryAfter = existing.RetryAfter
+		retryable = existing.Retryable
+	}
+	return &llm.Error{
+		Kind:       kind,
+		Op:         op,
+		Provider:   provider,
+		HTTPStatus: httpStatus,
+		RetryAfter: retryAfter,
+		Retryable:  retryable,
+		Err:        err,
+	}
 }
 
 // Available returns caller-owned models whose providers have a usable managed

@@ -105,6 +105,8 @@ state before conditional fetches, supports ETag/Last-Modified, force and
 provider-selective refresh, and `NoNetwork` restore-only operation. `Available`
 uses `CredentialManager` and optional secret-free provider filters. Refreshes run
 only when called; the manager owns no permanent goroutines and needs no Close.
+The [`modelsdev`](./models/modelsdev) package provides a `CatalogSource`
+implementation to dynamically fetch models from [models.dev](https://models.dev).
 
 ### Built-in provider profiles
 

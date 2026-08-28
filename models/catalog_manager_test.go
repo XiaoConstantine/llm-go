@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -509,6 +510,50 @@ func TestCatalogManagerStorePanicDoesNotWedge(t *testing.T) {
 	second := manager.Refresh(context.Background(), CatalogRefreshOptions{})
 	if second.Providers[0].Err != nil {
 		t.Fatal(second.Providers[0].Err)
+	}
+}
+
+func TestCatalogManagerPreservesSpecificErrorClassificationAndChain(t *testing.T) {
+	sentinel := errors.New("underlying network failure")
+	sourceErr := &llm.Error{
+		Kind:       llm.KindTransport,
+		Op:         "fetch",
+		Provider:   "provider",
+		HTTPStatus: http.StatusBadGateway,
+		Err:        sentinel,
+	}
+	manager, err := NewCatalogManager(CatalogManagerConfig{
+		Providers: []CatalogProvider{
+			{
+				Provider: "provider",
+				Source: CatalogSourceFunc(func(context.Context, CatalogFetchRequest) (CatalogFetchResponse, error) {
+					return CatalogFetchResponse{}, sourceErr
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := manager.Refresh(context.Background(), CatalogRefreshOptions{})
+	if len(result.Providers) != 1 || result.Providers[0].Err == nil {
+		t.Fatalf("unexpected refresh result: %+v", result)
+	}
+
+	refErr := result.Providers[0].Err
+	var modelErr *llm.Error
+	if !errors.As(refErr, &modelErr) {
+		t.Fatalf("expected *llm.Error, got %T", refErr)
+	}
+	if modelErr.Kind != llm.KindTransport {
+		t.Errorf("modelErr.Kind = %v, want KindTransport", modelErr.Kind)
+	}
+	if modelErr.HTTPStatus != http.StatusBadGateway {
+		t.Errorf("modelErr.HTTPStatus = %d, want 502", modelErr.HTTPStatus)
+	}
+	if !errors.Is(refErr, sentinel) {
+		t.Error("expected errors.Is(refErr, sentinel) to be true")
 	}
 }
 

@@ -11,6 +11,13 @@ The initial snapshot was normalized from provider metadata used during the
 pi-ai parity assessment and then validated against llm-go's own model schema.
 There is no runtime or build dependency on pi-ai.
 
-Run `go generate ./models` after editing the source. The `cataloggen` tests
+To synchronize existing models with upstream pricing and limits from models.dev:
+
+```sh
+go run ./models/cmd/modelsdevsync -catalog ./models/catalogsource/catalog.json
+go generate ./models
+```
+
+Run `go generate ./models` after editing or syncing the source. The `cataloggen` tests
 compare regenerated output with `catalog_generated.go`, so `go test ./...`
 fails when generated data is stale.
