@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 442 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 442", len(models))
+	if len(models) != 449 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 449", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -51,6 +51,52 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	}
 	if audio.Cost != nil {
 		t.Fatalf("OpenRouter audio cost = %#v, want unknown because audio and text token rates differ", audio.Cost)
+	}
+}
+
+func TestBuiltinCatalogCodexRouteLimits(t *testing.T) {
+	catalog := BuiltinCatalog()
+	tests := []struct {
+		id              string
+		contextWindow   int
+		maxOutputTokens int
+		vision          bool
+		additionalTools llm.CompatibilityToggle
+		toolSearch      llm.CompatibilityToggle
+	}{
+		{id: "gpt-5.3-codex-spark", contextWindow: 128_000, maxOutputTokens: 128_000},
+		{id: "gpt-5.4", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-5.4-mini", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-5.5", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-5.6-luna", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-5.6-sol", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-5.6-terra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+	}
+	for _, test := range tests {
+		model, ok := catalog.Model("openai-codex", test.id)
+		if !ok {
+			t.Errorf("openai-codex/%s is missing", test.id)
+			continue
+		}
+		if model.API != llm.APIOpenAICodexResponses || model.ContextWindow != test.contextWindow || model.MaxOutputTokens != test.maxOutputTokens {
+			t.Errorf("openai-codex/%s route metadata = API %q, context %d, output %d", test.id, model.API, model.ContextWindow, model.MaxOutputTokens)
+		}
+		if hasCapability(model.Capabilities, llm.CapabilityVision) != test.vision {
+			t.Errorf("openai-codex/%s vision = %v, want %v", test.id, hasCapability(model.Capabilities, llm.CapabilityVision), test.vision)
+		}
+		if model.Compatibility == nil || model.Compatibility.OpenAIResponses == nil {
+			t.Errorf("openai-codex/%s lacks Responses compatibility", test.id)
+			continue
+		}
+		compatibility := model.Compatibility.OpenAIResponses
+		if compatibility.StrictTools != llm.CompatibilityEnabled || compatibility.AdditionalTools != test.additionalTools || compatibility.ToolSearch != test.toolSearch {
+			t.Errorf("openai-codex/%s compatibility = %#v", test.id, compatibility)
+		}
+	}
+
+	direct, ok := catalog.Model("openai", "gpt-5.5")
+	if !ok || direct.ContextWindow != 1_050_000 {
+		t.Fatalf("direct OpenAI gpt-5.5 metadata = %#v", direct)
 	}
 }
 

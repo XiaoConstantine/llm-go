@@ -421,6 +421,41 @@ func TestValidateCatalogRejectsInvalidData(t *testing.T) {
 	}
 }
 
+func TestSyncCatalogLeavesManualCodexRoutesUnchanged(t *testing.T) {
+	catalog := &sourceCatalog{
+		SchemaVersion: 1,
+		Revision:      1,
+		Models: []sourceModel{{
+			Provider:        "openai-codex",
+			ID:              "gpt-5.5",
+			Name:            "GPT-5.5",
+			API:             llm.APIOpenAICodexResponses,
+			Reasoning:       boolPtr(true),
+			Capabilities:    &[]llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision},
+			ContextWindow:   intPtr(272_000),
+			MaxOutputTokens: intPtr(128_000),
+		}},
+	}
+	dataset := modelsdev.Dataset{
+		"openai": {
+			Models: map[string]modelsdev.ModelEntry{
+				"gpt-5.5": {ID: "gpt-5.5", Limit: &modelsdev.Limit{Context: 1_050_000, Output: 128_000}},
+			},
+		},
+	}
+
+	result, err := syncCatalog(catalog, dataset, SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.UpdatedModels) != 0 || result.Unchanged != 1 || catalog.Revision != 1 {
+		t.Fatalf("sync result = %#v, revision %d", result, catalog.Revision)
+	}
+	if got := *catalog.Models[0].ContextWindow; got != 272_000 {
+		t.Fatalf("Codex context window = %d, want 272000", got)
+	}
+}
+
 func TestWriteCatalogProducesValidFile(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "catalog.json")
 	catalog := &sourceCatalog{

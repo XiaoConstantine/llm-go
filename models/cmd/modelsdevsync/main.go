@@ -35,15 +35,16 @@ var defaultProviderMapping = map[string]string{
 }
 
 var providerAPIs = map[string]llm.API{
-	"anthropic":  llm.APIAnthropicMessages,
-	"cerebras":   llm.APIOpenAIChatCompletions,
-	"deepseek":   llm.APIOpenAIChatCompletions,
-	"fireworks":  llm.APIOpenAIChatCompletions,
-	"google":     llm.APIGeminiGenerateContent,
-	"groq":       llm.APIOpenAIChatCompletions,
-	"openai":     llm.APIOpenAIResponses,
-	"openrouter": llm.APIOpenAIChatCompletions,
-	"xai":        llm.APIOpenAIResponses,
+	"anthropic":    llm.APIAnthropicMessages,
+	"cerebras":     llm.APIOpenAIChatCompletions,
+	"deepseek":     llm.APIOpenAIChatCompletions,
+	"fireworks":    llm.APIOpenAIChatCompletions,
+	"google":       llm.APIGeminiGenerateContent,
+	"groq":         llm.APIOpenAIChatCompletions,
+	"openai":       llm.APIOpenAIResponses,
+	"openai-codex": llm.APIOpenAICodexResponses,
+	"openrouter":   llm.APIOpenAIChatCompletions,
+	"xai":          llm.APIOpenAIResponses,
 }
 
 const maxResponseSize = 32 << 20

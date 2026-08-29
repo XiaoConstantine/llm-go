@@ -11,6 +11,12 @@ The initial snapshot was normalized from provider metadata used during the
 pi-ai parity assessment and then validated against llm-go's own model schema.
 There is no runtime or build dependency on pi-ai.
 
+The `openai-codex` entries are route-specific metadata maintained directly in
+this catalog from the ChatGPT/Codex route definitions used by pi-ai. They are
+not aliases of the direct `openai` entries and are intentionally excluded from
+models.dev synchronization because that dataset has no Codex subscription
+provider.
+
 To synchronize existing models with upstream pricing and limits from models.dev:
 
 ```sh
