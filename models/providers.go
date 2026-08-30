@@ -9,6 +9,7 @@ const (
 	ProviderXAI        = "xai"
 	ProviderCerebras   = "cerebras"
 	ProviderFireworks  = "fireworks"
+	ProviderMistral    = "mistral"
 )
 
 // ProviderProfile contains the protocol defaults for a built-in provider. Its
@@ -46,6 +47,7 @@ var builtinProviderProfiles = [...]ProviderProfile{
 	{id: ProviderXAI, api: OpenAIResponses, baseURL: "https://api.x.ai/v1"},
 	{id: ProviderCerebras, api: OpenAIChatCompletions, baseURL: "https://api.cerebras.ai/v1"},
 	{id: ProviderFireworks, api: OpenAIChatCompletions, baseURL: "https://api.fireworks.ai/inference/v1"},
+	{id: ProviderMistral, api: MistralConversations, baseURL: "https://api.mistral.ai/v1"},
 }
 
 // BuiltinProvider returns protocol defaults for a canonical provider ID.

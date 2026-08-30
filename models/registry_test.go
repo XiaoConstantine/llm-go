@@ -82,6 +82,23 @@ func TestBuiltinAzureResponsesFactory(t *testing.T) {
 	}
 }
 
+func TestBuiltinMistralConversationsFactory(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: ProviderMistral, API: MistralConversations, APIKey: "key"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: ProviderMistral, Model: "mistral-small-latest",
+		API: llm.APIMistralConversations, Capabilities: []llm.Capability{llm.CapabilityStreaming}, Reasoning: true})
+	if err != nil {
+		t.Fatalf("Generator() error = %v", err)
+	}
+	info := generator.Info()
+	if info.Provider != ProviderMistral || info.Model != "mistral-small-latest" ||
+		info.API != llm.APIMistralConversations || !info.Reasoning {
+		t.Fatalf("Info() = %#v", info)
+	}
+}
+
 func TestCollectionMixedProtocolRoutingAndOwnedFactoryConfig(t *testing.T) {
 	const firstAPI llm.API = "custom-one"
 	const secondAPI llm.API = "custom-two"

@@ -11,6 +11,7 @@ import (
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/XiaoConstantine/llm-go/anthropic"
 	"github.com/XiaoConstantine/llm-go/gemini"
+	"github.com/XiaoConstantine/llm-go/mistral"
 	"github.com/XiaoConstantine/llm-go/openai"
 	openaiAzure "github.com/XiaoConstantine/llm-go/openai/azure"
 	openaicodex "github.com/XiaoConstantine/llm-go/openai/codex"
@@ -51,7 +52,7 @@ type FactoryRegistry struct {
 	factories map[llm.API]GeneratorFactory
 }
 
-// NewFactoryRegistry returns the six built-in factories plus registrations.
+// NewFactoryRegistry returns the seven built-in factories plus registrations.
 // Registering an API already present, including a built-in API, is an error.
 func NewFactoryRegistry(registrations ...FactoryRegistration) (*FactoryRegistry, error) {
 	factories := builtinFactories()
@@ -108,6 +109,7 @@ func builtinFactories() map[llm.API]GeneratorFactory {
 		llm.APIOpenAICodexResponses:  codexFactory,
 		llm.APIAnthropicMessages:     anthropicFactory,
 		llm.APIGeminiGenerateContent: geminiFactory,
+		llm.APIMistralConversations:  mistralFactory,
 	}
 }
 
@@ -179,6 +181,12 @@ func anthropicFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Gen
 func geminiFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
 	return gemini.New(gemini.Config{Provider: config.Provider, Model: config.Model.Model, Capabilities: config.Model.Capabilities,
 		APIKey: config.APIKey, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
+}
+
+func mistralFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
+	return mistral.New(mistral.Config{Provider: config.Provider, Model: config.Model.Model,
+		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey,
+		BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
 }
 
 func nilFunction(value any) bool {

@@ -46,6 +46,7 @@ model; a ✓ does not imply that every model exposed by an endpoint supports it.
 | [`openai/codex`](./openai/codex) · ChatGPT subscription Codex Responses | ✓ | — | ✓ | — | ✓ | WAV/MP3/M4A/WebM/Ogg input | Summaries and encrypted replay | Read/write | Access token or credential resolver |
 | [`anthropic`](./anthropic) · Anthropic-compatible Messages | ✓ | — | ✓ | — | ✓ | — | Signed thinking replay | Read/write, including 1h writes | API key, OAuth token, or custom headers |
 | [`gemini`](./gemini) · Gemini Developer API | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key |
+| [`mistral`](./mistral) · Mistral Conversations | ✓ | — | ✓ | — | ✓ | — | Thinking blocks and controls | — | API key |
 
 JSON mode refers to `llm.ResponseFormatJSON`, not tool argument schemas. Tool
 calls are available in both generation and streaming; protocols that expose
@@ -94,7 +95,7 @@ local references offline, and use Go/RE2-compatible patterns.
 
 ### Custom protocols and dynamic catalogs
 
-`models.NewFactoryRegistry` creates an immutable registry containing the six
+`models.NewFactoryRegistry` creates an immutable registry containing the seven
 built-in protocol factories plus caller registrations. `ProviderConfig.API`
 remains the default route when `ModelInfo.API` is empty; `AdditionalAPIs`
 explicitly enables mixed-protocol models for the same provider. Factories receive
@@ -122,6 +123,7 @@ OpenAI-compatible services:
 | `xai` | OpenAI Responses | `https://api.x.ai/v1` |
 | `cerebras` | OpenAI Chat Completions | `https://api.cerebras.ai/v1` |
 | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` |
+| `mistral` | Mistral Conversations | `https://api.mistral.ai/v1` |
 
 ### Local and compatible servers
 
@@ -141,9 +143,10 @@ reasoning depend on what that server and model implement, so declare only the
 capabilities they actually support. The same configuration works for other
 compatible servers.
 
-The built-in model catalog covers OpenAI, Anthropic, Google Gemini, and all six
-profiled providers. The Codex and Azure Responses adapters are available for
-caller-supplied model metadata but have no built-in catalog entries. Azure
+The built-in model catalog covers OpenAI, Anthropic, Google Gemini, Mistral, and
+the six OpenAI-compatible profiled providers. The Codex and Azure Responses
+adapters are available for caller-supplied model metadata but have no built-in
+catalog entries. Azure
 Responses supports resource endpoints or normalized `/openai/v1` base URLs,
 deployment names, API versions, and `api-key` authentication. Custom `BaseURL`,
 headers, and HTTP clients support compatible gateways; Amazon Bedrock and Vertex

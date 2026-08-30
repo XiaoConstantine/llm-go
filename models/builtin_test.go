@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 449 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 449", len(models))
+	if len(models) != 477 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 477", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -51,6 +51,12 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	}
 	if audio.Cost != nil {
 		t.Fatalf("OpenRouter audio cost = %#v, want unknown because audio and text token rates differ", audio.Cost)
+	}
+
+	mistral, ok := catalog.Model(ProviderMistral, "mistral-small-2603")
+	if !ok || mistral.API != llm.APIMistralConversations || !mistral.Reasoning ||
+		!hasCapability(mistral.Capabilities, llm.CapabilityVision) || mistral.ContextWindow != 256_000 {
+		t.Fatalf("Mistral representative model = %#v", mistral)
 	}
 }
 

@@ -26,6 +26,7 @@ func TestBuiltinProviders(t *testing.T) {
 		{ProviderXAI, OpenAIResponses, "https://api.x.ai/v1"},
 		{ProviderCerebras, OpenAIChatCompletions, "https://api.cerebras.ai/v1"},
 		{ProviderFireworks, OpenAIChatCompletions, "https://api.fireworks.ai/inference/v1"},
+		{ProviderMistral, MistralConversations, "https://api.mistral.ai/v1"},
 	}
 
 	profiles := BuiltinProviders()

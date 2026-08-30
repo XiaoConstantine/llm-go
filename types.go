@@ -349,6 +349,7 @@ const (
 	APIAzureOpenAIResponses  API = "azure-openai-responses"
 	APIOpenAICodexResponses  API = "openai-codex-responses"
 	APIGeminiGenerateContent API = "gemini-generate-content"
+	APIMistralConversations  API = "mistral-conversations"
 )
 
 // Model describes one catalog entry. Name is a human-readable display name and

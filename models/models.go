@@ -27,6 +27,8 @@ const (
 	AnthropicMessages API = "anthropic-messages"
 	// GeminiGenerateContent selects the Gemini Developer API GenerateContent protocol.
 	GeminiGenerateContent API = "gemini-generate-content"
+	// MistralConversations selects Mistral's Conversations-compatible chat protocol.
+	MistralConversations API = "mistral-conversations"
 )
 
 // Credentials contains current token-based provider credentials. AccountID may
@@ -213,7 +215,8 @@ func validateCredentials(provider string, api API, config ProviderConfig) error 
 
 func builtinAPI(api llm.API) bool {
 	switch api {
-	case llm.APIOpenAIResponses, llm.APIAzureOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses, llm.APIAnthropicMessages, llm.APIGeminiGenerateContent:
+	case llm.APIOpenAIResponses, llm.APIAzureOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses,
+		llm.APIAnthropicMessages, llm.APIGeminiGenerateContent, llm.APIMistralConversations:
 		return true
 	default:
 		return false

@@ -26,6 +26,7 @@ var providerAPIs = map[string]llm.API{
 	"fireworks":    llm.APIOpenAIChatCompletions,
 	"google":       llm.APIGeminiGenerateContent,
 	"groq":         llm.APIOpenAIChatCompletions,
+	"mistral":      llm.APIMistralConversations,
 	"openai":       llm.APIOpenAIResponses,
 	"openai-codex": llm.APIOpenAICodexResponses,
 	"openrouter":   llm.APIOpenAIChatCompletions,
@@ -264,6 +265,8 @@ func supportsCapability(api llm.API, capability llm.Capability) bool {
 	case llm.APIGeminiGenerateContent:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
 			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
+	case llm.APIMistralConversations:
+		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
 	default:
 		return false
 	}
