@@ -12,6 +12,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/anthropic"
 	"github.com/XiaoConstantine/llm-go/gemini"
 	"github.com/XiaoConstantine/llm-go/openai"
+	openaiAzure "github.com/XiaoConstantine/llm-go/openai/azure"
 	openaicodex "github.com/XiaoConstantine/llm-go/openai/codex"
 	openairesponses "github.com/XiaoConstantine/llm-go/openai/responses"
 )
@@ -50,7 +51,7 @@ type FactoryRegistry struct {
 	factories map[llm.API]GeneratorFactory
 }
 
-// NewFactoryRegistry returns the five built-in factories plus registrations.
+// NewFactoryRegistry returns the six built-in factories plus registrations.
 // Registering an API already present, including a built-in API, is an error.
 func NewFactoryRegistry(registrations ...FactoryRegistration) (*FactoryRegistry, error) {
 	factories := builtinFactories()
@@ -102,11 +103,23 @@ func (r *FactoryRegistry) factory(api llm.API) (GeneratorFactory, bool) {
 func builtinFactories() map[llm.API]GeneratorFactory {
 	return map[llm.API]GeneratorFactory{
 		llm.APIOpenAIResponses:       openAIResponsesFactory,
+		llm.APIAzureOpenAIResponses:  azureOpenAIResponsesFactory,
 		llm.APIOpenAIChatCompletions: openAIChatFactory,
 		llm.APIOpenAICodexResponses:  codexFactory,
 		llm.APIAnthropicMessages:     anthropicFactory,
 		llm.APIGeminiGenerateContent: geminiFactory,
 	}
+}
+
+func azureOpenAIResponsesFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
+	providerConfig := openaiAzure.Config{Provider: config.Provider, Model: config.Model.Model,
+		Capabilities: config.Model.Capabilities, APIKey: config.APIKey, BaseURL: config.BaseURL,
+		HTTPClient: config.HTTPClient, Headers: config.Headers}
+	if config.Model.Compatibility != nil && config.Model.Compatibility.OpenAIResponses != nil {
+		value := *config.Model.Compatibility.OpenAIResponses
+		return openaiAzure.NewWithCompatibility(providerConfig, &value)
+	}
+	return openaiAzure.New(providerConfig)
 }
 
 func openAIResponsesFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {

@@ -51,8 +51,13 @@ type APIError = internalresponses.APIError
 // [http.DefaultClient], so callers should use context deadlines when an
 // unbounded request is not acceptable.
 type Config struct {
-	Provider     string
-	Model        string
+	Provider string
+	Model    string
+	// RequestModel overrides the model value sent on the wire while preserving
+	// Model as the client identity. It is intended for endpoints such as Azure
+	// OpenAI where a deployment name, rather than the catalog model ID, is sent.
+	// The empty value uses Model.
+	RequestModel string
 	Capabilities []llm.Capability
 	APIKey       string
 	BaseURL      string
@@ -72,6 +77,7 @@ type Options struct {
 type Client struct {
 	provider                string
 	model                   string
+	requestModel            string
 	capabilities            []llm.Capability
 	responses               sdkresponses.ResponseService
 	requestOptions          internalresponses.RequestOptions
@@ -103,6 +109,10 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 	model := strings.TrimSpace(config.Model)
 	if model == "" {
 		return nil, configError(provider, "model must not be empty")
+	}
+	requestModel := strings.TrimSpace(config.RequestModel)
+	if requestModel == "" {
+		requestModel = model
 	}
 	apiKey := strings.TrimSpace(config.APIKey)
 	if apiKey == "" {
@@ -159,6 +169,7 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 	return &Client{
 		provider:     provider,
 		model:        model,
+		requestModel: requestModel,
 		capabilities: capabilities,
 		responses:    sdkresponses.NewResponseService(sdkOptions...),
 		requestOptions: internalresponses.RequestOptions{
@@ -520,7 +531,7 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 			options.EncryptedReasoning = true
 		}
 	}
-	return c.codec().Request(op, c.model, request, options)
+	return c.codec().Request(op, c.requestModel, request, options)
 }
 
 func (c *Client) codec() internalresponses.Codec {

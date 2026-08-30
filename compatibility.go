@@ -167,7 +167,7 @@ func (c *ModelCompatibility) Validate(api API) error {
 		}
 	}
 	if c.OpenAIResponses != nil {
-		if api != APIOpenAIResponses && api != APIOpenAICodexResponses {
+		if api != APIOpenAIResponses && api != APIAzureOpenAIResponses && api != APIOpenAICodexResponses {
 			return fmt.Errorf("OpenAI Responses compatibility requires a Responses API")
 		}
 		if err := c.OpenAIResponses.validate(); err != nil {

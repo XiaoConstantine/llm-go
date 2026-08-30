@@ -92,6 +92,41 @@ func TestGenerateUsesResponsesProtocol(t *testing.T) {
 	}
 }
 
+func TestRequestModelSeparatesWireAndClientIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var payload map[string]any
+		if err := jsonv2.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode body: %v", err)
+			return
+		}
+		if payload["model"] != "deployment-name" {
+			t.Errorf("model = %#v, want deployment-name", payload["model"])
+		}
+		if reasoning, _ := payload["reasoning"].(map[string]any); reasoning["summary"] != "auto" {
+			t.Errorf("reasoning = %#v, want canonical-model reasoning behavior", payload["reasoning"])
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, writer, `{"type":"response.completed","response":{"id":"resp_1","model":"served-model","status":"completed","output":[]}}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Model: "gpt-5-canonical", RequestModel: "deployment-name", APIKey: "key",
+		BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info := client.Info(); info.Model != "gpt-5-canonical" {
+		t.Fatalf("Info().Model = %q", info.Model)
+	}
+	if _, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+}
+
 func TestBackgroundLifecycleUsesStoredNonStreamingResponses(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

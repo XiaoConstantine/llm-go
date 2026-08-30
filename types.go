@@ -346,6 +346,7 @@ const (
 	APIAnthropicMessages     API = "anthropic-messages"
 	APIOpenAIChatCompletions API = "openai-chat-completions"
 	APIOpenAIResponses       API = "openai-responses"
+	APIAzureOpenAIResponses  API = "azure-openai-responses"
 	APIOpenAICodexResponses  API = "openai-codex-responses"
 	APIGeminiGenerateContent API = "gemini-generate-content"
 )

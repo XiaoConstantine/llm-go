@@ -579,6 +579,7 @@ func TestGeneratorReturnsNilOnProviderConfigurationError(t *testing.T) {
 	}{
 		{name: "OpenAI", config: ProviderConfig{ID: "openai", API: OpenAIChatCompletions, BaseURL: ":"}, model: "gpt", contains: "base URL"},
 		{name: "OpenAI Responses", config: ProviderConfig{ID: "openai-responses", API: OpenAIResponses}, model: "gpt", contains: "API key"},
+		{name: "Azure OpenAI Responses", config: ProviderConfig{ID: "azure", API: AzureOpenAIResponses, APIKey: "key"}, model: "gpt", contains: "base URL"},
 		{name: "OpenAI Codex", config: ProviderConfig{ID: "openai-codex", API: OpenAICodexResponses}, model: "gpt-codex", contains: "access token"},
 		{name: "Anthropic", config: ProviderConfig{ID: "anthropic", API: AnthropicMessages, BaseURL: ":"}, model: "claude", contains: "base URL"},
 		{name: "Gemini", config: ProviderConfig{ID: "google", API: GeminiGenerateContent}, model: "gemini", contains: "API key"},

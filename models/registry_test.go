@@ -65,6 +65,23 @@ func TestFactoryRegistryValidationAndOwnership(t *testing.T) {
 	}
 }
 
+func TestBuiltinAzureResponsesFactory(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: "azure", API: AzureOpenAIResponses, APIKey: "key",
+		BaseURL: "https://resource.openai.azure.com/openai/v1"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "azure", Model: "deployment",
+		API: llm.APIAzureOpenAIResponses, Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+	if err != nil {
+		t.Fatalf("Generator() error = %v", err)
+	}
+	info := generator.Info()
+	if info.Provider != "azure" || info.Model != "deployment" || info.API != llm.APIAzureOpenAIResponses {
+		t.Fatalf("Info() = %#v", info)
+	}
+}
+
 func TestCollectionMixedProtocolRoutingAndOwnedFactoryConfig(t *testing.T) {
 	const firstAPI llm.API = "custom-one"
 	const secondAPI llm.API = "custom-two"

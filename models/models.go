@@ -17,6 +17,8 @@ type API string
 const (
 	// OpenAIResponses selects OpenAI's Responses API.
 	OpenAIResponses API = "openai-responses"
+	// AzureOpenAIResponses selects Azure OpenAI's Responses API.
+	AzureOpenAIResponses API = "azure-openai-responses"
 	// OpenAIChatCompletions selects the OpenAI-compatible Chat Completions API.
 	OpenAIChatCompletions API = "openai-chat-completions"
 	// OpenAICodexResponses selects the ChatGPT subscription Codex Responses API.
@@ -211,7 +213,7 @@ func validateCredentials(provider string, api API, config ProviderConfig) error 
 
 func builtinAPI(api llm.API) bool {
 	switch api {
-	case llm.APIOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses, llm.APIAnthropicMessages, llm.APIGeminiGenerateContent:
+	case llm.APIOpenAIResponses, llm.APIAzureOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses, llm.APIAnthropicMessages, llm.APIGeminiGenerateContent:
 		return true
 	default:
 		return false

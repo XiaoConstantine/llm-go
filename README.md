@@ -41,6 +41,7 @@ model; a ✓ does not imply that every model exposed by an endpoint supports it.
 | Package / protocol | Streaming | Background | Tools | JSON mode | Image input | Audio input | Reasoning | Cache tokens | Authentication |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- | --- | --- |
 | [`openai/responses`](./openai/responses) · OpenAI Responses | ✓ | ✓ | ✓ | ✓ | ✓ | — | Summaries and encrypted replay | Read/write | API key |
+| [`openai/azure`](./openai/azure) · Azure OpenAI Responses | ✓ | — | ✓ | ✓ | ✓ | — | Summaries and encrypted replay | Read/write | Azure API key |
 | [`openai`](./openai) · OpenAI-compatible Chat Completions | ✓ | — | ✓ | ✓ | ✓ | WAV/MP3 input | Controls and provider-state replay | Read/write | API key or custom headers |
 | [`openai/codex`](./openai/codex) · ChatGPT subscription Codex Responses | ✓ | — | ✓ | — | ✓ | WAV/MP3/M4A/WebM/Ogg input | Summaries and encrypted replay | Read/write | Access token or credential resolver |
 | [`anthropic`](./anthropic) · Anthropic-compatible Messages | ✓ | — | ✓ | — | ✓ | — | Signed thinking replay | Read/write, including 1h writes | API key, OAuth token, or custom headers |
@@ -93,7 +94,7 @@ local references offline, and use Go/RE2-compatible patterns.
 
 ### Custom protocols and dynamic catalogs
 
-`models.NewFactoryRegistry` creates an immutable registry containing the five
+`models.NewFactoryRegistry` creates an immutable registry containing the six
 built-in protocol factories plus caller registrations. `ProviderConfig.API`
 remains the default route when `ModelInfo.API` is empty; `AdditionalAPIs`
 explicitly enables mixed-protocol models for the same provider. Factories receive
@@ -141,10 +142,12 @@ capabilities they actually support. The same configuration works for other
 compatible servers.
 
 The built-in model catalog covers OpenAI, Anthropic, Google Gemini, and all six
-profiled providers. The Codex adapter is available for caller-supplied model
-metadata but has no built-in catalog entries. Custom `BaseURL`, headers, and HTTP
-clients support compatible gateways; native Azure OpenAI, Amazon Bedrock, and
-Vertex AI transports are not currently implemented.
+profiled providers. The Codex and Azure Responses adapters are available for
+caller-supplied model metadata but have no built-in catalog entries. Azure
+Responses supports resource endpoints or normalized `/openai/v1` base URLs,
+deployment names, API versions, and `api-key` authentication. Custom `BaseURL`,
+headers, and HTTP clients support compatible gateways; Amazon Bedrock and Vertex
+AI transports are not currently implemented.
 
 ## Quick start
 

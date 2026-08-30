@@ -26,6 +26,11 @@ func TestModelCompatibilityValidation(t *testing.T) {
 	}}).Validate(APIOpenAIResponses); err != nil {
 		t.Fatalf("Validate(valid Responses) error = %v", err)
 	}
+	if err := (&ModelCompatibility{OpenAIResponses: &OpenAIResponsesCompatibility{
+		StrictTools: CompatibilityEnabled,
+	}}).Validate(APIAzureOpenAIResponses); err != nil {
+		t.Fatalf("Validate(valid Azure Responses) error = %v", err)
+	}
 	if err := (&ModelCompatibility{Anthropic: &AnthropicCompatibility{
 		Temperature: CompatibilityDisabled,
 		StrictTools: CompatibilityEnabled,
