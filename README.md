@@ -9,20 +9,13 @@ changing their conversation model.
 
 ## Highlights
 
-- Provider-neutral requests, responses, tools, errors, and model metadata
-- Synchronous generation and lifecycle-safe streaming
-- Typed text, reasoning, and tool-call stream events with stable indexes
-- Provider-specific reasoning state preservation for multi-turn conversations
-- Cache-aware token usage and tiered cost calculation
-- Immutable model catalogs with capabilities, context limits, pricing, and
-  protocol compatibility metadata
-- Built-in provider profiles for OpenRouter, Groq, DeepSeek, xAI, Cerebras, and
-  Fireworks
-- Concurrency-safe credential storage and coalesced OAuth token refresh
-- Opt-in bounded retries with pre-output-only stream retry and safe attempt hooks
-- Stream collection, completed tool-schema validation, history transformation,
-  and pluggable model-aware token budgeting
-- Caller-owned HTTP clients, headers, contexts, and returned data
+- One request, response, tool, error, and model contract across providers
+- Synchronous generation and lifecycle-safe streaming with typed events
+- Multi-turn reasoning replay, prompt caching, and usage/cost accounting
+- JSON Schema coercion and validation, plus tolerant JSON repair helpers
+- Immutable model catalogs, provider profiles, and extensible protocol factories
+- Concurrency-safe credentials, OAuth refresh, retries, and token budgeting
+- Caller-owned HTTP clients, contexts, and returned data
 
 ## Install
 
@@ -51,17 +44,12 @@ model; a ✓ does not imply that every model exposed by an endpoint supports it.
 | [`mistral`](./mistral) · Mistral Conversations | ✓ | — | ✓ | — | ✓ | — | Thinking blocks and controls | — | API key |
 
 JSON mode refers to `llm.ResponseFormatJSON`, not tool argument schemas. Tool
-calls are available in both generation and streaming; protocols that expose
-partial arguments emit `llm.StreamEventToolCallDelta`, and `llm.Tool.Strict` is
-forwarded when model compatibility permits it. `ToolResult.AddedToolNames`
-replays deferred definitions through OpenAI additional tools/tool search or
-Anthropic tool references on supported models. OpenAI Responses background jobs
-use `llm.BackgroundGenerator` start, fetch, and cancel handles. Reasoning controls
-and replay are model-dependent and preserved in `llm.Message.ProviderData`. `CacheRetention`,
-`CacheKey`, and `SessionID` provide independent prompt-cache partition and
-session-affinity controls where a provider mapping is verified. Both may be set;
-`CacheRetentionNone` disables cache-key emission while preserving session
-affinity. Unsupported mappings fail before provider I/O.
+calls work in generation and streaming, including partial argument events where
+the protocol exposes them. Strict tools and reasoning replay are model- and
+protocol-dependent. Cache retention markers are emitted only where supported;
+unsupported cache keys and session-affinity mappings fail before provider I/O.
+OpenAI Responses also supports durable background jobs through
+`llm.BackgroundGenerator`.
 
 ### Codex transport modes
 
@@ -91,6 +79,9 @@ These helpers are opt-in and do not change provider defaults.
 | `llm.Tool.Strictness` | Requests `prefer` or `require` constrained tool arguments while retaining legacy `Tool.Strict` behavior |
 | `llm.TransformHistory` | Owns cross-model history, normalizes tool IDs, repairs missing/orphaned results, and reports every change |
 | `llm.BudgetRequest` | Uses a caller-supplied token estimator and model limits to clamp an owned request copy |
+| `llm.ValidateToolArguments` | Coerces model-generated arguments through JSON Schema, then validates and returns an owned value |
+| `llm.IsContextOverflow` | Detects classified, explicit, and silent context-window overflow |
+| `llm.RepairJSON` / `llm.ParseStreamingJSON` | Repairs malformed string escapes and reads partial streaming JSON |
 
 Tool inputs use JSON Schema 2020-12 by default, support declared drafts and
 local references offline, and use Go/RE2-compatible patterns.
@@ -147,13 +138,10 @@ reasoning depend on what that server and model implement, so declare only the
 capabilities they actually support. The same configuration works for other
 compatible servers.
 
-The built-in model catalog covers OpenAI, Anthropic, Amazon Bedrock, Google
-Gemini, Vertex AI, Mistral, and the six OpenAI-compatible profiled providers. The Codex and Azure Responses
-adapters are available for caller-supplied model metadata but have no built-in
-catalog entries. Azure
-Responses supports resource endpoints or normalized `/openai/v1` base URLs,
-deployment names, API versions, and `api-key` authentication. Custom `BaseURL`,
-headers, and HTTP clients support compatible gateways.
+The built-in catalog covers OpenAI, Anthropic, Amazon Bedrock, Gemini, Vertex
+AI, Mistral, Codex, and the OpenAI-compatible profiled providers. Azure
+Responses uses caller-supplied model metadata. Custom `BaseURL`, headers, and
+HTTP clients support compatible gateways.
 
 ## Quick start
 
@@ -252,6 +240,8 @@ chunk fields for response assembly.
 Provider and protocol failures are classified as `*llm.Error`. Context
 cancellation, deadlines, custom cancellation causes, and underlying transport
 errors remain discoverable with `errors.Is` or `errors.As`.
+`llm.IsContextOverflow` handles both classified failures and providers that
+silently fill or truncate the context window.
 
 The library does not impose a default request timeout. Supply an appropriate
 context deadline or configure the provided `http.Client`.
@@ -272,6 +262,11 @@ rotation. `models.AnthropicOAuth` and `models.CodexOAuth` expose non-interactive
 PKCE exchange/refresh primitives. Their subscription endpoints and client IDs
 are provider-private, unofficial, unstable, and replaceable; applications remain
 responsible for browser, callback, prompt UI, and persistent storage.
+
+`models.FindEnvAPIKeys` lists configured variables in precedence order,
+`models.EnvAPIKey` returns the preferred value, and
+`models.HasAmbientCredentials` reports selected Vertex ADC and Bedrock
+environment or file hints without exposing secrets.
 
 ## Development
 
