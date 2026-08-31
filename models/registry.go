@@ -16,6 +16,7 @@ import (
 	openaiAzure "github.com/XiaoConstantine/llm-go/openai/azure"
 	openaicodex "github.com/XiaoConstantine/llm-go/openai/codex"
 	openairesponses "github.com/XiaoConstantine/llm-go/openai/responses"
+	"github.com/XiaoConstantine/llm-go/vertex"
 )
 
 // FactoryCredentialResolver returns a current provider credential. Custom
@@ -33,6 +34,8 @@ type GeneratorFactoryConfig struct {
 	ResolveCredentials CredentialResolver
 	ResolveCredential  FactoryCredentialResolver
 	BaseURL            string
+	Project            string
+	Location           string
 	HTTPClient         *http.Client
 	Headers            http.Header
 }
@@ -52,7 +55,7 @@ type FactoryRegistry struct {
 	factories map[llm.API]GeneratorFactory
 }
 
-// NewFactoryRegistry returns the seven built-in factories plus registrations.
+// NewFactoryRegistry returns the eight built-in factories plus registrations.
 // Registering an API already present, including a built-in API, is an error.
 func NewFactoryRegistry(registrations ...FactoryRegistration) (*FactoryRegistry, error) {
 	factories := builtinFactories()
@@ -110,6 +113,7 @@ func builtinFactories() map[llm.API]GeneratorFactory {
 		llm.APIAnthropicMessages:     anthropicFactory,
 		llm.APIGeminiGenerateContent: geminiFactory,
 		llm.APIMistralConversations:  mistralFactory,
+		llm.APIGoogleVertex:          vertexFactory,
 	}
 }
 
@@ -180,12 +184,18 @@ func anthropicFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Gen
 
 func geminiFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
 	return gemini.New(gemini.Config{Provider: config.Provider, Model: config.Model.Model, Capabilities: config.Model.Capabilities,
-		APIKey: config.APIKey, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
+		Reasoning: config.Model.Reasoning, APIKey: config.APIKey, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
 }
 
 func mistralFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
 	return mistral.New(mistral.Config{Provider: config.Provider, Model: config.Model.Model,
 		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey,
+		BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
+}
+
+func vertexFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
+	return vertex.New(vertex.Config{Provider: config.Provider, Model: config.Model.Model,
+		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey, Project: config.Project, Location: config.Location,
 		BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
 }
 

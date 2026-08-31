@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 477 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 477", len(models))
+	if len(models) != 490 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 490", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -57,6 +57,12 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	if !ok || mistral.API != llm.APIMistralConversations || !mistral.Reasoning ||
 		!hasCapability(mistral.Capabilities, llm.CapabilityVision) || mistral.ContextWindow != 256_000 {
 		t.Fatalf("Mistral representative model = %#v", mistral)
+	}
+
+	vertex, ok := catalog.Model(ProviderGoogleVertex, "gemini-3.1-pro-preview")
+	if !ok || vertex.API != llm.APIGoogleVertex || !vertex.Reasoning ||
+		!hasCapability(vertex.Capabilities, llm.CapabilityVision) || vertex.ContextWindow != 1_048_576 {
+		t.Fatalf("Vertex representative model = %#v", vertex)
 	}
 }
 

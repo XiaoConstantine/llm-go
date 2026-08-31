@@ -29,6 +29,8 @@ const (
 	GeminiGenerateContent API = "gemini-generate-content"
 	// MistralConversations selects Mistral's Conversations-compatible chat protocol.
 	MistralConversations API = "mistral-conversations"
+	// GoogleVertex selects Google Vertex AI's GenerateContent protocol.
+	GoogleVertex API = "google-vertex"
 )
 
 // Credentials contains current token-based provider credentials. AccountID may
@@ -49,8 +51,9 @@ type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (C
 // Responses or Anthropic subscription OAuth. ResolveCredentials is supported
 // only by Codex Responses; use CredentialManager for live Anthropic OAuth.
 //
-// BaseURL, HTTPClient, and Headers are forwarded to the selected provider
-// implementation. New copies Headers. The caller remains responsible for safe
+// BaseURL, Project, Location, HTTPClient, and Headers are forwarded to the
+// selected provider implementation. Project and Location configure Vertex AI
+// ADC routing. New copies Headers. The caller remains responsible for safe
 // concurrent use of HTTPClient. A nil HTTPClient ultimately uses
 // [http.DefaultClient], so operations should have a context deadline when an
 // unbounded request is not acceptable.
@@ -61,6 +64,8 @@ type ProviderConfig struct {
 	Credentials        Credentials
 	ResolveCredentials CredentialResolver
 	BaseURL            string
+	Project            string
+	Location           string
 	HTTPClient         *http.Client
 	Headers            http.Header
 	// AdditionalAPIs explicitly enables model-selected protocols for this
@@ -77,6 +82,8 @@ type ProviderAPIConfig struct {
 	Credentials        Credentials
 	ResolveCredentials CredentialResolver
 	BaseURL            string
+	Project            string
+	Location           string
 	HTTPClient         *http.Client
 	Headers            http.Header
 }
@@ -93,6 +100,8 @@ type providerRoute struct {
 	credentials        Credentials
 	resolveCredentials CredentialResolver
 	baseURL            string
+	project            string
+	location           string
 	httpClient         *http.Client
 	headers            http.Header
 }
@@ -145,7 +154,8 @@ func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *F
 		}
 		routes := make(map[llm.API]providerRoute, len(config.AdditionalAPIs)+1)
 		defaultRoute := providerRoute{api: defaultAPI, apiKey: config.APIKey, credentials: config.Credentials,
-			resolveCredentials: config.ResolveCredentials, baseURL: config.BaseURL, httpClient: config.HTTPClient, headers: config.Headers.Clone()}
+			resolveCredentials: config.ResolveCredentials, baseURL: config.BaseURL, project: config.Project, location: config.Location,
+			httpClient: config.HTTPClient, headers: config.Headers.Clone()}
 		if err := validateRoute(id, defaultRoute, registry); err != nil {
 			return nil, err
 		}
@@ -160,6 +170,7 @@ func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *F
 			}
 			route := providerRoute{api: api, apiKey: additional.APIKey, credentials: additional.Credentials,
 				resolveCredentials: additional.ResolveCredentials, baseURL: additional.BaseURL,
+				project: additional.Project, location: additional.Location,
 				httpClient: additional.HTTPClient, headers: additional.Headers.Clone()}
 			if err := validateRoute(id, route, registry); err != nil {
 				return nil, err
@@ -176,7 +187,8 @@ func validateRoute(provider string, route providerRoute, registry *FactoryRegist
 		return configureError(provider, "API %q is not registered", route.api)
 	}
 	config := ProviderConfig{ID: provider, API: API(route.api), APIKey: route.apiKey, Credentials: route.credentials,
-		ResolveCredentials: route.resolveCredentials, BaseURL: route.baseURL, HTTPClient: route.httpClient, Headers: route.headers}
+		ResolveCredentials: route.resolveCredentials, BaseURL: route.baseURL, Project: route.project, Location: route.location,
+		HTTPClient: route.httpClient, Headers: route.headers}
 	return validateCredentials(provider, API(route.api), config)
 }
 
@@ -216,7 +228,7 @@ func validateCredentials(provider string, api API, config ProviderConfig) error 
 func builtinAPI(api llm.API) bool {
 	switch api {
 	case llm.APIOpenAIResponses, llm.APIAzureOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses,
-		llm.APIAnthropicMessages, llm.APIGeminiGenerateContent, llm.APIMistralConversations:
+		llm.APIAnthropicMessages, llm.APIGeminiGenerateContent, llm.APIMistralConversations, llm.APIGoogleVertex:
 		return true
 	default:
 		return false
@@ -309,7 +321,7 @@ func (c *Collection) GeneratorContext(ctx context.Context, info llm.ModelInfo) (
 		Provider: provider, API: api, Model: cloneModelInfo(ownedInfo), APIKey: resolved.apiKey,
 		Credentials: resolved.credentials, ResolveCredentials: resolved.resolveCredentials,
 		ResolveCredential: credentialResolver, BaseURL: resolved.baseURL, HTTPClient: resolved.httpClient,
-		Headers: resolved.headers.Clone(),
+		Project: route.project, Location: route.location, Headers: resolved.headers.Clone(),
 	}
 	generator, err := callGeneratorFactory(ctx, factory, factoryConfig)
 	if err != nil {

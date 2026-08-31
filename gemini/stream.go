@@ -27,7 +27,7 @@ func (c *Client) produceStream(
 		err = relabelProviderError(err, c.provider)
 	}()
 
-	accumulator := newStreamAccumulator(c.model, request)
+	accumulator := newStreamAccumulatorFor(c.provider, c.model, request)
 	for response, streamErr := range c.sdkClient.Models.GenerateContentStream(ctx, c.model, contents, generationConfig) {
 		if contextErr := contextErr(ctx); contextErr != nil {
 			return contextErr
@@ -59,6 +59,7 @@ func (c *Client) produceStream(
 }
 
 type streamAccumulator struct {
+	provider        string
 	configuredModel string
 	format          llm.ResponseFormat
 	declared        map[string]struct{}
@@ -79,7 +80,12 @@ type streamAccumulator struct {
 }
 
 func newStreamAccumulator(configuredModel string, request llm.Request) *streamAccumulator {
+	return newStreamAccumulatorFor("", configuredModel, request)
+}
+
+func newStreamAccumulatorFor(provider, configuredModel string, request llm.Request) *streamAccumulator {
 	return &streamAccumulator{
+		provider:        provider,
 		configuredModel: configuredModel,
 		format:          request.ResponseFormat,
 		declared:        declaredToolNames(request.Tools),
@@ -270,7 +276,7 @@ func (accumulator *streamAccumulator) finalChunk() (llm.Chunk, error) {
 	var providerData []byte
 	if len(accumulator.data) != 0 {
 		var err error
-		providerData, err = marshalMessageData(messageData{Parts: accumulator.data})
+		providerData, err = marshalMessageDataFor(accumulator.provider, accumulator.configuredModel, messageData{Parts: accumulator.data})
 		if err != nil {
 			return llm.Chunk{}, malformedResponseFor("stream", "encode Gemini message state: %w", err)
 		}

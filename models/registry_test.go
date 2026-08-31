@@ -99,6 +99,22 @@ func TestBuiltinMistralConversationsFactory(t *testing.T) {
 	}
 }
 
+func TestBuiltinGoogleVertexFactory(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: ProviderGoogleVertex, API: GoogleVertex, APIKey: "key"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: ProviderGoogleVertex, Model: "gemini-2.5-flash",
+		API: llm.APIGoogleVertex, Capabilities: []llm.Capability{llm.CapabilityStreaming}, Reasoning: true})
+	if err != nil {
+		t.Fatalf("Generator() error = %v", err)
+	}
+	info := generator.Info()
+	if info.Provider != ProviderGoogleVertex || info.Model != "gemini-2.5-flash" || info.API != llm.APIGoogleVertex {
+		t.Fatalf("Info() = %#v", info)
+	}
+}
+
 func TestCollectionMixedProtocolRoutingAndOwnedFactoryConfig(t *testing.T) {
 	const firstAPI llm.API = "custom-one"
 	const secondAPI llm.API = "custom-two"

@@ -116,6 +116,33 @@ func TestAssistantProviderDataRecognition(t *testing.T) {
 	})
 }
 
+func TestProviderDataReplayRequiresSameProviderAndModel(t *testing.T) {
+	raw, err := marshalMessageDataFor("google", "model-a", messageData{Parts: []messageDataPart{{
+		Kind: "content", Index: 0, ThoughtSignature: []byte("sig"),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleAssistant,
+		Content: []llm.Part{{Text: "answer"}}, ProviderData: raw}}}
+	matched, _, err := requestToSDKFor("generate", "google", "model-a", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(matched[0].Parts[0].ThoughtSignature); got != "sig" {
+		t.Fatalf("matching signature = %q", got)
+	}
+	for _, identity := range [][2]string{{"google-vertex", "model-a"}, {"google", "model-b"}} {
+		contents, _, err := requestToSDKFor("generate", identity[0], identity[1], request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := contents[0].Parts[0].ThoughtSignature; len(got) != 0 {
+			t.Fatalf("identity %q/%q replayed signature %q", identity[0], identity[1], got)
+		}
+	}
+}
+
 func TestThoughtOnlyAssistantRoundTrip(t *testing.T) {
 	request := textRequest("hello")
 	response, err := responseFromSDK("model", request, &genai.GenerateContentResponse{

@@ -22,6 +22,8 @@ const (
 	defaultProvider   = "gemini"
 	defaultBaseURL    = "https://generativelanguage.googleapis.com/"
 	defaultAPIVersion = "v1beta"
+	vertexProvider    = "google-vertex"
+	vertexAPIVersion  = "v1"
 )
 
 // Config configures a Gemini Developer API client. Model and APIKey are
@@ -29,6 +31,7 @@ const (
 // defaults to "gemini". BaseURL and APIVersion default to Google's public
 // Gemini endpoint and v1beta API.
 //
+// Reasoning declares support for reasoning controls and thought blocks.
 // Capabilities opts the configured model into optional protocol features;
 // generation is always enabled, while streaming, tools, JSON mode, vision, and
 // audio input must be listed explicitly. A non-nil HTTPClient and custom
@@ -39,6 +42,7 @@ type Config struct {
 	Provider     string
 	Model        string
 	Capabilities []llm.Capability
+	Reasoning    bool
 	APIKey       string
 	BaseURL      string
 	APIVersion   string
@@ -51,15 +55,46 @@ type Config struct {
 type Client struct {
 	provider     string
 	model        string
+	api          llm.API
 	capabilities []llm.Capability
+	reasoning    bool
 	sdkClient    *genai.Client
 }
 
 // New constructs a Client from config.
 func New(config Config) (_ *Client, err error) {
+	return newClient(config, clientOptions{api: llm.APIGeminiGenerateContent, backend: genai.BackendGeminiAPI,
+		defaultProvider: defaultProvider, defaultBaseURL: defaultBaseURL, defaultAPIVersion: defaultAPIVersion, requireAPIKey: true})
+}
+
+// NewVertex constructs a Vertex AI client using the shared GenerateContent
+// protocol implementation. An API key may be supplied without project and
+// location. Without an API key, project and location are required; a supplied
+// HTTP client must already authenticate requests, while a nil client uses
+// Application Default Credentials.
+func NewVertex(config Config, project, location string) (*Client, error) {
+	return newClient(config, clientOptions{api: llm.APIGoogleVertex, backend: genai.BackendVertexAI,
+		defaultProvider: vertexProvider, defaultAPIVersion: vertexAPIVersion,
+		project: strings.TrimSpace(project), location: strings.TrimSpace(location), vertex: true, allowVersionPath: true})
+}
+
+type clientOptions struct {
+	api               llm.API
+	backend           genai.Backend
+	defaultProvider   string
+	defaultBaseURL    string
+	defaultAPIVersion string
+	requireAPIKey     bool
+	project           string
+	location          string
+	vertex            bool
+	allowVersionPath  bool
+}
+
+func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	provider := strings.TrimSpace(config.Provider)
 	if provider == "" {
-		provider = defaultProvider
+		provider = options.defaultProvider
 	}
 	defer func() {
 		err = relabelProviderError(err, provider)
@@ -73,8 +108,11 @@ func New(config Config) (_ *Client, err error) {
 		return nil, configError("model contains an invalid path or query component")
 	}
 	apiKey := strings.TrimSpace(config.APIKey)
-	if apiKey == "" {
+	if options.requireAPIKey && apiKey == "" {
 		return nil, configError("API key must not be empty")
+	}
+	if options.vertex && apiKey == "" && (options.project == "" || options.location == "") {
+		return nil, configError("project and location must not be empty when Vertex API key is absent")
 	}
 	capabilities, err := configureCapabilities(config.Capabilities)
 	if err != nil {
@@ -83,27 +121,32 @@ func New(config Config) (_ *Client, err error) {
 
 	baseURL := strings.TrimSpace(config.BaseURL)
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		baseURL = options.defaultBaseURL
 	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, configError("invalid base URL: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, configError("base URL scheme must be http or https")
-	}
-	if parsed.Host == "" {
-		return nil, configError("base URL must be absolute")
-	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, configError("base URL must not contain a query or fragment")
+	if baseURL != "" {
+		parsed, parseErr := url.Parse(baseURL)
+		if parseErr != nil {
+			return nil, configError("invalid base URL: %w", parseErr)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, configError("base URL scheme must be http or https")
+		}
+		if parsed.Host == "" {
+			return nil, configError("base URL must be absolute")
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, configError("base URL must not contain a query or fragment")
+		}
 	}
 
 	apiVersion := strings.TrimSpace(config.APIVersion)
 	if apiVersion == "" {
-		apiVersion = defaultAPIVersion
+		apiVersion = options.defaultAPIVersion
 	}
-	if strings.ContainsAny(apiVersion, "/?#") {
+	if strings.ContainsAny(apiVersion, "?#") || !options.allowVersionPath && strings.Contains(apiVersion, "/") || strings.Contains(apiVersion, "..") {
+		if options.allowVersionPath {
+			return nil, configError("API version must be a valid path")
+		}
 		return nil, configError("API version must be one path segment")
 	}
 
@@ -113,16 +156,27 @@ func New(config Config) (_ *Client, err error) {
 		headers = make(http.Header)
 	}
 
-	sdkClient, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+	sdkConfig := &genai.ClientConfig{
 		APIKey:     apiKey,
-		Backend:    genai.BackendGeminiAPI,
+		Backend:    options.backend,
+		Project:    options.project,
+		Location:   options.location,
 		HTTPClient: httpClient,
 		HTTPOptions: genai.HTTPOptions{
 			BaseURL:    baseURL,
 			APIVersion: apiVersion,
 			Headers:    headers,
 		},
-	})
+	}
+	if options.vertex && baseURL != "" {
+		sdkConfig.HTTPOptions.BaseURLResourceScope = genai.ResourceScopeCollection
+	}
+	if options.vertex && apiKey == "" && config.HTTPClient == nil {
+		if err := sdkConfig.UseDefaultCredentials(); err != nil {
+			return nil, configError("initialize Vertex Application Default Credentials: %w", err)
+		}
+	}
+	sdkClient, err := genai.NewClient(context.Background(), sdkConfig)
 	if err != nil {
 		return nil, configError("initialize Google Gen AI client: %w", err)
 	}
@@ -130,7 +184,9 @@ func New(config Config) (_ *Client, err error) {
 	return &Client{
 		provider:     provider,
 		model:        model,
+		api:          options.api,
 		capabilities: capabilities,
+		reasoning:    config.Reasoning,
 		sdkClient:    sdkClient,
 	}, nil
 }
@@ -157,8 +213,9 @@ func (c *Client) Info() llm.ModelInfo {
 	return llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
-		API:          llm.APIGeminiGenerateContent,
+		API:          c.api,
 		Capabilities: slices.Clone(c.capabilities),
+		Reasoning:    c.reasoning,
 	}
 }
 
@@ -181,7 +238,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 		return nil, err
 	}
 
-	contents, generationConfig, err := requestToSDK("generate", request)
+	contents, generationConfig, err := requestToSDKFor("generate", c.provider, c.model, request)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +249,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err != nil {
 		return nil, sdkError("generate", err)
 	}
-	converted, err := responseFromSDK(c.model, request, response)
+	converted, err := responseFromSDKFor(c.provider, c.model, request, response)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +299,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 		return nil, err
 	}
 
-	contents, generationConfig, err := requestToSDK("stream", request)
+	contents, generationConfig, err := requestToSDKFor("stream", c.provider, c.model, request)
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +340,10 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	}
 	if request.ResponseFormat == llm.ResponseFormatJSON && !c.hasCapability(llm.CapabilityJSON) {
 		return unsupported(op, "configured model does not declare JSON capability")
+	}
+	if (request.ReasoningBudgetTokens != 0 || request.ReasoningEffort != llm.ReasoningEffortDefault &&
+		request.ReasoningEffort != llm.ReasoningEffortNone) && !c.reasoning {
+		return unsupported(op, "configured model does not support reasoning controls")
 	}
 	if hasImage && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(op, "configured model does not declare vision capability")

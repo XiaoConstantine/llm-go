@@ -20,17 +20,18 @@ import (
 const schemaVersion = 1
 
 var providerAPIs = map[string]llm.API{
-	"anthropic":    llm.APIAnthropicMessages,
-	"cerebras":     llm.APIOpenAIChatCompletions,
-	"deepseek":     llm.APIOpenAIChatCompletions,
-	"fireworks":    llm.APIOpenAIChatCompletions,
-	"google":       llm.APIGeminiGenerateContent,
-	"groq":         llm.APIOpenAIChatCompletions,
-	"mistral":      llm.APIMistralConversations,
-	"openai":       llm.APIOpenAIResponses,
-	"openai-codex": llm.APIOpenAICodexResponses,
-	"openrouter":   llm.APIOpenAIChatCompletions,
-	"xai":          llm.APIOpenAIResponses,
+	"anthropic":     llm.APIAnthropicMessages,
+	"cerebras":      llm.APIOpenAIChatCompletions,
+	"deepseek":      llm.APIOpenAIChatCompletions,
+	"fireworks":     llm.APIOpenAIChatCompletions,
+	"google":        llm.APIGeminiGenerateContent,
+	"google-vertex": llm.APIGoogleVertex,
+	"groq":          llm.APIOpenAIChatCompletions,
+	"mistral":       llm.APIMistralConversations,
+	"openai":        llm.APIOpenAIResponses,
+	"openai-codex":  llm.APIOpenAICodexResponses,
+	"openrouter":    llm.APIOpenAIChatCompletions,
+	"xai":           llm.APIOpenAIResponses,
 }
 
 type sourceCatalog struct {
@@ -262,7 +263,7 @@ func supportsCapability(api llm.API, capability llm.Capability) bool {
 			capability == llm.CapabilityVision || capability == llm.CapabilityAudio
 	case llm.APIAnthropicMessages:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	case llm.APIGeminiGenerateContent:
+	case llm.APIGeminiGenerateContent, llm.APIGoogleVertex:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
 			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
 	case llm.APIMistralConversations:

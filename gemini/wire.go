@@ -23,6 +23,8 @@ const (
 type messageDataEnvelope struct {
 	Provider string       `json:"provider"`
 	Version  int          `json:"version"`
+	Origin   string       `json:"origin,omitempty"`
+	Model    string       `json:"model,omitempty"`
 	Data     *messageData `json:"data"`
 }
 
@@ -177,6 +179,10 @@ func validFunctionName(name string) bool {
 }
 
 func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.GenerateContentConfig, error) {
+	return requestToSDKFor(op, "", "", request)
+}
+
+func requestToSDKFor(op, provider, model string, request llm.Request) ([]*genai.Content, *genai.GenerateContentConfig, error) {
 	if request.CacheRetention != llm.CacheRetentionDefault || request.CacheKey != "" || request.SessionID != "" {
 		return nil, nil, unsupported(op, "Gemini GenerateContent does not support portable prompt-cache or session controls")
 	}
@@ -250,7 +256,7 @@ func requestToSDK(op string, request llm.Request) ([]*genai.Content, *genai.Gene
 		generationConfig.ToolConfig = &genai.ToolConfig{FunctionCallingConfig: config}
 	}
 
-	encoder := newMessageEncoder(op)
+	encoder := newMessageEncoderFor(op, provider, model)
 	contents := make([]*genai.Content, 0, len(request.Messages))
 	var systemParts []*genai.Part
 	for _, message := range request.Messages {
@@ -285,13 +291,21 @@ func float32Value(op, name string, value *float64) (*float32, error) {
 
 type messageEncoder struct {
 	op            string
+	provider      string
+	model         string
 	pendingByID   map[string]llm.ToolCall
 	pendingByName map[string][]llm.ToolCall
 }
 
 func newMessageEncoder(op string) *messageEncoder {
+	return newMessageEncoderFor(op, "", "")
+}
+
+func newMessageEncoderFor(op, provider, model string) *messageEncoder {
 	return &messageEncoder{
 		op:            op,
+		provider:      provider,
+		model:         model,
 		pendingByID:   make(map[string]llm.ToolCall),
 		pendingByName: make(map[string][]llm.ToolCall),
 	}
@@ -306,7 +320,7 @@ func (encoder *messageEncoder) convert(message llm.Message) (*genai.Content, err
 		}
 		return &genai.Content{Role: genai.RoleUser, Parts: parts}, nil
 	case llm.RoleAssistant:
-		parts, err := assistantPartsToSDK(encoder.op, message)
+		parts, err := assistantPartsToSDKFor(encoder.op, encoder.provider, encoder.model, message)
 		if err != nil {
 			return nil, err
 		}
@@ -419,7 +433,11 @@ func contentPartToSDK(op string, part llm.Part) (*genai.Part, error) {
 }
 
 func assistantPartsToSDK(op string, message llm.Message) ([]*genai.Part, error) {
-	data, recognized, err := parseMessageData(message.ProviderData)
+	return assistantPartsToSDKFor(op, "", "", message)
+}
+
+func assistantPartsToSDKFor(op, provider, model string, message llm.Message) ([]*genai.Part, error) {
+	data, recognized, err := parseMessageDataFor(message.ProviderData, provider, model)
 	if err != nil {
 		return nil, requestError(op, "decode assistant provider data: %w", err)
 	}
@@ -514,6 +532,10 @@ func toolCallToSDK(op string, call llm.ToolCall) (*genai.Part, error) {
 }
 
 func parseMessageData(raw json.RawMessage) (messageData, bool, error) {
+	return parseMessageDataFor(raw, "", "")
+}
+
+func parseMessageDataFor(raw json.RawMessage, provider, model string) (messageData, bool, error) {
 	if len(raw) == 0 {
 		return messageData{}, false, nil
 	}
@@ -546,13 +568,25 @@ func parseMessageData(raw json.RawMessage) (messageData, bool, error) {
 	if envelope.Data == nil {
 		return messageData{}, false, fmt.Errorf("missing data")
 	}
+	if provider != "" {
+		legacy := envelope.Origin == "" && envelope.Model == ""
+		if legacy && provider != defaultProvider || !legacy && (envelope.Origin != provider || envelope.Model != model) {
+			return messageData{}, false, nil
+		}
+	}
 	return *envelope.Data, true, nil
 }
 
 func marshalMessageData(data messageData) (json.RawMessage, error) {
+	return marshalMessageDataFor("", "", data)
+}
+
+func marshalMessageDataFor(provider, model string, data messageData) (json.RawMessage, error) {
 	raw, err := jsonv2.Marshal(&messageDataEnvelope{
 		Provider: messageDataProvider,
 		Version:  messageDataVersion,
+		Origin:   provider,
+		Model:    model,
 		Data:     &data,
 	})
 	if err != nil {
@@ -695,6 +729,10 @@ func toolCallFromSDK(op string, index int, call *genai.FunctionCall, declared, s
 }
 
 func responseFromSDK(configuredModel string, request llm.Request, response *genai.GenerateContentResponse) (*llm.Response, error) {
+	return responseFromSDKFor("", configuredModel, request, response)
+}
+
+func responseFromSDKFor(provider, configuredModel string, request llm.Request, response *genai.GenerateContentResponse) (*llm.Response, error) {
 	if response == nil {
 		return nil, malformedResponseFor("generate", "SDK returned no response")
 	}
@@ -759,7 +797,7 @@ func responseFromSDK(configuredModel string, request llm.Request, response *gena
 	if err != nil {
 		return nil, err
 	}
-	providerData, err := marshalMessageData(messageData{Parts: parts.data})
+	providerData, err := marshalMessageDataFor(provider, configuredModel, messageData{Parts: parts.data})
 	if err != nil {
 		return nil, malformedResponseFor("generate", "encode Gemini message state: %w", err)
 	}

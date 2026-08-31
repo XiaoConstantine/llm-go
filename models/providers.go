@@ -3,13 +3,14 @@ package models
 import "strings"
 
 const (
-	ProviderOpenRouter = "openrouter"
-	ProviderGroq       = "groq"
-	ProviderDeepSeek   = "deepseek"
-	ProviderXAI        = "xai"
-	ProviderCerebras   = "cerebras"
-	ProviderFireworks  = "fireworks"
-	ProviderMistral    = "mistral"
+	ProviderOpenRouter   = "openrouter"
+	ProviderGroq         = "groq"
+	ProviderDeepSeek     = "deepseek"
+	ProviderXAI          = "xai"
+	ProviderCerebras     = "cerebras"
+	ProviderFireworks    = "fireworks"
+	ProviderMistral      = "mistral"
+	ProviderGoogleVertex = "google-vertex"
 )
 
 // ProviderProfile contains the protocol defaults for a built-in provider. Its
@@ -48,6 +49,7 @@ var builtinProviderProfiles = [...]ProviderProfile{
 	{id: ProviderCerebras, api: OpenAIChatCompletions, baseURL: "https://api.cerebras.ai/v1"},
 	{id: ProviderFireworks, api: OpenAIChatCompletions, baseURL: "https://api.fireworks.ai/inference/v1"},
 	{id: ProviderMistral, api: MistralConversations, baseURL: "https://api.mistral.ai/v1"},
+	{id: ProviderGoogleVertex, api: GoogleVertex},
 }
 
 // BuiltinProvider returns protocol defaults for a canonical provider ID.
