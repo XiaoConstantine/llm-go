@@ -351,6 +351,7 @@ const (
 	APIGeminiGenerateContent API = "gemini-generate-content"
 	APIMistralConversations  API = "mistral-conversations"
 	APIGoogleVertex          API = "google-vertex"
+	APIBedrockConverseStream API = "bedrock-converse-stream"
 )
 
 // Model describes one catalog entry. Name is a human-readable display name and

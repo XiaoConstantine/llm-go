@@ -31,6 +31,8 @@ const (
 	MistralConversations API = "mistral-conversations"
 	// GoogleVertex selects Google Vertex AI's GenerateContent protocol.
 	GoogleVertex API = "google-vertex"
+	// BedrockConverseStream selects Amazon Bedrock's ConverseStream protocol.
+	BedrockConverseStream API = "bedrock-converse-stream"
 )
 
 // Credentials contains current token-based provider credentials. AccountID may
@@ -66,6 +68,9 @@ type ProviderConfig struct {
 	BaseURL            string
 	Project            string
 	Location           string
+	Region             string
+	Profile            string
+	SkipAuth           bool
 	HTTPClient         *http.Client
 	Headers            http.Header
 	// AdditionalAPIs explicitly enables model-selected protocols for this
@@ -84,6 +89,9 @@ type ProviderAPIConfig struct {
 	BaseURL            string
 	Project            string
 	Location           string
+	Region             string
+	Profile            string
+	SkipAuth           bool
 	HTTPClient         *http.Client
 	Headers            http.Header
 }
@@ -102,6 +110,9 @@ type providerRoute struct {
 	baseURL            string
 	project            string
 	location           string
+	region             string
+	profile            string
+	skipAuth           bool
 	httpClient         *http.Client
 	headers            http.Header
 }
@@ -155,6 +166,7 @@ func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *F
 		routes := make(map[llm.API]providerRoute, len(config.AdditionalAPIs)+1)
 		defaultRoute := providerRoute{api: defaultAPI, apiKey: config.APIKey, credentials: config.Credentials,
 			resolveCredentials: config.ResolveCredentials, baseURL: config.BaseURL, project: config.Project, location: config.Location,
+			region: config.Region, profile: config.Profile, skipAuth: config.SkipAuth,
 			httpClient: config.HTTPClient, headers: config.Headers.Clone()}
 		if err := validateRoute(id, defaultRoute, registry); err != nil {
 			return nil, err
@@ -171,6 +183,7 @@ func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *F
 			route := providerRoute{api: api, apiKey: additional.APIKey, credentials: additional.Credentials,
 				resolveCredentials: additional.ResolveCredentials, baseURL: additional.BaseURL,
 				project: additional.Project, location: additional.Location,
+				region: additional.Region, profile: additional.Profile, skipAuth: additional.SkipAuth,
 				httpClient: additional.HTTPClient, headers: additional.Headers.Clone()}
 			if err := validateRoute(id, route, registry); err != nil {
 				return nil, err
@@ -188,6 +201,7 @@ func validateRoute(provider string, route providerRoute, registry *FactoryRegist
 	}
 	config := ProviderConfig{ID: provider, API: API(route.api), APIKey: route.apiKey, Credentials: route.credentials,
 		ResolveCredentials: route.resolveCredentials, BaseURL: route.baseURL, Project: route.project, Location: route.location,
+		Region: route.region, Profile: route.profile, SkipAuth: route.skipAuth,
 		HTTPClient: route.httpClient, Headers: route.headers}
 	return validateCredentials(provider, API(route.api), config)
 }
@@ -228,7 +242,7 @@ func validateCredentials(provider string, api API, config ProviderConfig) error 
 func builtinAPI(api llm.API) bool {
 	switch api {
 	case llm.APIOpenAIResponses, llm.APIAzureOpenAIResponses, llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses,
-		llm.APIAnthropicMessages, llm.APIGeminiGenerateContent, llm.APIMistralConversations, llm.APIGoogleVertex:
+		llm.APIAnthropicMessages, llm.APIGeminiGenerateContent, llm.APIMistralConversations, llm.APIGoogleVertex, llm.APIBedrockConverseStream:
 		return true
 	default:
 		return false
@@ -321,7 +335,8 @@ func (c *Collection) GeneratorContext(ctx context.Context, info llm.ModelInfo) (
 		Provider: provider, API: api, Model: cloneModelInfo(ownedInfo), APIKey: resolved.apiKey,
 		Credentials: resolved.credentials, ResolveCredentials: resolved.resolveCredentials,
 		ResolveCredential: credentialResolver, BaseURL: resolved.baseURL, HTTPClient: resolved.httpClient,
-		Project: route.project, Location: route.location, Headers: resolved.headers.Clone(),
+		Project: route.project, Location: route.location, Region: route.region, Profile: route.profile, SkipAuth: route.skipAuth,
+		Headers: resolved.headers.Clone(),
 	}
 	generator, err := callGeneratorFactory(ctx, factory, factoryConfig)
 	if err != nil {

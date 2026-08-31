@@ -47,6 +47,7 @@ model; a ✓ does not imply that every model exposed by an endpoint supports it.
 | [`anthropic`](./anthropic) · Anthropic-compatible Messages | ✓ | — | ✓ | — | ✓ | — | Signed thinking replay | Read/write, including 1h writes | API key, OAuth token, or custom headers |
 | [`gemini`](./gemini) · Gemini Developer API | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key |
 | [`vertex`](./vertex) · Google Vertex AI | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key, ADC, or authenticated HTTP client |
+| [`bedrock`](./bedrock) · Amazon Bedrock ConverseStream | ✓ | — | ✓ | — | ✓ | — | Controls and signed replay | Read/write | AWS credentials, profile, bearer token, or unauthenticated gateway |
 | [`mistral`](./mistral) · Mistral Conversations | ✓ | — | ✓ | — | ✓ | — | Thinking blocks and controls | — | API key |
 
 JSON mode refers to `llm.ResponseFormatJSON`, not tool argument schemas. Tool
@@ -96,7 +97,7 @@ local references offline, and use Go/RE2-compatible patterns.
 
 ### Custom protocols and dynamic catalogs
 
-`models.NewFactoryRegistry` creates an immutable registry containing the eight
+`models.NewFactoryRegistry` creates an immutable registry containing the nine
 built-in protocol factories plus caller registrations. `ProviderConfig.API`
 remains the default route when `ModelInfo.API` is empty; `AdditionalAPIs`
 explicitly enables mixed-protocol models for the same provider. Factories receive
@@ -126,6 +127,7 @@ services:
 | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` |
 | `mistral` | Mistral Conversations | `https://api.mistral.ai/v1` |
 | `google-vertex` | Google Vertex AI | SDK-derived regional endpoint |
+| `amazon-bedrock` | Bedrock ConverseStream | `https://bedrock-runtime.us-east-1.amazonaws.com` |
 
 ### Local and compatible servers
 
@@ -145,14 +147,13 @@ reasoning depend on what that server and model implement, so declare only the
 capabilities they actually support. The same configuration works for other
 compatible servers.
 
-The built-in model catalog covers OpenAI, Anthropic, Google Gemini, Vertex AI,
-Mistral, and the six OpenAI-compatible profiled providers. The Codex and Azure Responses
+The built-in model catalog covers OpenAI, Anthropic, Amazon Bedrock, Google
+Gemini, Vertex AI, Mistral, and the six OpenAI-compatible profiled providers. The Codex and Azure Responses
 adapters are available for caller-supplied model metadata but have no built-in
 catalog entries. Azure
 Responses supports resource endpoints or normalized `/openai/v1` base URLs,
 deployment names, API versions, and `api-key` authentication. Custom `BaseURL`,
-headers, and HTTP clients support compatible gateways; Amazon Bedrock transport
-is not currently implemented.
+headers, and HTTP clients support compatible gateways.
 
 ## Quick start
 

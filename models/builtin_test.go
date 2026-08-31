@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 490 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 490", len(models))
+	if len(models) != 583 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 583", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -63,6 +63,12 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	if !ok || vertex.API != llm.APIGoogleVertex || !vertex.Reasoning ||
 		!hasCapability(vertex.Capabilities, llm.CapabilityVision) || vertex.ContextWindow != 1_048_576 {
 		t.Fatalf("Vertex representative model = %#v", vertex)
+	}
+
+	bedrock, ok := catalog.Model(ProviderAmazonBedrock, "anthropic.claude-opus-4-6-v1")
+	if !ok || bedrock.API != llm.APIBedrockConverseStream || !bedrock.Reasoning ||
+		!hasCapability(bedrock.Capabilities, llm.CapabilityVision) || bedrock.ContextWindow != 1_000_000 {
+		t.Fatalf("Bedrock representative model = %#v", bedrock)
 	}
 }
 

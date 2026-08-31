@@ -10,6 +10,7 @@ import (
 
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/XiaoConstantine/llm-go/anthropic"
+	"github.com/XiaoConstantine/llm-go/bedrock"
 	"github.com/XiaoConstantine/llm-go/gemini"
 	"github.com/XiaoConstantine/llm-go/mistral"
 	"github.com/XiaoConstantine/llm-go/openai"
@@ -36,6 +37,9 @@ type GeneratorFactoryConfig struct {
 	BaseURL            string
 	Project            string
 	Location           string
+	Region             string
+	Profile            string
+	SkipAuth           bool
 	HTTPClient         *http.Client
 	Headers            http.Header
 }
@@ -55,7 +59,7 @@ type FactoryRegistry struct {
 	factories map[llm.API]GeneratorFactory
 }
 
-// NewFactoryRegistry returns the eight built-in factories plus registrations.
+// NewFactoryRegistry returns the nine built-in factories plus registrations.
 // Registering an API already present, including a built-in API, is an error.
 func NewFactoryRegistry(registrations ...FactoryRegistration) (*FactoryRegistry, error) {
 	factories := builtinFactories()
@@ -114,6 +118,7 @@ func builtinFactories() map[llm.API]GeneratorFactory {
 		llm.APIGeminiGenerateContent: geminiFactory,
 		llm.APIMistralConversations:  mistralFactory,
 		llm.APIGoogleVertex:          vertexFactory,
+		llm.APIBedrockConverseStream: bedrockFactory,
 	}
 }
 
@@ -197,6 +202,13 @@ func vertexFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Genera
 	return vertex.New(vertex.Config{Provider: config.Provider, Model: config.Model.Model,
 		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey, Project: config.Project, Location: config.Location,
 		BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
+}
+
+func bedrockFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
+	return bedrock.New(bedrock.Config{Provider: config.Provider, Model: config.Model.Model,
+		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey,
+		Region: config.Region, Profile: config.Profile, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient,
+		Headers: config.Headers, SkipAuth: config.SkipAuth})
 }
 
 func nilFunction(value any) bool {

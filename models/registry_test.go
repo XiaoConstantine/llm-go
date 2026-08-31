@@ -115,6 +115,22 @@ func TestBuiltinGoogleVertexFactory(t *testing.T) {
 	}
 }
 
+func TestBuiltinBedrockFactory(t *testing.T) {
+	collection, err := New(ProviderConfig{ID: ProviderAmazonBedrock, API: BedrockConverseStream, SkipAuth: true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: ProviderAmazonBedrock, Model: "anthropic.claude-opus-4-6-v1",
+		API: llm.APIBedrockConverseStream, Capabilities: []llm.Capability{llm.CapabilityStreaming}, Reasoning: true})
+	if err != nil {
+		t.Fatalf("Generator() error = %v", err)
+	}
+	info := generator.Info()
+	if info.Provider != ProviderAmazonBedrock || info.Model != "anthropic.claude-opus-4-6-v1" || info.API != llm.APIBedrockConverseStream {
+		t.Fatalf("Info() = %#v", info)
+	}
+}
+
 func TestCollectionMixedProtocolRoutingAndOwnedFactoryConfig(t *testing.T) {
 	const firstAPI llm.API = "custom-one"
 	const secondAPI llm.API = "custom-two"

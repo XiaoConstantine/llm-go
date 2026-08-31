@@ -3,14 +3,15 @@ package models
 import "strings"
 
 const (
-	ProviderOpenRouter   = "openrouter"
-	ProviderGroq         = "groq"
-	ProviderDeepSeek     = "deepseek"
-	ProviderXAI          = "xai"
-	ProviderCerebras     = "cerebras"
-	ProviderFireworks    = "fireworks"
-	ProviderMistral      = "mistral"
-	ProviderGoogleVertex = "google-vertex"
+	ProviderOpenRouter    = "openrouter"
+	ProviderGroq          = "groq"
+	ProviderDeepSeek      = "deepseek"
+	ProviderXAI           = "xai"
+	ProviderCerebras      = "cerebras"
+	ProviderFireworks     = "fireworks"
+	ProviderMistral       = "mistral"
+	ProviderGoogleVertex  = "google-vertex"
+	ProviderAmazonBedrock = "amazon-bedrock"
 )
 
 // ProviderProfile contains the protocol defaults for a built-in provider. Its
@@ -50,6 +51,7 @@ var builtinProviderProfiles = [...]ProviderProfile{
 	{id: ProviderFireworks, api: OpenAIChatCompletions, baseURL: "https://api.fireworks.ai/inference/v1"},
 	{id: ProviderMistral, api: MistralConversations, baseURL: "https://api.mistral.ai/v1"},
 	{id: ProviderGoogleVertex, api: GoogleVertex},
+	{id: ProviderAmazonBedrock, api: BedrockConverseStream, baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com"},
 }
 
 // BuiltinProvider returns protocol defaults for a canonical provider ID.
