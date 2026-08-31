@@ -79,10 +79,6 @@ type streamAccumulator struct {
 	pendingEvents  []llm.StreamEvent
 }
 
-func newStreamAccumulator(configuredModel string, request llm.Request) *streamAccumulator {
-	return newStreamAccumulatorFor("", configuredModel, request)
-}
-
 func newStreamAccumulatorFor(provider, configuredModel string, request llm.Request) *streamAccumulator {
 	return &streamAccumulator{
 		provider:        provider,

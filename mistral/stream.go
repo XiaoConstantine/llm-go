@@ -610,7 +610,7 @@ func finishReason(op, reason string) (llm.FinishReason, error) {
 	case "tool_calls":
 		return llm.FinishReasonToolCall, nil
 	case "error":
-		return "", &llm.Error{Kind: llm.KindProvider, Op: op, Provider: defaultProvider, Err: errors.New("Mistral generation stopped with an error")}
+		return "", &llm.Error{Kind: llm.KindProvider, Op: op, Provider: defaultProvider, Err: errors.New("mistral generation stopped with an error")}
 	default:
 		return llm.FinishReasonStop, nil
 	}

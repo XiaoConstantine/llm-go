@@ -297,10 +297,6 @@ type messageEncoder struct {
 	pendingByName map[string][]llm.ToolCall
 }
 
-func newMessageEncoder(op string) *messageEncoder {
-	return newMessageEncoderFor(op, "", "")
-}
-
 func newMessageEncoderFor(op, provider, model string) *messageEncoder {
 	return &messageEncoder{
 		op:            op,
@@ -575,10 +571,6 @@ func parseMessageDataFor(raw json.RawMessage, provider, model string) (messageDa
 		}
 	}
 	return *envelope.Data, true, nil
-}
-
-func marshalMessageData(data messageData) (json.RawMessage, error) {
-	return marshalMessageDataFor("", "", data)
 }
 
 func marshalMessageDataFor(provider, model string, data messageData) (json.RawMessage, error) {

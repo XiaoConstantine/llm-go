@@ -290,9 +290,10 @@ func (e *requestEncoder) toolResultParts(result llm.ToolResult) (any, error) {
 	texts := make([]string, 0, len(converted))
 	images := make([]contentPart, 0, len(converted))
 	for _, part := range converted {
-		if part.Type == "text" {
+		switch part.Type {
+		case "text":
 			texts = append(texts, part.Text)
-		} else if part.Type == "image_url" {
+		case "image_url":
 			images = append(images, part)
 		}
 	}
