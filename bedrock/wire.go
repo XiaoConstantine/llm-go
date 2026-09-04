@@ -521,10 +521,7 @@ func supportsPromptCaching(model string) bool {
 
 func resolveCacheRetention(retention llm.CacheRetention) llm.CacheRetention {
 	if retention == llm.CacheRetentionDefault {
-		if os.Getenv("PI_CACHE_RETENTION") == "long" {
-			return llm.CacheRetentionLong
-		}
-		return llm.CacheRetentionShort
+		return llm.CacheRetentionNone
 	}
 	return retention
 }

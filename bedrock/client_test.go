@@ -179,18 +179,26 @@ func TestSDKErrorClassification(t *testing.T) {
 	}
 }
 
-func TestCachingEnvironmentCompatibility(t *testing.T) {
+func TestCachingRequiresExplicitRetention(t *testing.T) {
 	t.Setenv("PI_CACHE_RETENTION", "long")
 	t.Setenv("AWS_BEDROCK_FORCE_CACHE", "1")
-	input, err := buildInput("generate", "application-profile-arn", false, llm.Request{
-		Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hi"}}}},
-	})
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hi"}}}}}
+	input, err := buildInput("generate", "application-profile-arn", false, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input.Messages[0].Content) != 1 {
+		t.Fatalf("default retention content = %#v, want no cache point", input.Messages[0].Content)
+	}
+
+	request.CacheRetention = llm.CacheRetentionLong
+	input, err = buildInput("generate", "application-profile-arn", false, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	point, ok := input.Messages[0].Content[1].(*types.ContentBlockMemberCachePoint)
 	if !ok || point.Value.Ttl != types.CacheTTLOneHour {
-		t.Fatalf("cache point = %#v", input.Messages[0].Content)
+		t.Fatalf("long retention cache point = %#v", input.Messages[0].Content)
 	}
 }
 

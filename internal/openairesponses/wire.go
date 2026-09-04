@@ -61,6 +61,14 @@ type providerDataEnvelope struct {
 
 // Request converts a validated neutral request into Responses API parameters.
 func (c Codec) Request(op, model string, request llm.Request, options RequestOptions) (openairesponses.ResponseNewParams, error) {
+	breakpoints := cacheBreakpointCount(request)
+	if breakpoints > 4 {
+		return openairesponses.ResponseNewParams{}, c.unsupported(op, "explicit prompt-cache breakpoints must not exceed 4")
+	}
+	if breakpoints != 0 && !options.ExplicitPromptCache {
+		return openairesponses.ResponseNewParams{}, c.unsupported(op, "explicit prompt-cache breakpoints are not supported by this model")
+	}
+	structuredSystem := systemHasCacheBreakpoint(request.Messages)
 	instructions := make([]string, 0, 1)
 	input := make(openairesponses.ResponseInputParam, 0, len(request.Messages))
 	deferredMode := ""
@@ -74,7 +82,13 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		text := message.Text()
 		switch message.Role {
 		case llm.RoleSystem:
-			if text != "" {
+			if structuredSystem {
+				content, _, err := c.userContentToWire(op, i, message.Content, nil)
+				if err != nil {
+					return openairesponses.ResponseNewParams{}, err
+				}
+				input = append(input, openairesponses.ResponseInputItemParamOfMessage(content, openairesponses.EasyInputMessageRoleSystem))
+			} else if text != "" {
 				instructions = append(instructions, text)
 			}
 		case llm.RoleUser:
@@ -93,10 +107,19 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 				return openairesponses.ResponseNewParams{}, c.requestError(op, "messages[%d] provider data: %v", i, err)
 			}
 			if replayed {
+				if messageHasCacheBreakpoint(message) {
+					return openairesponses.ResponseNewParams{}, c.unsupported(op, "cache breakpoints cannot be applied to replayed assistant provider data")
+				}
 				input = append(input, items...)
 				continue
 			}
-			if text != "" {
+			if messageHasCacheBreakpoint(message) {
+				content, _, err := c.userContentToWire(op, i, message.Content, nil)
+				if err != nil {
+					return openairesponses.ResponseNewParams{}, err
+				}
+				input = append(input, openairesponses.ResponseInputItemParamOfMessage(content, openairesponses.EasyInputMessageRoleAssistant))
+			} else if text != "" {
 				input = append(input, openairesponses.ResponseInputItemParamOfMessage(text, openairesponses.EasyInputMessageRoleAssistant))
 			}
 			for _, call := range message.ToolCalls {
@@ -104,6 +127,11 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 			}
 		case llm.RoleTool:
 			for resultIndex, result := range message.ToolResults {
+				for partIndex, part := range result.Content {
+					if part.CacheBreakpoint {
+						return openairesponses.ResponseNewParams{}, c.unsupported(op, fmt.Sprintf("messages[%d] tool result %d content[%d] cache breakpoints are not supported", i, resultIndex, partIndex))
+					}
+				}
 				items, hasImage, err := c.toolResultToWire(op, i, resultIndex, result)
 				if err != nil {
 					return openairesponses.ResponseNewParams{}, err
@@ -175,8 +203,13 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 	if err := c.applyToolChoice(op, &params, request.ToolChoice, options.NamedToolChoice); err != nil {
 		return openairesponses.ResponseNewParams{}, err
 	}
-	if request.CacheRetention == llm.CacheRetentionNone && options.ExplicitPromptCache {
-		params.PromptCacheOptions.Mode = "explicit"
+	if options.ExplicitPromptCache {
+		if breakpoints != 0 || request.CacheRetention == llm.CacheRetentionNone {
+			params.PromptCacheOptions.Mode = "explicit"
+		}
+		if request.CacheRetention == llm.CacheRetentionLong {
+			params.PromptCacheOptions.Ttl = "30m"
+		}
 	}
 	if request.CacheRetention != llm.CacheRetentionNone {
 		key := request.CacheKey
@@ -189,7 +222,9 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 	}
 	switch request.CacheRetention {
 	case llm.CacheRetentionLong:
-		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetention24h
+		if !options.ExplicitPromptCache {
+			params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetention24h
+		}
 	case llm.CacheRetentionShort:
 		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetentionInMemory
 	}
@@ -248,13 +283,55 @@ func toolNames(tools []llm.Tool) []string {
 	return names
 }
 
+func cacheBreakpointCount(request llm.Request) int {
+	count := 0
+	for _, message := range request.Messages {
+		for _, part := range message.Content {
+			if part.CacheBreakpoint {
+				count++
+			}
+		}
+		for _, result := range message.ToolResults {
+			for _, part := range result.Content {
+				if part.CacheBreakpoint {
+					count++
+				}
+			}
+		}
+	}
+	return count
+}
+
+func messageHasCacheBreakpoint(message llm.Message) bool {
+	for _, part := range message.Content {
+		if part.CacheBreakpoint {
+			return true
+		}
+	}
+	return false
+}
+
+func systemHasCacheBreakpoint(messages []llm.Message) bool {
+	for _, message := range messages {
+		if message.Role == llm.RoleSystem && messageHasCacheBreakpoint(message) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, audioOptions *InputAudioOptions) (openairesponses.ResponseInputMessageContentListParam, bool, error) {
 	content := make(openairesponses.ResponseInputMessageContentListParam, 0, len(parts))
 	hasStructuredContent := false
 	for partIndex, part := range parts {
 		switch part.Kind {
 		case llm.PartText:
-			content = append(content, openairesponses.ResponseInputContentParamOfInputText(part.Text))
+			text := openairesponses.ResponseInputContentParamOfInputText(part.Text)
+			if part.CacheBreakpoint {
+				text.OfInputText.PromptCacheBreakpoint = openairesponses.NewResponseInputTextPromptCacheBreakpointParam()
+				hasStructuredContent = true
+			}
+			content = append(content, text)
 		case llm.PartImage:
 			mediaType, _, err := mime.ParseMediaType(part.MediaType)
 			mediaType = strings.ToLower(mediaType)
@@ -268,9 +345,15 @@ func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, 
 			}
 			image := openairesponses.ResponseInputContentParamOfInputImage(openairesponses.ResponseInputImageDetailAuto)
 			image.OfInputImage.ImageURL = param.NewOpt("data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data))
+			if part.CacheBreakpoint {
+				image.OfInputImage.PromptCacheBreakpoint = openairesponses.NewResponseInputImagePromptCacheBreakpointParam()
+			}
 			content = append(content, image)
 			hasStructuredContent = true
 		case llm.PartAudio:
+			if part.CacheBreakpoint {
+				return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] audio cache breakpoints are not supported", messageIndex, partIndex))
+			}
 			if audioOptions == nil {
 				return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] audio is not supported", messageIndex, partIndex))
 			}

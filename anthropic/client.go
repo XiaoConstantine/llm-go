@@ -414,6 +414,9 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 }
 
 func (c *Client) checkCompatibility(op string, request llm.Request) error {
+	if request.HasCacheBreakpoints() {
+		return unsupported(op, "explicit cache breakpoint placement is not supported by the Anthropic adapter")
+	}
 	if request.Temperature != nil && c.compatibility.Temperature == llm.CompatibilityDisabled {
 		return unsupported(op, "configured model does not support temperature")
 	}

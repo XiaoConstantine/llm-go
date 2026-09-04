@@ -483,6 +483,9 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.HasCacheBreakpoints() {
+		return unsupported(op, "explicit cache breakpoint placement is not supported by the subscription endpoint")
+	}
 	usesTools := len(request.Tools) != 0
 	usesImages := false
 	usesAudio := false

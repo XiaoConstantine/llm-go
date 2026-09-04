@@ -543,6 +543,9 @@ func (c *Client) codec() internalresponses.Codec {
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.HasCacheBreakpoints() && c.compatibility.ExplicitPromptCacheMode != llm.CompatibilityEnabled {
+		return unsupported(c.provider, op, "configured model does not support explicit prompt-cache breakpoints")
+	}
 	usesTools := len(request.Tools) != 0
 	usesImages := false
 	for _, message := range request.Messages {

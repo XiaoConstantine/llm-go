@@ -35,12 +35,15 @@ const (
 
 // Part is one piece of message content. Text parts use Text and leave Data and
 // MediaType empty. Image and audio parts use Data and MediaType and leave Text
-// empty. Other combinations are invalid.
+// empty. Other combinations are invalid. CacheBreakpoint marks the exact end of
+// a reusable prompt prefix. It requires short or long cache retention and is
+// rejected by adapters that do not support explicit breakpoint placement.
 type Part struct {
-	Kind      PartKind
-	Text      string
-	Data      []byte
-	MediaType string
+	Kind            PartKind
+	Text            string
+	Data            []byte
+	MediaType       string
+	CacheBreakpoint bool
 }
 
 // Message is one turn in a model conversation. ToolCalls are valid only on an
@@ -224,6 +227,26 @@ type Request struct {
 	PresencePenalty  *float64
 	FrequencyPenalty *float64
 	Stop             []string
+}
+
+// HasCacheBreakpoints reports whether any message or tool-result content marks
+// an explicit cache breakpoint.
+func (r Request) HasCacheBreakpoints() bool {
+	for _, message := range r.Messages {
+		for _, part := range message.Content {
+			if part.CacheBreakpoint {
+				return true
+			}
+		}
+		for _, result := range message.ToolResults {
+			for _, part := range result.Content {
+				if part.CacheBreakpoint {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // FinishReason describes why generation stopped.

@@ -31,7 +31,7 @@ func (r Request) validate() error {
 	if err := validateToolChoice(r.ToolChoice, r.Tools); err != nil {
 		return err
 	}
-	if err := validateCacheControls(r.CacheRetention, r.CacheKey, r.SessionID); err != nil {
+	if err := validateCacheControls(r); err != nil {
 		return err
 	}
 	if err := validateResponseFormat(r.ResponseFormat); err != nil {
@@ -157,7 +157,8 @@ func validateToolChoice(choice ToolChoice, tools []Tool) error {
 	return nil
 }
 
-func validateCacheControls(retention CacheRetention, cacheKey, sessionID string) error {
+func validateCacheControls(request Request) error {
+	retention, cacheKey, sessionID := request.CacheRetention, request.CacheKey, request.SessionID
 	switch retention {
 	case CacheRetentionDefault, CacheRetentionNone, CacheRetentionShort, CacheRetentionLong:
 	default:
@@ -176,6 +177,9 @@ func validateCacheControls(retention CacheRetention, cacheKey, sessionID string)
 	}
 	if retention == CacheRetentionNone && cacheKey != "" {
 		return fmt.Errorf("cache key cannot be set when cache retention is none")
+	}
+	if request.HasCacheBreakpoints() && retention != CacheRetentionShort && retention != CacheRetentionLong {
+		return fmt.Errorf("cache breakpoints require short or long cache retention")
 	}
 	return nil
 }

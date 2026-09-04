@@ -44,19 +44,21 @@ func TestExplicitPromptCacheWireSemantics(t *testing.T) {
 		name      string
 		retention llm.CacheRetention
 		key       string
+		explicit  bool
 		want      []string
 		doNotWant []string
 	}{
-		{name: "default leaves policy unchanged", want: []string{`"content":"hello"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint", "prompt_cache_key"}},
-		{name: "none disables implicit caching", retention: llm.CacheRetentionNone, key: "ignored", want: []string{`"prompt_cache_options":{"mode":"explicit"}`}, doNotWant: []string{"prompt_cache_breakpoint", "prompt_cache_key"}},
-		{name: "short uses key and retention only", retention: llm.CacheRetentionShort, key: "stable", want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"in_memory"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
-		{name: "long uses key and retention only", retention: llm.CacheRetentionLong, key: "stable", want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"24h"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
+		{name: "default leaves policy unchanged", explicit: true, want: []string{`"content":"hello"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint", "prompt_cache_key"}},
+		{name: "none disables implicit caching", retention: llm.CacheRetentionNone, key: "ignored", explicit: true, want: []string{`"prompt_cache_options":{"mode":"explicit"}`}, doNotWant: []string{"prompt_cache_breakpoint", "prompt_cache_key"}},
+		{name: "short uses key and retention only", retention: llm.CacheRetentionShort, key: "stable", explicit: true, want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"in_memory"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
+		{name: "explicit long uses minimum TTL", retention: llm.CacheRetentionLong, key: "stable", explicit: true, want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_options":{"ttl":"30m"}`}, doNotWant: []string{`"prompt_cache_retention"`, "prompt_cache_breakpoint"}},
+		{name: "legacy long uses 24 hour retention", retention: llm.CacheRetentionLong, key: "stable", want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"24h"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := base
 			request.CacheRetention = test.retention
 			request.CacheKey = test.key
-			params, err := codec.Request("generate", "model", request, RequestOptions{ExplicitPromptCache: true})
+			params, err := codec.Request("generate", "model", request, RequestOptions{ExplicitPromptCache: test.explicit})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,6 +78,38 @@ func TestExplicitPromptCacheWireSemantics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExplicitPromptCacheBreakpoints(t *testing.T) {
+	codec := Codec{Provider: "openai", MaxProviderDataBytes: 1 << 20}
+	request := llm.Request{
+		CacheRetention: llm.CacheRetentionShort,
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: []llm.Part{{Text: "stable instructions", CacheBreakpoint: true}}},
+			{Role: llm.RoleUser, Content: []llm.Part{{Text: "changing input"}}},
+		},
+	}
+	params, err := codec.Request("generate", "model", request, RequestOptions{ExplicitPromptCache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := jsonv2.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := string(body)
+	for _, want := range []string{`"role":"system"`, `"text":"stable instructions"`, `"prompt_cache_breakpoint":{"mode":"explicit"}`, `"prompt_cache_options":{"mode":"explicit"}`} {
+		if !strings.Contains(wire, want) {
+			t.Errorf("wire = %s, want %s", wire, want)
+		}
+	}
+	if strings.Contains(wire, `"instructions"`) {
+		t.Errorf("wire = %s, structured system prompt must not also use instructions", wire)
+	}
+
+	if _, err := codec.Request("generate", "model", request, RequestOptions{}); err == nil {
+		t.Fatal("breakpoint succeeded without explicit-cache compatibility")
 	}
 }
 

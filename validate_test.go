@@ -47,6 +47,20 @@ func TestRequestValidate(t *testing.T) {
 	}
 }
 
+func TestRequestValidateCacheBreakpoints(t *testing.T) {
+	request := Request{Messages: []Message{{Role: RoleSystem, Content: []Part{{Text: "stable", CacheBreakpoint: true}}}}}
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "require short or long") {
+		t.Fatalf("default retention error = %v", err)
+	}
+	request.CacheRetention = CacheRetentionShort
+	if err := request.Validate(); err != nil {
+		t.Fatalf("short retention error = %v", err)
+	}
+	if !request.HasCacheBreakpoints() {
+		t.Fatal("HasCacheBreakpoints() = false")
+	}
+}
+
 func TestRequestValidateAllowsUnansweredToolCall(t *testing.T) {
 	request := Request{Messages: []Message{
 		{Role: RoleUser, Content: []Part{{Text: "look it up"}}},

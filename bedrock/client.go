@@ -285,6 +285,9 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, st
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.HasCacheBreakpoints() {
+		return unsupported(op, "explicit cache breakpoint placement is not supported by the Bedrock adapter")
+	}
 	tools, vision := len(request.Tools) != 0, false
 	for _, message := range request.Messages {
 		tools = tools || len(message.ToolCalls) != 0 || len(message.ToolResults) != 0
