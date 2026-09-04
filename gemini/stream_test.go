@@ -108,6 +108,30 @@ func TestStreamTranslatesTextAndFinalMetadata(t *testing.T) {
 	}
 }
 
+func TestStreamUsageDecreaseReportsRawCounters(t *testing.T) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, strings.Join([]string{
+			`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"one"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":5,"totalTokenCount":7}}` + "\n\n",
+			`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"two"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":4,"totalTokenCount":6}}` + "\n\n",
+		}, ""))
+	}))
+	client := mustTestClient(t, server, llm.CapabilityStreaming)
+	stream, err := client.Stream(context.Background(), textRequest("hello"))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	_, terminal := receiveAll(stream)
+	if err := stream.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	for _, want := range []string{"output tokens decreased from 5 to 4", "previous raw usage: prompt=2", "candidates=5", "current raw usage: prompt=2", "candidates=4", "total=6"} {
+		if terminal == nil || !strings.Contains(terminal.Error(), want) {
+			t.Fatalf("Recv() terminal = %v, want %q", terminal, want)
+		}
+	}
+}
+
 func TestStreamTranslatesToolCallAndThoughtSignature(t *testing.T) {
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

@@ -74,6 +74,7 @@ type streamAccumulator struct {
 	toolCallCount  int
 	data           []messageDataPart
 	usage          *llm.Usage
+	rawUsage       *genai.GenerateContentResponseUsageMetadata
 	jsonContent    strings.Builder
 	textStarted    bool
 	pendingEvents  []llm.StreamEvent
@@ -107,7 +108,7 @@ func (accumulator *streamAccumulator) consume(response *genai.GenerateContentRes
 		if err != nil {
 			return llm.Chunk{}, err
 		}
-		if err := accumulator.observeUsage(usage); err != nil {
+		if err := accumulator.observeUsage(usage, response.UsageMetadata); err != nil {
 			return llm.Chunk{}, err
 		}
 	}
@@ -230,22 +231,38 @@ func (accumulator *streamAccumulator) observeMetadata(id, model string) error {
 	return nil
 }
 
-func (accumulator *streamAccumulator) observeUsage(usage *llm.Usage) error {
+func (accumulator *streamAccumulator) observeUsage(usage *llm.Usage, raw *genai.GenerateContentResponseUsageMetadata) error {
 	if usage == nil {
 		return nil
 	}
-	if accumulator.usage != nil &&
-		(usage.InputTokens < accumulator.usage.InputTokens ||
-			usage.OutputTokens < accumulator.usage.OutputTokens ||
-			usage.CacheReadTokens < accumulator.usage.CacheReadTokens ||
-			usage.CacheWriteTokens < accumulator.usage.CacheWriteTokens ||
-			usage.CacheWrite1hTokens < accumulator.usage.CacheWrite1hTokens ||
-			usage.ReasoningTokens < accumulator.usage.ReasoningTokens ||
-			usage.TotalTokens < accumulator.usage.TotalTokens) {
-		return malformedResponseFor("stream", "response token usage decreased")
+	if accumulator.usage != nil {
+		for _, counter := range []struct {
+			name              string
+			previous, current int
+		}{
+			{name: "input tokens", previous: accumulator.usage.InputTokens, current: usage.InputTokens},
+			{name: "output tokens", previous: accumulator.usage.OutputTokens, current: usage.OutputTokens},
+			{name: "cache-read tokens", previous: accumulator.usage.CacheReadTokens, current: usage.CacheReadTokens},
+			{name: "cache-write tokens", previous: accumulator.usage.CacheWriteTokens, current: usage.CacheWriteTokens},
+			{name: "one-hour cache-write tokens", previous: accumulator.usage.CacheWrite1hTokens, current: usage.CacheWrite1hTokens},
+			{name: "reasoning tokens", previous: accumulator.usage.ReasoningTokens, current: usage.ReasoningTokens},
+			{name: "total tokens", previous: accumulator.usage.TotalTokens, current: usage.TotalTokens},
+		} {
+			if counter.current < counter.previous {
+				previous := accumulator.rawUsage
+				return malformedResponseFor("stream", "response %s decreased from %d to %d (previous raw usage: prompt=%d tool=%d candidates=%d thoughts=%d cached=%d total=%d; current raw usage: prompt=%d tool=%d candidates=%d thoughts=%d cached=%d total=%d)",
+					counter.name, counter.previous, counter.current,
+					previous.PromptTokenCount, previous.ToolUsePromptTokenCount, previous.CandidatesTokenCount,
+					previous.ThoughtsTokenCount, previous.CachedContentTokenCount, previous.TotalTokenCount,
+					raw.PromptTokenCount, raw.ToolUsePromptTokenCount, raw.CandidatesTokenCount,
+					raw.ThoughtsTokenCount, raw.CachedContentTokenCount, raw.TotalTokenCount)
+			}
+		}
 	}
 	clone := *usage
 	accumulator.usage = &clone
+	rawClone := *raw
+	accumulator.rawUsage = &rawClone
 	return nil
 }
 
