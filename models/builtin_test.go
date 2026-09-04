@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 586 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 586", len(models))
+	if len(models) != 588 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 588", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -59,10 +59,16 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatalf("Mistral representative model = %#v", mistral)
 	}
 
-	vertex, ok := catalog.Model(ProviderGoogleVertex, "gemini-3.1-pro-preview")
+	gemini, ok := catalog.Model("google", "gemini-3.8-flash")
+	if !ok || gemini.API != llm.APIGeminiGenerateContent || !gemini.Reasoning ||
+		!hasCapability(gemini.Capabilities, llm.CapabilityAudio) || gemini.ContextWindow != 1_048_576 {
+		t.Fatalf("Gemini 3.8 Flash model = %#v", gemini)
+	}
+
+	vertex, ok := catalog.Model(ProviderGoogleVertex, "gemini-3.8-flash")
 	if !ok || vertex.API != llm.APIGoogleVertex || !vertex.Reasoning ||
-		!hasCapability(vertex.Capabilities, llm.CapabilityVision) || vertex.ContextWindow != 1_048_576 {
-		t.Fatalf("Vertex representative model = %#v", vertex)
+		!hasCapability(vertex.Capabilities, llm.CapabilityAudio) || vertex.ContextWindow != 1_048_576 {
+		t.Fatalf("Vertex Gemini 3.8 Flash model = %#v", vertex)
 	}
 
 	bedrock, ok := catalog.Model(ProviderAmazonBedrock, "anthropic.claude-opus-4-6-v1")

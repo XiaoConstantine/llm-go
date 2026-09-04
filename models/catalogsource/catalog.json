@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 12,
+  "revision": 13,
   "models": [
     {
       "provider": "anthropic",
@@ -1800,6 +1800,28 @@
         "streaming",
         "tools",
         "vision",
+        "json"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "cost": {
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
+        "cache_write": 0
+      }
+    },
+    {
+      "provider": "google",
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "api": "gemini-generate-content",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision",
+        "audio",
         "json"
       ],
       "context_window": 1048576,
@@ -13941,6 +13963,28 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
+        "cache_write": 0
+      }
+    },
+    {
+      "provider": "google-vertex",
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "api": "google-vertex",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision",
+        "audio",
+        "json"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "cost": {
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
         "cache_write": 0
       }
     },
