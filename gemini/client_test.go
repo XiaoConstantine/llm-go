@@ -249,7 +249,7 @@ func TestGeneratePreservesThoughtSignatureAcrossToolRoundTrip(t *testing.T) {
 				"candidates":[{"content":{"role":"model","parts":[{
 					"functionCall":{"id":"call-1","name":"weather","args":{"city":"Boston"}},
 					"thoughtSignature":"c2lnbmF0dXJl"
-				}]},"finishReason":"STOP"}]
+				},{"text":""}]},"finishReason":"STOP"}]
 			}`)
 			return
 		}
@@ -268,7 +268,7 @@ func TestGeneratePreservesThoughtSignatureAcrossToolRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Generate() error = %v", err)
 	}
-	if first.FinishReason != llm.FinishReasonToolCall || len(first.Message.ToolCalls) != 1 {
+	if first.FinishReason != llm.FinishReasonToolCall || len(first.Message.ToolCalls) != 1 || len(first.Message.Content) != 0 {
 		t.Fatalf("first Generate() = %#v", first)
 	}
 
@@ -292,6 +292,9 @@ func TestGeneratePreservesThoughtSignatureAcrossToolRoundTrip(t *testing.T) {
 
 	contents := sliceValue(t, followup, "contents")
 	modelParts := sliceValue(t, contents[1], "parts")
+	if len(modelParts) != 1 {
+		t.Fatalf("round-tripped model parts = %#v, want only the function call", modelParts)
+	}
 	if got := fieldValue(t, modelParts[0], "thoughtSignature"); got != "c2lnbmF0dXJl" {
 		t.Fatalf("round-tripped thought signature = %#v", got)
 	}

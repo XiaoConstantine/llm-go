@@ -618,6 +618,12 @@ func convertSDKParts(op string, parts []*genai.Part, declared, seenIDs map[strin
 			part.InlineData != nil && part.FunctionCall != nil {
 			return convertedParts{}, malformedResponseFor(op, "response part %d contains multiple content types", index)
 		}
+		// Gemini may append an empty text part to a function call. It carries no
+		// neutral content and replaying it produces an invalid Gemini request.
+		if !part.Thought && part.Text == "" && part.InlineData == nil && part.FunctionCall == nil &&
+			len(part.ThoughtSignature) == 0 {
+			continue
+		}
 
 		metadata := messageDataPart{ThoughtSignature: append([]byte(nil), part.ThoughtSignature...)}
 		if part.Thought {

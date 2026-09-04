@@ -143,6 +143,35 @@ func TestProviderDataReplayRequiresSameProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestSignedEmptyAssistantPartRoundTrip(t *testing.T) {
+	request := textRequest("hello")
+	response, err := responseFromSDK("model", request, &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{
+				ThoughtSignature: []byte("signature"),
+			}}},
+			FinishReason: genai.FinishReasonStop,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("responseFromSDK() error = %v", err)
+	}
+	if len(response.Message.Content) != 1 || response.Message.Content[0].Text != "" {
+		t.Fatalf("response content = %#v, want one empty signed part", response.Message.Content)
+	}
+	contents, _, err := requestToSDK("generate", llm.Request{Messages: []llm.Message{
+		request.Messages[0], response.Message,
+		{Role: llm.RoleUser, Content: []llm.Part{{Text: "continue"}}},
+	}})
+	if err != nil {
+		t.Fatalf("requestToSDK() error = %v", err)
+	}
+	parts := contents[1].Parts
+	if len(parts) != 1 || parts[0].Text != "" || string(parts[0].ThoughtSignature) != "signature" {
+		t.Fatalf("round-tripped signed empty part = %#v", parts)
+	}
+}
+
 func TestThoughtOnlyAssistantRoundTrip(t *testing.T) {
 	request := textRequest("hello")
 	response, err := responseFromSDK("model", request, &genai.GenerateContentResponse{

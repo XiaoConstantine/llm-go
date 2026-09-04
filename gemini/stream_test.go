@@ -111,7 +111,7 @@ func TestStreamTranslatesTextAndFinalMetadata(t *testing.T) {
 func TestStreamTranslatesToolCallAndThoughtSignature(t *testing.T) {
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(writer, `data: {"responseId":"tool-response","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call-1","name":"weather","args":{"city":"Boston"}},"thoughtSignature":"c2lnbmF0dXJl"},{"text":"after"},{"inlineData":{"mimeType":"image/png","data":"AQ=="}}]},"finishReason":"STOP"}]}`+"\n\n")
+		_, _ = io.WriteString(writer, `data: {"responseId":"tool-response","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call-1","name":"weather","args":{"city":"Boston"}},"thoughtSignature":"c2lnbmF0dXJl"},{"text":""},{"text":"after"},{"inlineData":{"mimeType":"image/png","data":"AQ=="}}]},"finishReason":"STOP"}]}`+"\n\n")
 	}))
 	client := mustTestClient(t, server, llm.CapabilityStreaming, llm.CapabilityTools)
 	stream, err := client.Stream(context.Background(), llm.Request{
