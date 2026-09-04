@@ -62,7 +62,7 @@ func TestModelCompatibilityValidation(t *testing.T) {
 		{name: "Chat session format", compatibility: &ModelCompatibility{OpenAIChat: &OpenAIChatCompatibility{SessionAffinityFormat: "future"}}, api: APIOpenAIChatCompletions, want: "session-affinity format"},
 		{name: "Responses session format", compatibility: &ModelCompatibility{OpenAIResponses: &OpenAIResponsesCompatibility{SessionAffinityFormat: "future"}}, api: APIOpenAIResponses, want: "session-affinity format"},
 		{name: "toggle", compatibility: &ModelCompatibility{OpenAIResponses: &OpenAIResponsesCompatibility{StrictTools: "sometimes"}}, api: APIOpenAIResponses, want: "compatibility toggle"},
-		{name: "Gemini API mismatch", compatibility: &ModelCompatibility{Gemini: &GeminiCompatibility{}}, api: APIAnthropicMessages, want: "GenerateContent API"},
+		{name: "Gemini API mismatch", compatibility: &ModelCompatibility{Gemini: &GeminiCompatibility{}}, api: APIAnthropicMessages, want: "generate-content API"},
 		{name: "Gemini toggle", compatibility: &ModelCompatibility{Gemini: &GeminiCompatibility{ThinkingLevelsOnly: "sometimes"}}, api: APIGoogleVertex, want: "compatibility toggle"},
 	}
 	for _, test := range tests {

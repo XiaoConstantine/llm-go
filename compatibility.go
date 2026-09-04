@@ -189,10 +189,10 @@ func (c *ModelCompatibility) Validate(api API) error {
 	}
 	if c.Gemini != nil {
 		if api != APIGeminiGenerateContent && api != APIGoogleVertex {
-			return fmt.Errorf("Gemini compatibility requires a GenerateContent API")
+			return fmt.Errorf("gemini compatibility requires a generate-content API")
 		}
 		if err := c.Gemini.validate(); err != nil {
-			return fmt.Errorf("Gemini compatibility: %w", err)
+			return fmt.Errorf("gemini compatibility: %w", err)
 		}
 	}
 	if c.Anthropic != nil {
