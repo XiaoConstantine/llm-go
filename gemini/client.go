@@ -39,26 +39,28 @@ const (
 // HTTPClient uses [http.DefaultClient], which has no overall request timeout;
 // callers should use context deadlines or configure a client timeout.
 type Config struct {
-	Provider     string
-	Model        string
-	Capabilities []llm.Capability
-	Reasoning    bool
-	APIKey       string
-	BaseURL      string
-	APIVersion   string
-	HTTPClient   *http.Client
-	Headers      http.Header
+	Provider           string
+	Model              string
+	Capabilities       []llm.Capability
+	Reasoning          bool
+	ModelCompatibility *llm.GeminiCompatibility
+	APIKey             string
+	BaseURL            string
+	APIVersion         string
+	HTTPClient         *http.Client
+	Headers            http.Header
 }
 
 // Client is an immutable Gemini Developer API client. It is safe for
 // concurrent use when its configured HTTP client is safe for concurrent use.
 type Client struct {
-	provider     string
-	model        string
-	api          llm.API
-	capabilities []llm.Capability
-	reasoning    bool
-	sdkClient    *genai.Client
+	provider      string
+	model         string
+	api           llm.API
+	capabilities  []llm.Capability
+	reasoning     bool
+	compatibility *llm.GeminiCompatibility
+	sdkClient     *genai.Client
 }
 
 // New constructs a Client from config.
@@ -117,6 +119,14 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	capabilities, err := configureCapabilities(config.Capabilities)
 	if err != nil {
 		return nil, err
+	}
+	var compatibility *llm.GeminiCompatibility
+	if config.ModelCompatibility != nil {
+		value := *config.ModelCompatibility
+		if err := (&llm.ModelCompatibility{Gemini: &value}).Validate(options.api); err != nil {
+			return nil, configError("model compatibility: %w", err)
+		}
+		compatibility = &value
 	}
 
 	baseURL := strings.TrimSpace(config.BaseURL)
@@ -182,12 +192,13 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	}
 
 	return &Client{
-		provider:     provider,
-		model:        model,
-		api:          options.api,
-		capabilities: capabilities,
-		reasoning:    config.Reasoning,
-		sdkClient:    sdkClient,
+		provider:      provider,
+		model:         model,
+		api:           options.api,
+		capabilities:  capabilities,
+		reasoning:     config.Reasoning,
+		compatibility: compatibility,
+		sdkClient:     sdkClient,
 	}, nil
 }
 
@@ -210,13 +221,18 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 // Info describes the configured model and its explicitly declared optional
 // capabilities.
 func (c *Client) Info() llm.ModelInfo {
-	return llm.ModelInfo{
+	info := llm.ModelInfo{
 		Provider:     c.provider,
 		Model:        c.model,
 		API:          c.api,
 		Capabilities: slices.Clone(c.capabilities),
 		Reasoning:    c.reasoning,
 	}
+	if c.compatibility != nil {
+		value := *c.compatibility
+		info.Compatibility = &llm.ModelCompatibility{Gemini: &value}
+	}
+	return info
 }
 
 // Generate performs one non-streaming GenerateContent request.
@@ -344,6 +360,12 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if (request.ReasoningBudgetTokens != 0 || request.ReasoningEffort != llm.ReasoningEffortDefault &&
 		request.ReasoningEffort != llm.ReasoningEffortNone) && !c.reasoning {
 		return unsupported(op, "configured model does not support reasoning controls")
+	}
+	if c.compatibility != nil && c.compatibility.ThinkingLevelsOnly == llm.CompatibilityEnabled &&
+		(request.ReasoningBudgetTokens != 0 || request.ReasoningEffort != llm.ReasoningEffortDefault &&
+			request.ReasoningEffort != llm.ReasoningEffortLow && request.ReasoningEffort != llm.ReasoningEffortMedium &&
+			request.ReasoningEffort != llm.ReasoningEffortHigh) {
+		return unsupported(op, "configured model supports only low, medium, or high reasoning effort")
 	}
 	if hasImage && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(op, "configured model does not declare vision capability")

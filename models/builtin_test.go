@@ -61,13 +61,17 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 
 	gemini, ok := catalog.Model("google", "gemini-3.8-flash")
 	if !ok || gemini.API != llm.APIGeminiGenerateContent || !gemini.Reasoning ||
-		!hasCapability(gemini.Capabilities, llm.CapabilityAudio) || gemini.ContextWindow != 1_048_576 {
+		!hasCapability(gemini.Capabilities, llm.CapabilityAudio) || gemini.ContextWindow != 1_048_576 ||
+		gemini.Compatibility == nil || gemini.Compatibility.Gemini == nil ||
+		gemini.Compatibility.Gemini.ThinkingLevelsOnly != llm.CompatibilityEnabled {
 		t.Fatalf("Gemini 3.8 Flash model = %#v", gemini)
 	}
 
 	vertex, ok := catalog.Model(ProviderGoogleVertex, "gemini-3.8-flash")
 	if !ok || vertex.API != llm.APIGoogleVertex || !vertex.Reasoning ||
-		!hasCapability(vertex.Capabilities, llm.CapabilityAudio) || vertex.ContextWindow != 1_048_576 {
+		!hasCapability(vertex.Capabilities, llm.CapabilityAudio) || vertex.ContextWindow != 1_048_576 ||
+		vertex.Compatibility == nil || vertex.Compatibility.Gemini == nil ||
+		vertex.Compatibility.Gemini.ThinkingLevelsOnly != llm.CompatibilityEnabled {
 		t.Fatalf("Vertex Gemini 3.8 Flash model = %#v", vertex)
 	}
 

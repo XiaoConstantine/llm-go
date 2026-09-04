@@ -73,6 +73,7 @@ type sourceTier struct {
 type sourceCompatibility struct {
 	OpenAIChat      *sourceOpenAIChat      `json:"openai_chat,omitempty"`
 	OpenAIResponses *sourceOpenAIResponses `json:"openai_responses,omitempty"`
+	Gemini          *sourceGemini          `json:"gemini,omitempty"`
 	Anthropic       *sourceAnthropic       `json:"anthropic,omitempty"`
 }
 
@@ -103,6 +104,10 @@ type sourceOpenAIResponses struct {
 	LongCacheRetention      *bool                     `json:"long_cache_retention,omitempty"`
 	ExplicitPromptCacheMode *bool                     `json:"explicit_prompt_cache_mode,omitempty"`
 	SessionAffinityFormat   llm.SessionAffinityFormat `json:"session_affinity_format,omitempty"`
+}
+
+type sourceGemini struct {
+	ThinkingLevelsOnly *bool `json:"thinking_levels_only,omitempty"`
 }
 
 type sourceAnthropic struct {
@@ -318,6 +323,9 @@ func (source *sourceCompatibility) model() *llm.ModelCompatibility {
 			LongCacheRetention: toggle(value.LongCacheRetention), ExplicitPromptCacheMode: toggle(value.ExplicitPromptCacheMode),
 			SessionAffinityFormat: value.SessionAffinityFormat}
 	}
+	if value := source.Gemini; value != nil {
+		compatibility.Gemini = &llm.GeminiCompatibility{ThinkingLevelsOnly: toggle(value.ThinkingLevelsOnly)}
+	}
 	if value := source.Anthropic; value != nil {
 		compatibility.Anthropic = &llm.AnthropicCompatibility{EagerToolInputStreaming: toggle(value.EagerToolInputStreaming),
 			LongCacheRetention: toggle(value.LongCacheRetention), SessionAffinity: toggle(value.SessionAffinity),
@@ -406,6 +414,9 @@ func renderCompatibility(output *bytes.Buffer, compatibility *llm.ModelCompatibi
 		fmt.Fprintf(output, "OpenAIResponses:&llm.OpenAIResponsesCompatibility{DeveloperRole:llm.CompatibilityToggle(%q),EncryptedReasoning:llm.CompatibilityToggle(%q),StrictTools:llm.CompatibilityToggle(%q),AdditionalTools:llm.CompatibilityToggle(%q),ToolSearch:llm.CompatibilityToggle(%q),LongCacheRetention:llm.CompatibilityToggle(%q),ExplicitPromptCacheMode:llm.CompatibilityToggle(%q),SessionAffinityFormat:llm.SessionAffinityFormat(%q)},",
 			value.DeveloperRole, value.EncryptedReasoning, value.StrictTools, value.AdditionalTools, value.ToolSearch,
 			value.LongCacheRetention, value.ExplicitPromptCacheMode, value.SessionAffinityFormat)
+	}
+	if value := compatibility.Gemini; value != nil {
+		fmt.Fprintf(output, "Gemini:&llm.GeminiCompatibility{ThinkingLevelsOnly:llm.CompatibilityToggle(%q)},", value.ThinkingLevelsOnly)
 	}
 	if value := compatibility.Anthropic; value != nil {
 		fmt.Fprintf(output, "Anthropic:&llm.AnthropicCompatibility{EagerToolInputStreaming:llm.CompatibilityToggle(%q),LongCacheRetention:llm.CompatibilityToggle(%q),SessionAffinity:llm.CompatibilityToggle(%q),CacheControlOnTools:llm.CompatibilityToggle(%q),Temperature:llm.CompatibilityToggle(%q),AdaptiveThinking:llm.CompatibilityToggle(%q),EmptyThinkingSignature:llm.CompatibilityToggle(%q),StrictTools:llm.CompatibilityToggle(%q),ToolReferences:llm.CompatibilityToggle(%q)},",

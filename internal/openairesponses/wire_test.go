@@ -2,6 +2,7 @@ package openairesponses
 
 import (
 	jsonv2 "encoding/json/v2"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,8 +51,9 @@ func TestExplicitPromptCacheWireSemantics(t *testing.T) {
 	}{
 		{name: "default leaves policy unchanged", explicit: true, want: []string{`"content":"hello"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint", "prompt_cache_key"}},
 		{name: "none disables implicit caching", retention: llm.CacheRetentionNone, key: "ignored", explicit: true, want: []string{`"prompt_cache_options":{"mode":"explicit"}`}, doNotWant: []string{"prompt_cache_breakpoint", "prompt_cache_key"}},
-		{name: "short uses key and retention only", retention: llm.CacheRetentionShort, key: "stable", explicit: true, want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"in_memory"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
+		{name: "explicit short uses implicit default TTL", retention: llm.CacheRetentionShort, key: "stable", explicit: true, want: []string{`"prompt_cache_key":"stable"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_retention", "prompt_cache_breakpoint"}},
 		{name: "explicit long uses minimum TTL", retention: llm.CacheRetentionLong, key: "stable", explicit: true, want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_options":{"ttl":"30m"}`}, doNotWant: []string{`"prompt_cache_retention"`, "prompt_cache_breakpoint"}},
+		{name: "legacy short uses in-memory retention", retention: llm.CacheRetentionShort, key: "stable", want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"in_memory"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
 		{name: "legacy long uses 24 hour retention", retention: llm.CacheRetentionLong, key: "stable", want: []string{`"prompt_cache_key":"stable"`, `"prompt_cache_retention":"24h"`}, doNotWant: []string{"prompt_cache_options", "prompt_cache_breakpoint"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -104,12 +106,31 @@ func TestExplicitPromptCacheBreakpoints(t *testing.T) {
 			t.Errorf("wire = %s, want %s", wire, want)
 		}
 	}
-	if strings.Contains(wire, `"instructions"`) {
-		t.Errorf("wire = %s, structured system prompt must not also use instructions", wire)
+	for _, unwanted := range []string{`"instructions"`, `"prompt_cache_retention"`} {
+		if strings.Contains(wire, unwanted) {
+			t.Errorf("wire = %s, unexpectedly contains %s", wire, unwanted)
+		}
 	}
 
 	if _, err := codec.Request("generate", "model", request, RequestOptions{}); err == nil {
 		t.Fatal("breakpoint succeeded without explicit-cache compatibility")
+	}
+}
+
+func TestExplicitPromptCacheAllowsHistoricalBreakpoints(t *testing.T) {
+	messages := make([]llm.Message, 5)
+	for index := range messages {
+		messages[index] = llm.Message{Role: llm.RoleUser, Content: []llm.Part{{Text: fmt.Sprintf("turn %d", index), CacheBreakpoint: true}}}
+	}
+	params, err := (Codec{Provider: "openai"}).Request("generate", "model", llm.Request{
+		Messages: messages, CacheRetention: llm.CacheRetentionShort,
+	}, RequestOptions{ExplicitPromptCache: true})
+	if err != nil {
+		t.Fatalf("historical breakpoints: %v", err)
+	}
+	wire := marshalWire(t, params)
+	if count := strings.Count(wire, `"prompt_cache_breakpoint"`); count != 5 {
+		t.Fatalf("breakpoint count = %d, want 5: %s", count, wire)
 	}
 }
 

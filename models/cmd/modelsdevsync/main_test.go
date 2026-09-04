@@ -456,6 +456,23 @@ func TestSyncCatalogLeavesManualCodexRoutesUnchanged(t *testing.T) {
 	}
 }
 
+func TestLoadCanonicalCatalog(t *testing.T) {
+	catalog, err := loadCatalog(filepath.Join("..", "..", "catalogsource", "catalog.json"))
+	if err != nil {
+		t.Fatalf("load canonical catalog: %v", err)
+	}
+	for _, model := range catalog.Models {
+		if model.Provider == "google" && model.ID == "gemini-3.8-flash" {
+			if model.Compatibility == nil || model.Compatibility.Gemini == nil ||
+				model.Compatibility.Gemini.ThinkingLevelsOnly == nil || !*model.Compatibility.Gemini.ThinkingLevelsOnly {
+				t.Fatalf("Gemini 3.8 compatibility = %#v", model.Compatibility)
+			}
+			return
+		}
+	}
+	t.Fatal("google/gemini-3.8-flash is missing")
+}
+
 func TestWriteCatalogProducesValidFile(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "catalog.json")
 	catalog := &sourceCatalog{

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 13,
+  "revision": 14,
   "models": [
     {
       "provider": "anthropic",
@@ -1831,6 +1831,11 @@
         "output": 3.75,
         "cache_read": 0.075,
         "cache_write": 0
+      },
+      "compatibility": {
+        "gemini": {
+          "thinking_levels_only": true
+        }
       }
     },
     {
@@ -13986,6 +13991,11 @@
         "output": 3.75,
         "cache_read": 0.075,
         "cache_write": 0
+      },
+      "compatibility": {
+        "gemini": {
+          "thinking_levels_only": true
+        }
       }
     },
     {

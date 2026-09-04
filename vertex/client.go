@@ -25,17 +25,18 @@ type Client = gemini.Client
 // defaults to v1. Capabilities and Headers have the same ownership and feature
 // semantics as the Gemini GenerateContent adapter.
 type Config struct {
-	Provider     string
-	Model        string
-	Capabilities []llm.Capability
-	Reasoning    bool
-	APIKey       string
-	Project      string
-	Location     string
-	BaseURL      string
-	APIVersion   string
-	HTTPClient   *http.Client
-	Headers      http.Header
+	Provider           string
+	Model              string
+	Capabilities       []llm.Capability
+	Reasoning          bool
+	ModelCompatibility *llm.GeminiCompatibility
+	APIKey             string
+	Project            string
+	Location           string
+	BaseURL            string
+	APIVersion         string
+	HTTPClient         *http.Client
+	Headers            http.Header
 }
 
 // New constructs a Vertex AI client.
@@ -51,8 +52,9 @@ func New(config Config) (*Client, error) {
 		baseURL, apiVersion = normalizedBase, versionPath
 	}
 	return gemini.NewVertex(gemini.Config{Provider: config.Provider, Model: config.Model,
-		Capabilities: config.Capabilities, Reasoning: config.Reasoning, APIKey: config.APIKey, BaseURL: baseURL,
-		APIVersion: apiVersion, HTTPClient: config.HTTPClient, Headers: config.Headers}, config.Project, config.Location)
+		Capabilities: config.Capabilities, Reasoning: config.Reasoning, ModelCompatibility: config.ModelCompatibility,
+		APIKey: config.APIKey, BaseURL: baseURL, APIVersion: apiVersion, HTTPClient: config.HTTPClient,
+		Headers: config.Headers}, config.Project, config.Location)
 }
 
 func normalizeCustomBaseURL(value, defaultVersion string) (string, string, bool) {

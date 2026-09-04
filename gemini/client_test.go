@@ -94,6 +94,47 @@ func TestRequestTranslatesReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestThinkingLevelsOnlyRejectsUnsupportedControlsBeforeIO(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	compatibility := &llm.GeminiCompatibility{ThinkingLevelsOnly: llm.CompatibilityEnabled}
+	clients := map[string]*Client{}
+	direct, err := New(Config{Model: "gemini-3.8-flash", APIKey: "key", BaseURL: server.URL,
+		Capabilities: []llm.Capability{llm.CapabilityStreaming}, Reasoning: true, ModelCompatibility: compatibility})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	clients["Gemini"] = direct
+	vertex, err := NewVertex(Config{Model: "gemini-3.8-flash", APIKey: "key", BaseURL: server.URL,
+		Capabilities: []llm.Capability{llm.CapabilityStreaming}, Reasoning: true, ModelCompatibility: compatibility}, "", "")
+	if err != nil {
+		t.Fatalf("NewVertex() error = %v", err)
+	}
+	clients["Vertex"] = vertex
+
+	requestsToReject := []llm.Request{
+		{Messages: textRequest("hello").Messages, ReasoningEffort: llm.ReasoningEffortMinimal},
+		{Messages: textRequest("hello").Messages, ReasoningEffort: llm.ReasoningEffortNone},
+		{Messages: textRequest("hello").Messages, ReasoningEffort: llm.ReasoningEffortXHigh},
+		{Messages: textRequest("hello").Messages, ReasoningBudgetTokens: 128},
+	}
+	for route, client := range clients {
+		for _, request := range requestsToReject {
+			if _, err := client.Generate(context.Background(), request); err == nil || !strings.Contains(err.Error(), "only low, medium, or high") {
+				t.Errorf("%s Generate(%+v) error = %v", route, request, err)
+			}
+			if _, err := client.Stream(context.Background(), request); err == nil || !strings.Contains(err.Error(), "only low, medium, or high") {
+				t.Errorf("%s Stream(%+v) error = %v", route, request, err)
+			}
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("provider requests = %d, want 0", got)
+	}
+}
+
 func TestGenerateTranslatesMultimodalToolsAndResponse(t *testing.T) {
 	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
 	t.Setenv("GOOGLE_GEMINI_BASE_URL", "http://ambient.invalid")

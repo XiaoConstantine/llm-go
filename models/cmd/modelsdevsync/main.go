@@ -35,16 +35,19 @@ var defaultProviderMapping = map[string]string{
 }
 
 var providerAPIs = map[string]llm.API{
-	"anthropic":    llm.APIAnthropicMessages,
-	"cerebras":     llm.APIOpenAIChatCompletions,
-	"deepseek":     llm.APIOpenAIChatCompletions,
-	"fireworks":    llm.APIOpenAIChatCompletions,
-	"google":       llm.APIGeminiGenerateContent,
-	"groq":         llm.APIOpenAIChatCompletions,
-	"openai":       llm.APIOpenAIResponses,
-	"openai-codex": llm.APIOpenAICodexResponses,
-	"openrouter":   llm.APIOpenAIChatCompletions,
-	"xai":          llm.APIOpenAIResponses,
+	"amazon-bedrock": llm.APIBedrockConverseStream,
+	"anthropic":      llm.APIAnthropicMessages,
+	"cerebras":       llm.APIOpenAIChatCompletions,
+	"deepseek":       llm.APIOpenAIChatCompletions,
+	"fireworks":      llm.APIOpenAIChatCompletions,
+	"google":         llm.APIGeminiGenerateContent,
+	"google-vertex":  llm.APIGoogleVertex,
+	"groq":           llm.APIOpenAIChatCompletions,
+	"mistral":        llm.APIMistralConversations,
+	"openai":         llm.APIOpenAIResponses,
+	"openai-codex":   llm.APIOpenAICodexResponses,
+	"openrouter":     llm.APIOpenAIChatCompletions,
+	"xai":            llm.APIOpenAIResponses,
 }
 
 const maxResponseSize = 32 << 20
@@ -87,6 +90,7 @@ type sourceTier struct {
 type sourceCompatibility struct {
 	OpenAIChat      *sourceOpenAIChat      `json:"openai_chat,omitempty"`
 	OpenAIResponses *sourceOpenAIResponses `json:"openai_responses,omitempty"`
+	Gemini          *sourceGemini          `json:"gemini,omitempty"`
 	Anthropic       *sourceAnthropic       `json:"anthropic,omitempty"`
 }
 
@@ -117,6 +121,10 @@ type sourceOpenAIResponses struct {
 	LongCacheRetention      *bool                     `json:"long_cache_retention,omitempty"`
 	ExplicitPromptCacheMode *bool                     `json:"explicit_prompt_cache_mode,omitempty"`
 	SessionAffinityFormat   llm.SessionAffinityFormat `json:"session_affinity_format,omitempty"`
+}
+
+type sourceGemini struct {
+	ThinkingLevelsOnly *bool `json:"thinking_levels_only,omitempty"`
 }
 
 type sourceAnthropic struct {
@@ -370,9 +378,11 @@ func supportsCapability(api llm.API, capability llm.Capability) bool {
 			capability == llm.CapabilityVision || capability == llm.CapabilityAudio
 	case llm.APIAnthropicMessages:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	case llm.APIGeminiGenerateContent:
+	case llm.APIGeminiGenerateContent, llm.APIGoogleVertex:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
 			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
+	case llm.APIMistralConversations, llm.APIBedrockConverseStream:
+		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
 	default:
 		return false
 	}
@@ -413,6 +423,9 @@ func convertSourceCompatibility(source *sourceCompatibility) *llm.ModelCompatibi
 			ExplicitPromptCacheMode: toggle(value.ExplicitPromptCacheMode),
 			SessionAffinityFormat:   value.SessionAffinityFormat,
 		}
+	}
+	if value := source.Gemini; value != nil {
+		compat.Gemini = &llm.GeminiCompatibility{ThinkingLevelsOnly: toggle(value.ThinkingLevelsOnly)}
 	}
 	if value := source.Anthropic; value != nil {
 		compat.Anthropic = &llm.AnthropicCompatibility{

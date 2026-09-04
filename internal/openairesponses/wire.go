@@ -62,9 +62,6 @@ type providerDataEnvelope struct {
 // Request converts a validated neutral request into Responses API parameters.
 func (c Codec) Request(op, model string, request llm.Request, options RequestOptions) (openairesponses.ResponseNewParams, error) {
 	breakpoints := cacheBreakpointCount(request)
-	if breakpoints > 4 {
-		return openairesponses.ResponseNewParams{}, c.unsupported(op, "explicit prompt-cache breakpoints must not exceed 4")
-	}
 	if breakpoints != 0 && !options.ExplicitPromptCache {
 		return openairesponses.ResponseNewParams{}, c.unsupported(op, "explicit prompt-cache breakpoints are not supported by this model")
 	}
@@ -226,7 +223,9 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 			params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetention24h
 		}
 	case llm.CacheRetentionShort:
-		params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetentionInMemory
+		if !options.ExplicitPromptCache {
+			params.PromptCacheRetention = openairesponses.ResponseNewParamsPromptCacheRetentionInMemory
+		}
 	}
 	if request.ReasoningEffort != llm.ReasoningEffortDefault {
 		effort := request.ReasoningEffort

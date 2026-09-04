@@ -189,7 +189,8 @@ func anthropicFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Gen
 
 func geminiFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
 	return gemini.New(gemini.Config{Provider: config.Provider, Model: config.Model.Model, Capabilities: config.Model.Capabilities,
-		Reasoning: config.Model.Reasoning, APIKey: config.APIKey, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
+		Reasoning: config.Model.Reasoning, ModelCompatibility: geminiCompatibility(config.Model.Compatibility),
+		APIKey: config.APIKey, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
 }
 
 func mistralFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
@@ -200,8 +201,9 @@ func mistralFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Gener
 
 func vertexFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
 	return vertex.New(vertex.Config{Provider: config.Provider, Model: config.Model.Model,
-		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey, Project: config.Project, Location: config.Location,
-		BaseURL: config.BaseURL, HTTPClient: config.HTTPClient, Headers: config.Headers})
+		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, ModelCompatibility: geminiCompatibility(config.Model.Compatibility),
+		APIKey: config.APIKey, Project: config.Project, Location: config.Location, BaseURL: config.BaseURL,
+		HTTPClient: config.HTTPClient, Headers: config.Headers})
 }
 
 func bedrockFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
@@ -209,6 +211,14 @@ func bedrockFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Gener
 		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, APIKey: config.APIKey,
 		Region: config.Region, Profile: config.Profile, BaseURL: config.BaseURL, HTTPClient: config.HTTPClient,
 		Headers: config.Headers, SkipAuth: config.SkipAuth})
+}
+
+func geminiCompatibility(compatibility *llm.ModelCompatibility) *llm.GeminiCompatibility {
+	if compatibility == nil || compatibility.Gemini == nil {
+		return nil
+	}
+	value := *compatibility.Gemini
+	return &value
 }
 
 func nilFunction(value any) bool {

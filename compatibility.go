@@ -113,6 +113,15 @@ type OpenAIResponsesCompatibility struct {
 	SessionAffinityFormat SessionAffinityFormat
 }
 
+// GeminiCompatibility describes model-specific differences among Gemini
+// GenerateContent-compatible APIs.
+type GeminiCompatibility struct {
+	// ThinkingLevelsOnly restricts explicit reasoning controls to low, medium,
+	// and high effort. Token budgets, disabled reasoning, and other effort
+	// levels are rejected before provider I/O.
+	ThinkingLevelsOnly CompatibilityToggle
+}
+
 // AnthropicCompatibility describes model-specific differences among Anthropic
 // Messages-compatible APIs.
 type AnthropicCompatibility struct {
@@ -134,6 +143,7 @@ type AnthropicCompatibility struct {
 type ModelCompatibility struct {
 	OpenAIChat      *OpenAIChatCompatibility
 	OpenAIResponses *OpenAIResponsesCompatibility
+	Gemini          *GeminiCompatibility
 	Anthropic       *AnthropicCompatibility
 }
 
@@ -147,6 +157,9 @@ func (c *ModelCompatibility) Validate(api API) error {
 		blocks++
 	}
 	if c.OpenAIResponses != nil {
+		blocks++
+	}
+	if c.Gemini != nil {
 		blocks++
 	}
 	if c.Anthropic != nil {
@@ -172,6 +185,14 @@ func (c *ModelCompatibility) Validate(api API) error {
 		}
 		if err := c.OpenAIResponses.validate(); err != nil {
 			return fmt.Errorf("OpenAI Responses compatibility: %w", err)
+		}
+	}
+	if c.Gemini != nil {
+		if api != APIGeminiGenerateContent && api != APIGoogleVertex {
+			return fmt.Errorf("Gemini compatibility requires a GenerateContent API")
+		}
+		if err := c.Gemini.validate(); err != nil {
+			return fmt.Errorf("Gemini compatibility: %w", err)
 		}
 	}
 	if c.Anthropic != nil {
@@ -219,6 +240,10 @@ func validateSessionAffinityFormat(value SessionAffinityFormat) error {
 		string(SessionAffinityOpenAINoSession), string(SessionAffinityOpenRouter))
 }
 
+func (c GeminiCompatibility) validate() error {
+	return validateToggles(c.ThinkingLevelsOnly)
+}
+
 func (c AnthropicCompatibility) validate() error {
 	return validateToggles(c.EagerToolInputStreaming, c.LongCacheRetention, c.SessionAffinity,
 		c.CacheControlOnTools, c.Temperature, c.AdaptiveThinking, c.EmptyThinkingSignature, c.StrictTools,
@@ -253,6 +278,10 @@ func cloneModelCompatibility(compatibility *ModelCompatibility) *ModelCompatibil
 	if compatibility.OpenAIResponses != nil {
 		value := *compatibility.OpenAIResponses
 		clone.OpenAIResponses = &value
+	}
+	if compatibility.Gemini != nil {
+		value := *compatibility.Gemini
+		clone.Gemini = &value
 	}
 	if compatibility.Anthropic != nil {
 		value := *compatibility.Anthropic

@@ -171,6 +171,10 @@ func cloneCompatibility(compatibility *llm.ModelCompatibility) *llm.ModelCompati
 		value := *compatibility.OpenAIResponses
 		clone.OpenAIResponses = &value
 	}
+	if compatibility.Gemini != nil {
+		value := *compatibility.Gemini
+		clone.Gemini = &value
+	}
 	if compatibility.Anthropic != nil {
 		value := *compatibility.Anthropic
 		clone.Anthropic = &value
