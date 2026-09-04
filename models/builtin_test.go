@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 583 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 583", len(models))
+	if len(models) != 586 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 586", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -89,6 +89,7 @@ func TestBuiltinCatalogCodexRouteLimits(t *testing.T) {
 		{id: "gpt-5.6-luna", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-5.6-sol", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-5.6-terra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-6-astra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 	}
 	for _, test := range tests {
 		model, ok := catalog.Model("openai-codex", test.id)
@@ -115,6 +116,28 @@ func TestBuiltinCatalogCodexRouteLimits(t *testing.T) {
 	direct, ok := catalog.Model("openai", "gpt-5.5")
 	if !ok || direct.ContextWindow != 1_050_000 {
 		t.Fatalf("direct OpenAI gpt-5.5 metadata = %#v", direct)
+	}
+
+	direct, ok = catalog.Model("openai", "gpt-6-astra")
+	if !ok || direct.ContextWindow != 1_050_000 || direct.MaxOutputTokens != 128_000 || direct.Cost == nil ||
+		len(direct.Cost.Tiers) != 1 || direct.Cost.Tiers[0].InputTokensAbove != 272_000 {
+		t.Fatalf("direct OpenAI gpt-6-astra metadata = %#v", direct)
+	}
+
+	for _, test := range []struct {
+		id        string
+		cacheRead float64
+	}{
+		{id: "claude-fable-5", cacheRead: 1},
+		{id: "claude-fable-5-1", cacheRead: 0.25},
+	} {
+		fable, ok := catalog.Model("anthropic", test.id)
+		if !ok || fable.ContextWindow != 1_000_000 || fable.MaxOutputTokens != 128_000 || fable.Cost == nil ||
+			fable.Cost.CacheRead != test.cacheRead || fable.Compatibility == nil || fable.Compatibility.Anthropic == nil ||
+			fable.Compatibility.Anthropic.AdaptiveThinking != llm.CompatibilityEnabled ||
+			fable.Compatibility.Anthropic.StrictTools != llm.CompatibilityEnabled {
+			t.Errorf("anthropic/%s metadata = %#v", test.id, fable)
+		}
 	}
 }
 

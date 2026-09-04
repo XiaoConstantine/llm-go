@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 11,
+  "revision": 12,
   "models": [
     {
       "provider": "anthropic",
@@ -26,6 +26,32 @@
           "adaptive_thinking": true,
           "strict_tools": true,
           "tool_references": true
+        }
+      }
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "api": "anthropic-messages",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 0.25,
+        "cache_write": 12.5
+      },
+      "compatibility": {
+        "anthropic": {
+          "adaptive_thinking": true,
+          "strict_tools": true
         }
       }
     },
@@ -1213,6 +1239,43 @@
     },
     {
       "provider": "openai",
+      "id": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 20,
+            "output": 75,
+            "cache_read": 2,
+            "cache_write": 25
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true,
+          "explicit_prompt_cache_mode": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
       "id": "gpt-realtime-2.1",
       "name": "GPT-Realtime-2.1",
       "api": "openai-responses",
@@ -2027,6 +2090,33 @@
         "output": 12,
         "cache_read": 0.2,
         "cache_write": 2.5
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "api": "openai-codex-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 272000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 1,
+        "cache_write": 12.5
       },
       "compatibility": {
         "openai_responses": {
