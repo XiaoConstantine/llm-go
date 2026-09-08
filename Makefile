@@ -1,8 +1,11 @@
-.PHONY: fmt fmt-check lint check
+.PHONY: fmt fmt-check lint staticcheck check
 
 # Keep this in sync with .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION ?= v2.13.1
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
+
+STATICCHECK_VERSION ?= latest
+STATICCHECK ?= $(shell go env GOPATH)/bin/staticcheck
 
 fmt:
 	gofmt -w .
@@ -29,4 +32,10 @@ lint: $(GOLANGCI_LINT)
 	fi
 	$(GOLANGCI_LINT) run --timeout=5m ./...
 
-check: fmt-check lint
+$(STATICCHECK):
+	go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+
+staticcheck: $(STATICCHECK)
+	$(STATICCHECK) ./...
+
+check: fmt-check lint staticcheck

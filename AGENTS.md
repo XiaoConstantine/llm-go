@@ -172,12 +172,13 @@ go test -v -count=1 ./...
 go test -v -race -count=1 ./...
 make fmt-check
 go vet ./...
+make staticcheck
 make lint
 ```
 
 CI runs the build, ordinary tests, and race tests on both Ubuntu and macOS.
 `make lint` uses the pinned golangci-lint version from `Makefile`; CI invokes the
-same version through its GitHub Action. `make check` runs `fmt-check` and `lint`,
+same version through its GitHub Action. `make check` runs `fmt-check`, `lint`, and `staticcheck`,
 but does not run tests or `go vet`.
 
 ## Documentation and command snippets
