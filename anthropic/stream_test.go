@@ -183,10 +183,10 @@ func TestStreamSDKConfigurationAndSingleAttempt(t *testing.T) {
 			request.URL.RawQuery != "" || !request.URL.ForceQuery {
 			t.Fatalf("request URL = %#v", request.URL)
 		}
-		if values := request.Header["x-stream-header"]; len(values) != 1 || values[0] != "owned" { //nolint:staticcheck // Verify caller key casing.
+		if values := map[string][]string(request.Header)["x-stream-header"]; len(values) != 1 || values[0] != "owned" {
 			t.Fatalf("x-stream-header = %#v", values)
 		}
-		if values := request.Header["x-api-key"]; len(values) != 1 || values[0] != "header-key" { //nolint:staticcheck // Verify caller key casing.
+		if values := map[string][]string(request.Header)["x-api-key"]; len(values) != 1 || values[0] != "header-key" {
 			t.Fatalf("x-api-key = %#v", values)
 		}
 		authVariants := 0

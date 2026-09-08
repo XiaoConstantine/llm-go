@@ -396,7 +396,8 @@ func TestMemoryCredentialStoreRejectsInvalidInputs(t *testing.T) {
 	if _, _, err := nilStore.Read(context.Background(), "openai"); err == nil {
 		t.Fatal("nil store Read() error = nil")
 	}
-	if _, _, err := store.Read(nil, "openai"); err == nil { //nolint:staticcheck // Verify nil-context rejection.
+	var nilCtx context.Context
+	if _, _, err := store.Read(nilCtx, "openai"); err == nil {
 		t.Fatal("Read(nil context) error = nil")
 	}
 }

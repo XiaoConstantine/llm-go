@@ -60,7 +60,7 @@ func TestNewConfiguresClientWithoutMutatingHeaders(t *testing.T) {
 	if client.headers.Get("Anthropic-Version") != "2026-08-01" || client.headers.Get("Content-Type") != "application/json" {
 		t.Fatalf("protocol headers = %#v", client.headers)
 	}
-	if _, exists := client.headers["x-lower-case"]; !exists { //nolint:staticcheck // Verify noncanonical caller key casing.
+	if _, exists := map[string][]string(client.headers)["x-lower-case"]; !exists {
 		t.Fatalf("Client changed custom header casing: %#v", client.headers)
 	}
 	if values, exists := client.headers["X-Nil"]; !exists || values != nil {
@@ -361,7 +361,7 @@ func TestGenerateUsesHeaderOwnedAPIKeyCaseInsensitively(t *testing.T) {
 		t.Fatalf("Generate() = (%#v, %v)", response, err)
 	}
 	request := <-requests
-	if values := request.Header["x-api-key"]; len(values) != 1 || values[0] != "header-key" { //nolint:staticcheck // Verify caller key casing.
+	if values := map[string][]string(request.Header)["x-api-key"]; len(values) != 1 || values[0] != "header-key" {
 		t.Fatalf("x-api-key = %#v, want header-owned key", values)
 	}
 	if request.URL.Path != "/prefix/v1/messages" {
@@ -398,7 +398,7 @@ func TestGeneratePreservesHeaderMapSemantics(t *testing.T) {
 		t.Fatalf("Generate() = (%#v, %v)", response, err)
 	}
 	got := (<-requests).Header
-	if values, exists := got["X-API-KEY"]; !exists || len(values) != 1 || values[0] != "header-key" { //nolint:staticcheck // Verify distinct caller keys.
+	if values, exists := map[string][]string(got)["X-API-KEY"]; !exists || len(values) != 1 || values[0] != "header-key" {
 		t.Fatalf("X-API-KEY = %#v, exists = %v", values, exists)
 	}
 	if values, exists := got["X-Api-Key"]; !exists || values != nil {

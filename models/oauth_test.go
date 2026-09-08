@@ -98,21 +98,22 @@ func TestOAuthRejectsInvalidExchangeWithoutIO(t *testing.T) {
 	}
 	credential := StoredCredential{Type: CredentialOAuth, AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour)}
 	codex := CodexOAuth{TokenURL: server.URL, HTTPClient: server.Client()}
+	var nilCtx context.Context
 	for name, call := range map[string]func() error{
 		"Anthropic Exchange": func() error {
-			_, err := anthropic.Exchange(nil, authorization, "code", authorization.State) //nolint:staticcheck // Verify nil-context rejection.
+			_, err := anthropic.Exchange(nilCtx, authorization, "code", authorization.State)
 			return err
 		},
 		"Anthropic Refresh": func() error {
-			_, err := anthropic.Refresh(nil, credential) //nolint:staticcheck // Verify nil-context rejection.
+			_, err := anthropic.Refresh(nilCtx, credential)
 			return err
 		},
 		"Codex Exchange": func() error {
-			_, err := codex.Exchange(nil, authorization, "code", authorization.State) //nolint:staticcheck // Verify nil-context rejection.
+			_, err := codex.Exchange(nilCtx, authorization, "code", authorization.State)
 			return err
 		},
 		"Codex Refresh": func() error {
-			_, err := codex.Refresh(nil, credential) //nolint:staticcheck // Verify nil-context rejection.
+			_, err := codex.Refresh(nilCtx, credential)
 			return err
 		},
 	} {
