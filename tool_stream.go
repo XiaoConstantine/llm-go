@@ -11,6 +11,7 @@ import (
 // ToolCallEnd event is validated before the chunk is delivered. Partial argument
 // delta events are never validated. The caller retains the normal obligation to
 // close the returned stream. If setup fails, stream is closed before returning.
+// This is an explicit schema-validation wrapper, not installed by providers.
 func ValidateToolCallStream(stream Stream, tools []Tool, provider string) (Stream, error) {
 	if stream == nil {
 		return nil, fmt.Errorf("tool-call stream must not be nil")
@@ -23,13 +24,24 @@ func ValidateToolCallStream(stream Stream, tools []Tool, provider string) (Strea
 		}
 		return nil, err
 	}
-	return &toolCallStream{Stream: stream, validator: validator, provider: provider, closeDone: make(chan struct{})}, nil
+	return &toolCallStream{Stream: stream, validate: validator.validate, provider: provider, closeDone: make(chan struct{})}, nil
+}
+
+// ValidateToolCallStructureStream checks completed calls using
+// ValidateToolCallStructure before delivering each chunk. Partial argument
+// deltas are not checked. Schema mismatches and undeclared names are delivered
+// unchanged for the execution owner to reject. The caller must close the stream.
+func ValidateToolCallStructureStream(stream Stream, provider string) (Stream, error) {
+	if stream == nil {
+		return nil, fmt.Errorf("tool-call stream must not be nil")
+	}
+	return &toolCallStream{Stream: stream, validate: ValidateToolCallStructure, provider: provider, closeDone: make(chan struct{})}, nil
 }
 
 type toolCallStream struct {
 	Stream
-	validator toolCallValidator
-	provider  string
+	validate func([]ToolCall) error
+	provider string
 
 	mu           sync.Mutex
 	terminal     error
@@ -63,7 +75,7 @@ func (s *toolCallStream) Recv() (Chunk, error) {
 		s.mu.Unlock()
 		return Chunk{}, terminal
 	}
-	validationErr := s.validator.validate(completedToolCalls(chunk))
+	validationErr := s.validate(completedToolCalls(chunk))
 	s.mu.Lock()
 	if validationErr != nil {
 		if s.terminal == nil {

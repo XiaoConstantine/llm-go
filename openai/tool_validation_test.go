@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,7 @@ import (
 	llm "github.com/XiaoConstantine/llm-go"
 )
 
-func TestStreamRejectsInvalidCompletedToolArgumentsBeforeDelivery(t *testing.T) {
+func TestStreamDeliversSchemaInvalidCompletedToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(writer,
@@ -26,25 +25,17 @@ func TestStreamRejectsInvalidCompletedToolArgumentsBeforeDelivery(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object","properties":{"count":{"type":"integer","minimum":1}}}`)}}})
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object","properties":{"count":{"type":"integer","minimum":1}}}`)}}}
+	returned, err := client.Stream(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = stream.Close() }()
-	var terminal error
-	for {
-		chunk, err := stream.Recv()
-		if len(chunk.ToolCalls) != 0 {
-			t.Fatalf("invalid ToolCalls were delivered: %#v", chunk.ToolCalls)
-		}
-		if err != nil {
-			terminal = err
-			break
-		}
+	response, err := llm.CollectStructural(returned)
+	if err != nil || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != `{"count":0}` {
+		t.Fatalf("returned tool call = %#v, %v", response, err)
 	}
-	var modelErr *llm.Error
-	if !errors.As(terminal, &modelErr) || modelErr.Kind != llm.KindMalformedResponse || modelErr.Op != "stream" {
-		t.Fatalf("terminal = %v (%#v)", terminal, modelErr)
+	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err == nil {
+		t.Fatal("explicit validation accepted count=0")
 	}
 }
 
@@ -91,7 +82,7 @@ func TestToolStrictnessPreferAndRequire(t *testing.T) {
 	}
 }
 
-func TestGenerateValidatesCompletedToolArgumentsAgainstSchema(t *testing.T) {
+func TestGenerateLeavesArgumentSchemasToExecutionOwner(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(writer, `{"id":"id","model":"model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call","type":"function","function":{"name":"lookup","arguments":"{\"count\":0}"}}]},"finish_reason":"tool_calls"}]}`)
@@ -102,12 +93,11 @@ func TestGenerateValidatesCompletedToolArgumentsAgainstSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}, Tools: []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object","properties":{"count":{"type":"integer","minimum":1}},"required":["count"]}`)}}}
-	response, err := client.Generate(context.Background(), request)
-	if response != nil || err == nil || !strings.Contains(err.Error(), `$.count`) {
-		t.Fatalf("Generate() = %#v, %v", response, err)
+	response, err := client.Generate(t.Context(), request)
+	if err != nil || response == nil || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != `{"count":0}` {
+		t.Fatalf("returned tool call = %#v, %v", response, err)
 	}
-	var modelErr *llm.Error
-	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindMalformedResponse {
-		t.Fatalf("error classification = %#v", modelErr)
+	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err == nil {
+		t.Fatal("explicit validation accepted count=0")
 	}
 }

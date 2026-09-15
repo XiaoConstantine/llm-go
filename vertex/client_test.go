@@ -104,7 +104,7 @@ func TestStreamUsesVertexEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := llm.Collect(stream, nil)
+	response, err := llm.CollectStructural(stream)
 	if err != nil {
 		t.Fatal(err)
 	}

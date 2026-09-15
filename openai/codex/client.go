@@ -434,7 +434,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err != nil {
 		return nil, err
 	}
-	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err != nil {
+	if err := llm.ValidateToolCallStructure(response.Message.ToolCalls); err != nil {
 		return nil, malformedResponse("generate", "validate tool call arguments: %v", err)
 	}
 	return response, nil
@@ -453,7 +453,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return relabelProviderError(c.produce(producerCtx, "stream", params, request.SessionID, emit), c.provider)
 	})
-	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
+	return llm.ValidateToolCallStructureStream(stream, c.provider)
 }
 
 func (c *Client) prepare(ctx context.Context, op string, request llm.Request, requireStreaming bool) (openairesponses.ResponseNewParams, error) {

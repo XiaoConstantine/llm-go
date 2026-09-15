@@ -43,7 +43,7 @@ type Part struct {
 	Text            string
 	Data            []byte
 	MediaType       string
-	CacheBreakpoint bool
+	CacheBreakpoint bool `json:",omitzero"`
 }
 
 // Message is one turn in a model conversation. ToolCalls are valid only on an
@@ -92,8 +92,10 @@ const (
 )
 
 // Tool describes a function that a model may call. InputSchema is a JSON
-// Schema describing the function arguments; completed calls are always checked
-// locally. Schemas default to draft 2020-12, may declare any supported standard
+// Schema describing the function arguments. Providers check completed calls for
+// structure and strict JSON, not argument-schema conformance. Execution owners
+// must use ValidateToolCalls before invoking tools.
+// Schemas default to draft 2020-12, may declare any supported standard
 // draft, and may use only references resolved within that schema. Strict is the
 // legacy require-strict flag. Strictness provides an
 // explicit prefer/require policy; setting both Strict and Strictness is invalid.
@@ -119,7 +121,8 @@ func (t Tool) StrictEnabled(supported bool) bool {
 
 // ToolCall is a tool invocation requested by a model. Arguments contains one
 // JSON value, normally an object. ID may be empty when a provider supplies only
-// a function name. The order of ID-less calls is significant.
+// a function name. The order of ID-less calls is significant. Arguments are
+// returned unchanged, not schema-validated; use ValidateToolCalls before execution.
 type ToolCall struct {
 	ID        string
 	Name      string

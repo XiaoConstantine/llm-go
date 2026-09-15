@@ -22,6 +22,10 @@ import (
 // CapabilityStreaming, Stream returns an error classified KindUnsupported.
 // Callers should give operations a context deadline appropriate to their
 // workload when an unbounded request is not acceptable.
+//
+// Returned tool calls have valid structure and strict JSON, but their arguments
+// may violate the declared schemas. Execution owners must use ValidateToolCalls
+// before invoking tools; a schema mismatch is not a provider/stream failure.
 type Generator interface {
 	Info() ModelInfo
 	Generate(ctx context.Context, request Request) (*Response, error)
@@ -42,8 +46,8 @@ const (
 )
 
 // BackgroundHandle contains the durable identity and output-validation contract
-// for a provider-side generation. Tools and their schemas are retained so a
-// fetched response receives the same validation as Generate. Handles returned by
+// for a provider-side generation. Tools and their schemas are retained for
+// caller-owned validation of fetched tool calls. Handles returned by
 // implementations are caller-owned and may be persisted. Callers must not modify
 // a handle concurrently with FetchBackground or CancelBackground.
 type BackgroundHandle struct {
@@ -135,8 +139,10 @@ const (
 // Content is the completed text for an end event when the provider makes it
 // available. ToolCallID and ToolName contain the identity known at a tool-call
 // start or delta. ToolCall is set on a successfully completed ToolCallEnd and
-// contains complete, valid arguments; it is nil when an incomplete response
-// interrupts a started call. FinishReason is set only for Done.
+// contains complete strict-JSON arguments, which may violate the tool schema;
+// execution owners must use ValidateToolCalls before invoking tools. It is nil
+// when an incomplete response interrupts a started call. FinishReason is set
+// only for Done.
 //
 // Streams report failures through Recv rather than as events. Event storage is
 // owned by the caller after Recv returns.

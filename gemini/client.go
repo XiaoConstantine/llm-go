@@ -272,7 +272,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
-	if err := llm.ValidateToolCalls(request.Tools, converted.Message.ToolCalls); err != nil {
+	if err := llm.ValidateToolCallStructure(converted.Message.ToolCalls); err != nil {
 		return nil, malformedResponseFor("generate", "validate tool call arguments: %v", err)
 	}
 	return converted, nil
@@ -322,7 +322,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produceStream(producerCtx, request, contents, generationConfig, emit)
 	})
-	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
+	return llm.ValidateToolCallStructureStream(stream, c.provider)
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {

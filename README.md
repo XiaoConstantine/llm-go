@@ -75,7 +75,8 @@ These helpers are opt-in and do not change provider defaults.
 | API | Purpose |
 | --- | --- |
 | `llm.WithRetry` | Bounded retries; streams retry only before their first chunk; attempt hooks may add validated headers |
-| `llm.Collect` | Closes and assembles a stream, preserves partial results, and validates completed tool calls |
+| `llm.Collect` | Closes and assembles a stream, preserving partial results and validating completed calls against supplied schemas |
+| `llm.CollectStructural` | Collects with structure and strict-JSON checks, leaving argument-schema validation to the execution owner |
 | `llm.Tool.Strictness` | Requests `prefer` or `require` constrained tool arguments while retaining legacy `Tool.Strict` behavior |
 | `llm.TransformHistory` | Owns cross-model history, normalizes tool IDs, repairs missing/orphaned results, and reports every change |
 | `llm.BudgetRequest` | Uses a caller-supplied token estimator and model limits to clamp an owned request copy |
@@ -85,6 +86,23 @@ These helpers are opt-in and do not change provider defaults.
 
 Tool inputs use JSON Schema 2020-12 by default, support declared drafts and
 local references offline, and use Go/RE2-compatible patterns.
+
+`Generate`, `Stream`, background responses, and `CollectStructural(stream)` return
+complete, structurally valid tool calls with their original arguments. They do
+not enforce argument schemas. Execution owners must call
+`ValidateToolCalls(tools, calls)` before invoking tools and can return an error
+`ToolResult` on rejection so the model can correct its call. Tool declarations,
+strict JSON, provider protocol checks, and constrained-generation settings are
+unchanged. `ValidateToolCallStream` remains an explicit schema-validation wrapper
+for callers that deliberately want schema failures to terminate collection.
+
+**Migration:** automatic response argument-schema validation has been removed.
+`Collect(stream, tools)` retains its published signature and schema-validation
+behavior, including rejection of undeclared calls when tools is nil. Agent loops
+that need corrective tool results can use `CollectStructural(stream)` and
+validate arguments explicitly at the execution boundary. No request flag or
+diagnostic metadata is needed; do not execute an unchecked call just because
+generation succeeded.
 
 ### Custom protocols and dynamic catalogs
 

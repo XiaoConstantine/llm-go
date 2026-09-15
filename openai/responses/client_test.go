@@ -239,7 +239,7 @@ func TestBackgroundReturnsObservedHandleWithOutputOrCancellationError(t *testing
 	t.Run("malformed output", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(writer, `{"id":"resp_bad_output","object":"response","created_at":1,"model":"model","status":"completed","output":[{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{\"path\":1}"}]}`)
+			_, _ = io.WriteString(writer, `{"id":"resp_bad_output","object":"response","created_at":1,"model":"model","status":"completed","output":[{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"read","arguments":"{\"path\":"}]}`)
 		}))
 		defer server.Close()
 		client, err := New(Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
@@ -254,7 +254,7 @@ func TestBackgroundReturnsObservedHandleWithOutputOrCancellationError(t *testing
 		if result == nil || result.Handle.ID != "resp_bad_output" || result.Status != llm.BackgroundCompleted || result.Response != nil {
 			t.Fatalf("StartBackground() result = %#v", result)
 		}
-		_ = requireResponseError(t, err, llm.KindMalformedResponse, "start_background", "validate tool call")
+		_ = requireResponseError(t, err, llm.KindMalformedResponse, "start_background", "must contain strict JSON")
 	})
 
 	t.Run("missing output item ID", func(t *testing.T) {

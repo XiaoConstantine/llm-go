@@ -265,7 +265,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (*llm.Respon
 	if err != nil {
 		return nil, err
 	}
-	if err := llm.ValidateToolCalls(request.Tools, response.Message.ToolCalls); err != nil {
+	if err := llm.ValidateToolCallStructure(response.Message.ToolCalls); err != nil {
 		return nil, &llm.Error{Kind: llm.KindMalformedResponse, Op: "generate", Provider: c.provider, Err: fmt.Errorf("validate tool call arguments: %w", err)}
 	}
 	return response, nil
@@ -281,7 +281,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produce(producerCtx, "stream", params, request.SessionID, emit)
 	})
-	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
+	return llm.ValidateToolCallStructureStream(stream, c.provider)
 }
 
 // StartBackground starts a stored OpenAI Responses job and returns its durable
@@ -418,7 +418,7 @@ func (c *Client) backgroundResult(op string, handle llm.BackgroundHandle, respon
 		if err != nil {
 			return result, err
 		}
-		if err := llm.ValidateToolCalls(handle.Tools, converted.Message.ToolCalls); err != nil {
+		if err := llm.ValidateToolCallStructure(converted.Message.ToolCalls); err != nil {
 			return result, &llm.Error{Kind: llm.KindMalformedResponse, Op: op, Provider: c.provider,
 				Err: fmt.Errorf("validate tool call arguments: %w", err)}
 		}

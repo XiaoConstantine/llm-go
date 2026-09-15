@@ -294,6 +294,19 @@ func validatePart(part Part) error {
 	return nil
 }
 
+// ValidateToolCallStructure checks names, identity fields, and strict JSON in
+// completed calls without checking tool declarations or argument schemas. It
+// does not mutate calls. Execution owners should use ValidateToolCalls to check
+// declared names and schemas before invoking a tool.
+func ValidateToolCallStructure(calls []ToolCall) error {
+	for index, call := range calls {
+		if err := validateToolCall(call); err != nil {
+			return fmt.Errorf("tool calls[%d]: %w", index, err)
+		}
+	}
+	return nil
+}
+
 func validateToolCall(call ToolCall) error {
 	if call.ID != "" && !utf8.ValidString(call.ID) {
 		return fmt.Errorf("ID must be valid UTF-8")

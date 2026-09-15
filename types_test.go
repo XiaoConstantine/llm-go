@@ -1,6 +1,30 @@
 package llm
 
-import "testing"
+import (
+	jsonv1 "encoding/json"
+	json "encoding/json/v2"
+	"testing"
+)
+
+func TestTranscriptEncodingPreservesLegacyShapeAndNonzeroMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"legacy part", Part{Text: "hello"}, `{"Kind":0,"Text":"hello","Data":null,"MediaType":""}`},
+		{"cache breakpoint", Part{Text: "hello", CacheBreakpoint: true}, `{"Kind":0,"Text":"hello","Data":null,"MediaType":"","CacheBreakpoint":true}`},
+		{"legacy call", ToolCall{ID: "call", Name: "lookup", Arguments: []byte(`{}`)}, `{"ID":"call","Name":"lookup","Arguments":{}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Existing consumers persist transcripts using encoding/json v1.
+			encoded, err := json.Marshal(test.value, jsonv1.DefaultOptionsV1())
+			if err != nil || string(encoded) != test.want {
+				t.Fatalf("Marshal = %s, %v; want %s", encoded, err, test.want)
+			}
+		})
+	}
+}
 
 func TestMessageText(t *testing.T) {
 	message := Message{Content: []Part{

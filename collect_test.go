@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -63,11 +62,54 @@ func TestCollectJoinsCloseErrorAfterProviderFailure(t *testing.T) {
 	}
 }
 
-func TestCollectValidatesCompletedToolCalls(t *testing.T) {
+func TestCollectStructuralLeavesArgumentSchemasToExecutionOwner(t *testing.T) {
 	tools := []Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object","properties":{"city":{"type":"string","minLength":2}},"required":["city"]}`)}}
 	stream := &scriptedStream{chunks: []Chunk{{ToolCalls: []ToolCall{{Name: "lookup", Arguments: []byte(`{"city":"x"}`)}}}}}
-	partial, err := Collect(stream, tools)
-	if err == nil || !strings.Contains(err.Error(), `$.city`) || len(partial.Message.ToolCalls) != 0 {
-		t.Fatalf("Collect() = %#v, %v", partial, err)
+	response, err := CollectStructural(stream)
+	if err != nil || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != `{"city":"x"}` || !stream.closed {
+		t.Fatalf("Collect() = %#v, %v", response, err)
+	}
+	if err := ValidateToolCalls(tools, response.Message.ToolCalls); err == nil {
+		t.Fatal("explicit schema validation accepted a too-short city")
+	}
+}
+
+func TestCollectPreservesPublishedSchemaValidation(t *testing.T) {
+	// Preserve the exact public signature, including function-value assignments.
+	collectCalls := Collect
+	tools := []Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object","properties":{"city":{"type":"string","minLength":2}},"required":["city"]}`)}}
+	for _, test := range []struct {
+		name      string
+		tools     []Tool
+		arguments string
+		wantError bool
+	}{
+		{"valid", tools, `{"city":"Paris"}`, false},
+		{"schema mismatch", tools, `{"city":"x"}`, true},
+		{"undeclared", nil, `{"city":"Paris"}`, true},
+		{"invalid schema", []Tool{{Name: "lookup", InputSchema: []byte(`{`)}}, `{"city":"Paris"}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			closeErr := errors.New("close failed")
+			stream := &scriptedStream{chunks: []Chunk{{Content: []Part{{Text: "kept"}}}, {ToolCalls: []ToolCall{{Name: "lookup", Arguments: []byte(test.arguments)}}}}}
+			if test.wantError {
+				stream.closeErr = closeErr
+			}
+			response, err := collectCalls(stream, test.tools)
+			if response == nil || !stream.closed {
+				t.Fatalf("response=%+v closed=%t error=%v", response, stream.closed, err)
+			}
+			if test.wantError {
+				failure, ok := errors.AsType[*Error](err)
+				if !ok || failure.Kind != KindMalformedResponse || failure.Op != "collect" || !errors.Is(err, closeErr) || len(response.Message.ToolCalls) != 0 {
+					t.Fatalf("response=%+v error=%v", response, err)
+				}
+				if test.name != "invalid schema" && response.Text() != "kept" {
+					t.Fatalf("partial response=%+v", response)
+				}
+			} else if err != nil || response.Text() != "kept" || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != test.arguments {
+				t.Fatalf("response=%+v error=%v", response, err)
+			}
+		})
 	}
 }

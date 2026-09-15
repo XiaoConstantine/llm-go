@@ -14,8 +14,21 @@ import (
 // joined after an earlier failure and never replaces it.
 //
 // tools declares schemas for completed tool calls. Passing nil is valid only
-// when the stream emits no tool calls.
-func Collect(stream Stream, tools []Tool) (response *Response, err error) {
+// when the stream emits no tool calls. Use CollectStructural when argument-schema
+// validation belongs to the execution owner instead.
+func Collect(stream Stream, tools []Tool) (*Response, error) {
+	return collect(stream, tools, true)
+}
+
+// CollectStructural assembles and closes stream with the same partial-response,
+// invariant, cancellation, and cleanup behavior as Collect. Completed calls are
+// checked for structure and strict JSON, not declared names or argument schemas.
+// Execution owners must use ValidateToolCalls before invoking tools.
+func CollectStructural(stream Stream) (*Response, error) {
+	return collect(stream, nil, false)
+}
+
+func collect(stream Stream, tools []Tool, validateSchemas bool) (response *Response, err error) {
 	response = &Response{Message: Message{Role: RoleAssistant}}
 	if stream == nil {
 		return response, collectError("stream must not be nil")
@@ -29,11 +42,14 @@ func Collect(stream Stream, tools []Tool) (response *Response, err error) {
 			}
 		}
 	}()
-	validator, validationErr := newToolCallValidator(tools)
-	if validationErr != nil {
-		return response, collectError("tools: %v", validationErr)
+	validate := ValidateToolCallStructure
+	if validateSchemas {
+		validator, validationErr := newToolCallValidator(tools)
+		if validationErr != nil {
+			return response, collectError("tools: %v", validationErr)
+		}
+		validate = validator.validate
 	}
-
 	var providerDataSeen bool
 	for chunkIndex := 0; ; chunkIndex++ {
 		chunk, recvErr := stream.Recv()
@@ -43,8 +59,8 @@ func Collect(stream Stream, tools []Tool) (response *Response, err error) {
 			}
 			return response, recvErr
 		}
-		if schemaErr := validator.validate(completedToolCalls(chunk)); schemaErr != nil {
-			return response, collectError("chunk[%d] completed tool calls: %v", chunkIndex, schemaErr)
+		if callErr := validate(completedToolCalls(chunk)); callErr != nil {
+			return response, collectError("chunk[%d] completed tool calls: %v", chunkIndex, callErr)
 		}
 		if invariantErr := collectChunk(response, chunk, chunkIndex, &providerDataSeen); invariantErr != nil {
 			return response, invariantErr

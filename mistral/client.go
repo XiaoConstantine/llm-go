@@ -147,7 +147,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produce(producerCtx, "generate", request, payload, priorIDs, emit)
 	})
-	response, err := llm.Collect(stream, request.Tools)
+	response, err := llm.CollectStructural(stream)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	stream := internalstream.New(ctx, func(producerCtx context.Context, emit internalstream.Emit) error {
 		return c.produce(producerCtx, "stream", request, payload, priorIDs, emit)
 	})
-	return llm.ValidateToolCallStream(stream, request.Tools, c.provider)
+	return llm.ValidateToolCallStructureStream(stream, c.provider)
 }
 
 func (c *Client) prepare(ctx context.Context, op string, request llm.Request, requireStreaming bool) ([]byte, map[string]struct{}, error) {

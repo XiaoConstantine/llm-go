@@ -113,7 +113,7 @@ func TestStreamFragmentedToolCallWithoutRepeatedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := llm.Collect(stream, tools)
+	response, err := llm.CollectStructural(stream)
 	if err != nil {
 		t.Fatal(err)
 	}
