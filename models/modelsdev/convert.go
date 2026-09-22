@@ -50,21 +50,23 @@ func DefaultProviderCompatibility(provider string, model ModelEntry, api llm.API
 			}
 		}
 	case llm.APIOpenAIChatCompletions:
+		chat := &llm.OpenAIChatCompatibility{LongCacheRetention: llm.CompatibilityEnabled}
+		if model.Modalities != nil && slices.Contains(model.Modalities.Input, "image") {
+			chat.ToolResultImageFallback = llm.CompatibilityEnabled
+		}
 		switch provider {
 		case "deepseek":
-			return &llm.ModelCompatibility{
-				OpenAIChat: &llm.OpenAIChatCompatibility{
-					ThinkingFormat: llm.ThinkingFormatDeepSeek,
-				},
-			}
+			chat.MaxTokensField = llm.MaxTokensFieldLegacy
+			chat.InstructionRole = llm.InstructionRoleSystem
+			chat.ReasoningContentReplay = llm.CompatibilityEnabled
+			chat.ThinkingFormat = llm.ThinkingFormatDeepSeek
 		case "openrouter":
-			return &llm.ModelCompatibility{
-				OpenAIChat: &llm.OpenAIChatCompatibility{
-					ThinkingFormat:        llm.ThinkingFormatOpenRouter,
-					SessionAffinityFormat: llm.SessionAffinityOpenRouter,
-				},
-			}
+			chat.InstructionRole = llm.InstructionRoleSystem
+			chat.ThinkingFormat = llm.ThinkingFormatOpenRouter
+			chat.SessionAffinity = llm.CompatibilityEnabled
+			chat.SessionAffinityFormat = llm.SessionAffinityOpenRouter
 		}
+		return &llm.ModelCompatibility{OpenAIChat: chat}
 	}
 	return nil
 }

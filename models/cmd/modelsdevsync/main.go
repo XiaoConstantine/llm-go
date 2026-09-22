@@ -581,9 +581,16 @@ func applyModelUpdate(m *sourceModel, entry modelsdev.ModelEntry) bool {
 			m.Capabilities = &caps
 			changed = true
 		}
+		if m.Compatibility != nil && m.Compatibility.OpenAIChat != nil && (m.Compatibility.OpenAIChat.ToolResultImageFallback == nil || !*m.Compatibility.OpenAIChat.ToolResultImageFallback) {
+			enabled := true
+			m.Compatibility.OpenAIChat.ToolResultImageFallback = &enabled
+			changed = true
+		}
 	}
 
-	if entry.Cost != nil {
+	// Audio-capable models may bill text and audio tokens at different rates,
+	// which ModelCost cannot represent without undercounting one modality.
+	if entry.Cost != nil && (m.Capabilities == nil || !slices.Contains(*m.Capabilities, llm.CapabilityAudio)) {
 		costUpdated := updateSourceCost(m, entry.Cost)
 		if costUpdated {
 			changed = true
@@ -748,14 +755,15 @@ func equalFloatPtr(a, b *float64) bool {
 }
 
 func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel, bool) {
-	// Only add model if it has authoritative context limits and output <= context
-	if entry.Limit == nil || entry.Limit.Context <= 0 || entry.Limit.Output <= 0 || entry.Limit.Output > entry.Limit.Context {
+	// Only add model if it has authoritative context limits and output <= context.
+	id := strings.TrimSpace(entry.ID)
+	if id == "" || entry.Limit == nil || entry.Limit.Context <= 0 || entry.Limit.Output <= 0 || entry.Limit.Output > entry.Limit.Context {
 		return sourceModel{}, false
 	}
 
-	name := entry.Name
+	name := strings.TrimSpace(entry.Name)
 	if name == "" {
-		name = entry.ID
+		name = id
 	}
 	api := modelsdev.DefaultProviderAPI(provider)
 	reasoning := entry.Reasoning
@@ -763,7 +771,9 @@ func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel
 	if entry.ToolCall && supportsCapability(api, llm.CapabilityTools) {
 		caps = append(caps, llm.CapabilityTools)
 	}
-	if entry.StructuredOutput && supportsCapability(api, llm.CapabilityJSON) {
+	// Responses JSON support is model-specific and must be reviewed before it is
+	// advertised by the built-in catalog.
+	if entry.StructuredOutput && api != llm.APIOpenAIResponses && supportsCapability(api, llm.CapabilityJSON) {
 		caps = append(caps, llm.CapabilityJSON)
 	}
 	if entry.Modalities != nil {
@@ -873,7 +883,7 @@ func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel
 
 	return sourceModel{
 		Provider:        provider,
-		ID:              entry.ID,
+		ID:              id,
 		Name:            name,
 		API:             api,
 		Reasoning:       &reasoning,
@@ -881,7 +891,76 @@ func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel
 		ContextWindow:   &ctxWindow,
 		MaxOutputTokens: &maxOut,
 		Cost:            cost,
+		Compatibility:   sourceCompatibilityFromModel(modelsdev.DefaultProviderCompatibility(provider, entry, api)),
 	}, true
+}
+
+func sourceCompatibilityFromModel(compat *llm.ModelCompatibility) *sourceCompatibility {
+	if compat == nil {
+		return nil
+	}
+	source := &sourceCompatibility{}
+	if value := compat.OpenAIChat; value != nil {
+		source.OpenAIChat = &sourceOpenAIChat{
+			MaxTokensField:          value.MaxTokensField,
+			InstructionRole:         value.InstructionRole,
+			ReasoningEffort:         sourceToggle(value.ReasoningEffort),
+			StreamingUsage:          sourceToggle(value.StreamingUsage),
+			FinishReason:            sourceToggle(value.FinishReason),
+			ToolResultName:          sourceToggle(value.ToolResultName),
+			ToolResultImageFallback: sourceToggle(value.ToolResultImageFallback),
+			AssistantAfterTool:      sourceToggle(value.AssistantAfterToolResult),
+			ReasoningContentReplay:  sourceToggle(value.ReasoningContentReplay),
+			StrictTools:             sourceToggle(value.StrictTools),
+			LongCacheRetention:      sourceToggle(value.LongCacheRetention),
+			SessionAffinity:         sourceToggle(value.SessionAffinity),
+			SessionAffinityFormat:   value.SessionAffinityFormat,
+			ThinkingFormat:          value.ThinkingFormat,
+			CacheControlFormat:      value.CacheControlFormat,
+		}
+	}
+	if value := compat.OpenAIResponses; value != nil {
+		source.OpenAIResponses = &sourceOpenAIResponses{
+			DeveloperRole:           sourceToggle(value.DeveloperRole),
+			EncryptedReasoning:      sourceToggle(value.EncryptedReasoning),
+			StrictTools:             sourceToggle(value.StrictTools),
+			AdditionalTools:         sourceToggle(value.AdditionalTools),
+			ToolSearch:              sourceToggle(value.ToolSearch),
+			LongCacheRetention:      sourceToggle(value.LongCacheRetention),
+			ExplicitPromptCacheMode: sourceToggle(value.ExplicitPromptCacheMode),
+			SessionAffinityFormat:   value.SessionAffinityFormat,
+		}
+	}
+	if value := compat.Gemini; value != nil {
+		source.Gemini = &sourceGemini{ThinkingLevelsOnly: sourceToggle(value.ThinkingLevelsOnly)}
+	}
+	if value := compat.Anthropic; value != nil {
+		source.Anthropic = &sourceAnthropic{
+			EagerToolInputStreaming: sourceToggle(value.EagerToolInputStreaming),
+			LongCacheRetention:      sourceToggle(value.LongCacheRetention),
+			SessionAffinity:         sourceToggle(value.SessionAffinity),
+			CacheControlOnTools:     sourceToggle(value.CacheControlOnTools),
+			Temperature:             sourceToggle(value.Temperature),
+			AdaptiveThinking:        sourceToggle(value.AdaptiveThinking),
+			EmptyThinkingSignature:  sourceToggle(value.EmptyThinkingSignature),
+			StrictTools:             sourceToggle(value.StrictTools),
+			ToolReferences:          sourceToggle(value.ToolReferences),
+		}
+	}
+	return source
+}
+
+func sourceToggle(value llm.CompatibilityToggle) *bool {
+	switch value {
+	case llm.CompatibilityEnabled:
+		value := true
+		return &value
+	case llm.CompatibilityDisabled:
+		value := false
+		return &value
+	default:
+		return nil
+	}
 }
 
 func writeCatalog(path string, catalog *sourceCatalog) error {

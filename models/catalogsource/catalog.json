@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 14,
+  "revision": 15,
   "models": [
     {
       "provider": "anthropic",
@@ -744,7 +744,7 @@
         "vision"
       ],
       "context_window": 400000,
-      "max_output_tokens": 128000,
+      "max_output_tokens": 272000,
       "cost": {
         "input": 15,
         "output": 120,
@@ -1128,6 +1128,42 @@
     },
     {
       "provider": "openai",
+      "id": "gpt-5.6",
+      "name": "GPT-5.6",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.4,
+        "cache_write": 5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 8,
+            "output": 30,
+            "cache_read": 0.8,
+            "cache_write": 10
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
       "id": "gpt-5.6-luna",
       "name": "GPT-5.6 Luna",
       "api": "openai-responses",
@@ -1177,17 +1213,17 @@
       "context_window": 1050000,
       "max_output_tokens": 128000,
       "cost": {
-        "input": 5,
-        "output": 30,
-        "cache_read": 0.5,
-        "cache_write": 6.25,
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.4,
+        "cache_write": 5,
         "tiers": [
           {
             "input_tokens_above": 272000,
-            "input": 10,
-            "output": 45,
-            "cache_read": 1,
-            "cache_write": 12.5
+            "input": 8,
+            "output": 30,
+            "cache_read": 0.8,
+            "cache_write": 10
           }
         ]
       },
@@ -1577,7 +1613,16 @@
         "input": 1.25,
         "output": 10,
         "cache_read": 0.125,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 15,
+            "cache_read": 0.25,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -1703,7 +1748,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -1724,7 +1778,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -1853,9 +1916,9 @@
       "context_window": 1048576,
       "max_output_tokens": 65536,
       "cost": {
-        "input": 1.5,
-        "output": 9,
-        "cache_read": 0.15,
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
         "cache_write": 0
       }
     },
@@ -1874,9 +1937,9 @@
       "context_window": 1048576,
       "max_output_tokens": 65536,
       "cost": {
-        "input": 0.25,
-        "output": 1.5,
-        "cache_read": 0.025,
+        "input": 0.3,
+        "output": 2.5,
+        "cache_read": 0.03,
         "cache_write": 0
       }
     },
@@ -2457,6 +2520,37 @@
     },
     {
       "provider": "openrouter",
+      "id": "anthropic/claude-fable-5.1",
+      "name": "Claude Fable 5.1",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 0.25,
+        "cache_write": 12.5
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "anthropic/claude-fable-5:batch",
       "name": "Anthropic: Claude Fable 5 (batch)",
       "api": "openai-chat-completions",
@@ -2721,7 +2815,16 @@
         "input": 5,
         "output": 25,
         "cache_read": 0.5,
-        "cache_write": 6.25
+        "cache_write": 6.25,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 10,
+            "output": 37.5,
+            "cache_read": 1,
+            "cache_write": 12.5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -2783,7 +2886,16 @@
         "input": 5,
         "output": 25,
         "cache_read": 0.5,
-        "cache_write": 6.25
+        "cache_write": 6.25,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 10,
+            "output": 37.5,
+            "cache_read": 1,
+            "cache_write": 12.5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3093,7 +3205,16 @@
         "input": 3,
         "output": 15,
         "cache_read": 0.3,
-        "cache_write": 3.75
+        "cache_write": 3.75,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 6,
+            "output": 22.5,
+            "cache_read": 0.6,
+            "cache_write": 7.5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3155,7 +3276,16 @@
         "input": 3,
         "output": 15,
         "cache_read": 0.3,
-        "cache_write": 3.75
+        "cache_write": 3.75,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 6,
+            "output": 22.5,
+            "cache_read": 0.6,
+            "cache_write": 7.5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3273,10 +3403,10 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 80000,
       "cost": {
-        "input": 0.22,
-        "output": 0.85,
+        "input": 0.25,
+        "output": 0.8,
         "cache_read": 0.06,
         "cache_write": 0
       },
@@ -3368,7 +3498,16 @@
         "input": 0.25,
         "output": 2,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 128000,
+            "input": 0.5,
+            "output": 4,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3399,7 +3538,16 @@
         "input": 0.075,
         "output": 0.3,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 128000,
+            "input": 0.1,
+            "output": 0.8,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3425,7 +3573,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.5,
         "output": 2.5,
@@ -3461,7 +3609,16 @@
         "input": 0.5,
         "output": 3,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 128000,
+            "input": 1,
+            "output": 6,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3492,7 +3649,16 @@
         "input": 0.25,
         "output": 2,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 128000,
+            "input": 0.5,
+            "output": 4,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3523,7 +3689,16 @@
         "input": 0.1,
         "output": 0.4,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 128000,
+            "input": 0.2,
+            "output": 0.8,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -3634,11 +3809,11 @@
         "tools",
         "json"
       ],
-      "context_window": 128000,
-      "max_output_tokens": 16000,
+      "context_window": 163840,
+      "max_output_tokens": 16384,
       "cost": {
-        "input": 0.2574,
-        "output": 1.0287,
+        "input": 0.32,
+        "output": 0.89,
         "cache_read": 0,
         "cache_write": 0
       },
@@ -3664,7 +3839,7 @@
         "json"
       ],
       "context_window": 163840,
-      "max_output_tokens": 163840,
+      "max_output_tokens": 147456,
       "cost": {
         "input": 0.25,
         "output": 1,
@@ -3692,12 +3867,12 @@
         "tools",
         "json"
       ],
-      "context_window": 161000,
-      "max_output_tokens": 161000,
+      "context_window": 163840,
+      "max_output_tokens": 32768,
       "cost": {
-        "input": 0.55,
-        "output": 1.65,
-        "cache_read": 0.55,
+        "input": 0.25,
+        "output": 0.95,
+        "cache_read": 0.13,
         "cache_write": 0
       },
       "compatibility": {
@@ -3779,7 +3954,7 @@
         "tools",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 163840,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.27,
@@ -3809,11 +3984,11 @@
         "json"
       ],
       "context_window": 163840,
-      "max_output_tokens": 163840,
+      "max_output_tokens": 65536,
       "cost": {
-        "input": 0.26,
-        "output": 0.38,
-        "cache_read": 0.13,
+        "input": 0.269,
+        "output": 0.4,
+        "cache_read": 0.1345,
         "cache_write": 0
       },
       "compatibility": {
@@ -3866,12 +4041,12 @@
         "tools",
         "json"
       ],
-      "context_window": 1024000,
+      "context_window": 1048576,
       "max_output_tokens": 384000,
       "cost": {
-        "input": 0.0574,
-        "output": 0.1148,
-        "cache_read": 0.01148,
+        "input": 0.049,
+        "output": 0.098,
+        "cache_read": 0.0098,
         "cache_write": 0
       },
       "compatibility": {
@@ -3896,12 +4071,12 @@
         "tools",
         "json"
       ],
-      "context_window": 1048576,
-      "max_output_tokens": 131072,
+      "context_window": 1310720,
+      "max_output_tokens": 943718,
       "cost": {
-        "input": 0.14,
-        "output": 0.28,
-        "cache_read": 0.028,
+        "input": 0.04,
+        "output": 0.64,
+        "cache_read": 0.016,
         "cache_write": 0
       },
       "compatibility": {
@@ -3928,7 +4103,7 @@
         "json"
       ],
       "context_window": 1048576,
-      "max_output_tokens": 384000,
+      "max_output_tokens": 943718,
       "cost": {
         "input": 0.22,
         "output": 0.66,
@@ -3958,12 +4133,12 @@
         "tools",
         "json"
       ],
-      "context_window": 1024000,
+      "context_window": 1048576,
       "max_output_tokens": 384000,
       "cost": {
-        "input": 0.526176,
-        "output": 1.052352,
-        "cache_read": 0.043848,
+        "input": 0.951432,
+        "output": 1.902864,
+        "cache_read": 0.079286,
         "cache_write": 0
       },
       "compatibility": {
@@ -3988,12 +4163,12 @@
         "tools",
         "json"
       ],
-      "context_window": 1048575,
-      "max_output_tokens": 4096,
+      "context_window": 1048576,
+      "max_output_tokens": 384000,
       "cost": {
-        "input": 1.122,
-        "output": 3.366,
-        "cache_read": 0.0374,
+        "input": 0.66,
+        "output": 1.98,
+        "cache_read": 0.022,
         "cache_write": 0
       },
       "compatibility": {
@@ -4004,6 +4179,37 @@
           "long_cache_retention": true,
           "session_affinity": true,
           "session_affinity_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "deepseek/deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 384000,
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cache_read": 0.003,
+        "cache_write": 0
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
         }
       }
     },
@@ -4020,7 +4226,7 @@
         "json"
       ],
       "context_window": 512000,
-      "max_output_tokens": 512000,
+      "max_output_tokens": 460800,
       "cost": {
         "input": 0,
         "output": 0,
@@ -4180,7 +4386,16 @@
         "input": 1.25,
         "output": 10,
         "cache_read": 0.125,
-        "cache_write": 0.375
+        "cache_write": 0.375,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 15,
+            "cache_read": 0.25,
+            "cache_write": 0.375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -4211,7 +4426,16 @@
         "input": 1.25,
         "output": 10,
         "cache_read": 0.125,
-        "cache_write": 0.375
+        "cache_write": 0.375,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 15,
+            "cache_read": 0.25,
+            "cache_write": 0.375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -4360,7 +4584,7 @@
         "vision",
         "json"
       ],
-      "context_window": 65536,
+      "context_window": 131072,
       "max_output_tokens": 32768,
       "cost": {
         "input": 2,
@@ -4490,7 +4714,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0.375
+        "cache_write": 0.375,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0.375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -4521,7 +4754,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0.375
+        "cache_write": 0.375,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0.375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -4766,10 +5008,10 @@
       "context_window": 1048576,
       "max_output_tokens": 65536,
       "cost": {
-        "input": 0.375,
-        "output": 1.875,
-        "cache_read": 0.0375,
-        "cache_write": 0.020833
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
+        "cache_write": 0.041667
       },
       "compatibility": {
         "openai_chat": {
@@ -4810,6 +5052,38 @@
           "tool_result_image_fallback": true,
           "session_affinity": true,
           "session_affinity_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "google/gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision",
+        "audio"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "cost": {
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
+        "cache_write": 0.041667
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
         }
       }
     },
@@ -4857,7 +5131,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 117964,
       "cost": {
         "input": 0.08,
         "output": 0.45,
@@ -4888,11 +5162,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 16384,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.07,
-        "output": 0.34,
-        "cache_read": 0,
+        "input": 0.09,
+        "output": 0.3,
+        "cache_read": 0.05,
         "cache_write": 0
       },
       "compatibility": {
@@ -4950,11 +5224,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 16384,
       "cost": {
-        "input": 0.1,
+        "input": 0.09,
         "output": 0.34,
-        "cache_read": 0.1,
+        "cache_read": 0.05,
         "cache_write": 0
       },
       "compatibility": {
@@ -5155,8 +5429,8 @@
         "tools",
         "json"
       ],
-      "context_window": 256000,
-      "max_output_tokens": 80000,
+      "context_window": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.74,
         "output": 2.96,
@@ -5272,7 +5546,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 117964,
       "cost": {
         "input": 0.05,
         "output": 0.08,
@@ -5333,8 +5607,8 @@
       "context_window": 1048576,
       "max_output_tokens": 16384,
       "cost": {
-        "input": 0.2,
-        "output": 0.8,
+        "input": 0.1875,
+        "output": 0.6525,
         "cache_read": 0,
         "cache_write": 0
       },
@@ -5361,7 +5635,7 @@
         "vision",
         "json"
       ],
-      "context_window": 327680,
+      "context_window": 1310720,
       "max_output_tokens": 16384,
       "cost": {
         "input": 0.1,
@@ -5393,10 +5667,10 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 16384,
       "cost": {
-        "input": 0.35,
-        "output": 1.5,
+        "input": 0.3,
+        "output": 1.2,
         "cache_read": 0.04,
         "cache_write": 0
       },
@@ -5424,7 +5698,7 @@
         "json"
       ],
       "context_window": 1048576,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 943718,
       "cost": {
         "input": 1.25,
         "output": 4.25,
@@ -5455,7 +5729,7 @@
         "json"
       ],
       "context_window": 1048576,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 943718,
       "cost": {
         "input": 1.25,
         "output": 4.25,
@@ -5486,7 +5760,7 @@
         "json"
       ],
       "context_window": 1048576,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 943718,
       "cost": {
         "input": 0.1,
         "output": 0.2,
@@ -5518,7 +5792,7 @@
       "context_window": 1000000,
       "max_output_tokens": 40000,
       "cost": {
-        "input": 0.55,
+        "input": 0.4,
         "output": 2.2,
         "cache_read": 0,
         "cache_write": 0
@@ -5602,7 +5876,7 @@
         "tools",
         "json"
       ],
-      "context_window": 200000,
+      "context_window": 204800,
       "max_output_tokens": 128000,
       "cost": {
         "input": 0.27,
@@ -5631,12 +5905,12 @@
         "tools",
         "json"
       ],
-      "context_window": 196608,
-      "max_output_tokens": 4096,
+      "context_window": 204800,
+      "max_output_tokens": 131072,
       "cost": {
-        "input": 0.24,
-        "output": 0.96,
-        "cache_read": 0.048,
+        "input": 0.3,
+        "output": 1.2,
+        "cache_read": 0.06,
         "cache_write": 0
       },
       "compatibility": {
@@ -5661,7 +5935,7 @@
         "vision",
         "json"
       ],
-      "context_window": 524288,
+      "context_window": 1048576,
       "max_output_tokens": 512000,
       "cost": {
         "input": 0.3,
@@ -5723,7 +5997,7 @@
         "json"
       ],
       "context_window": 256000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 204800,
       "cost": {
         "input": 0.3,
         "output": 0.9,
@@ -5753,7 +6027,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 209715,
       "cost": {
         "input": 0.2,
         "output": 0.2,
@@ -5784,7 +6058,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 104857,
       "cost": {
         "input": 0.1,
         "output": 0.1,
@@ -5815,7 +6089,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 209715,
       "cost": {
         "input": 0.15,
         "output": 0.15,
@@ -5845,7 +6119,7 @@
         "json"
       ],
       "context_window": 128000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 102400,
       "cost": {
         "input": 2,
         "output": 6,
@@ -5874,7 +6148,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 104857,
       "cost": {
         "input": 2,
         "output": 6,
@@ -5935,7 +6209,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 104857,
       "cost": {
         "input": 0.4,
         "output": 2,
@@ -5966,7 +6240,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 209715,
       "cost": {
         "input": 1.5,
         "output": 7.5,
@@ -5997,7 +6271,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 104857,
       "cost": {
         "input": 0.4,
         "output": 2,
@@ -6056,7 +6330,7 @@
         "json"
       ],
       "context_window": 32768,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 26214,
       "cost": {
         "input": 0.2,
         "output": 0.6,
@@ -6086,7 +6360,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 209715,
       "cost": {
         "input": 0.15,
         "output": 0.6,
@@ -6116,11 +6390,11 @@
         "vision",
         "json"
       ],
-      "context_window": 128000,
+      "context_window": 256000,
       "max_output_tokens": 16384,
       "cost": {
-        "input": 0.075,
-        "output": 0.2,
+        "input": 0.09375,
+        "output": 0.25,
         "cache_read": 0,
         "cache_write": 0
       },
@@ -6147,7 +6421,7 @@
         "json"
       ],
       "context_window": 65536,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 52428,
       "cost": {
         "input": 2,
         "output": 6,
@@ -6175,8 +6449,8 @@
         "tools",
         "json"
       ],
-      "context_window": 32000,
-      "max_output_tokens": 4096,
+      "context_window": 32768,
+      "max_output_tokens": 26214,
       "cost": {
         "input": 0.1,
         "output": 0.3,
@@ -6205,7 +6479,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 100352,
+      "max_output_tokens": 98304,
       "cost": {
         "input": 0.57,
         "output": 2.3,
@@ -6234,7 +6508,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 100352,
+      "max_output_tokens": 98304,
       "cost": {
         "input": 0.6,
         "output": 2.5,
@@ -6263,7 +6537,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 100352,
+      "max_output_tokens": 98304,
       "cost": {
         "input": 0.6,
         "output": 2.5,
@@ -6293,10 +6567,10 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.41,
-        "output": 2.06,
+        "input": 0.45,
+        "output": 2.25,
         "cache_read": 0.07,
         "cache_write": 0
       },
@@ -6324,7 +6598,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.95,
         "output": 4,
@@ -6356,11 +6630,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.67,
-        "output": 3.4,
-        "cache_read": 0.17,
+        "input": 0.7062,
+        "output": 3.3,
+        "cache_read": 0.18,
         "cache_write": 0
       },
       "compatibility": {
@@ -6418,7 +6692,7 @@
         "json"
       ],
       "context_window": 1048576,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 943718,
       "cost": {
         "input": 3,
         "output": 15,
@@ -6510,7 +6784,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.05,
         "output": 0.2,
@@ -6599,10 +6873,10 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 16384,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.085,
-        "output": 0.4,
+        "input": 0.08,
+        "output": 0.45,
         "cache_read": 0,
         "cache_write": 0
       },
@@ -6628,7 +6902,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0,
         "output": 0,
@@ -6656,12 +6930,12 @@
         "tools",
         "json"
       ],
-      "context_window": 512288,
-      "max_output_tokens": 4096,
+      "context_window": 262144,
+      "max_output_tokens": 182520,
       "cost": {
         "input": 0.6,
-        "output": 3.6,
-        "cache_read": 0.2,
+        "output": 2.4,
+        "cache_read": 0.12,
         "cache_write": 0
       },
       "compatibility": {
@@ -6744,9 +7018,9 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.08,
+        "input": 0.07,
         "output": 0.2,
         "cache_read": 0.04,
         "cache_write": 0
@@ -6890,7 +7164,7 @@
         "json"
       ],
       "context_window": 4095,
-      "max_output_tokens": 4095,
+      "max_output_tokens": 3685,
       "cost": {
         "input": 1,
         "output": 2,
@@ -8116,7 +8390,16 @@
         "input": 2.5,
         "output": 15,
         "cache_read": 0.25,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 5,
+            "output": 22.5,
+            "cache_read": 0.5,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8266,7 +8549,16 @@
         "input": 30,
         "output": 180,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 60,
+            "output": 270,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8356,7 +8648,16 @@
         "input": 5,
         "output": 30,
         "cache_read": 0.5,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 10,
+            "output": 45,
+            "cache_read": 1,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8386,7 +8687,16 @@
         "input": 30,
         "output": 180,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 60,
+            "output": 270,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8476,7 +8786,16 @@
         "input": 0.2,
         "output": 1.2,
         "cache_read": 0.02,
-        "cache_write": 0.25
+        "cache_write": 0.25,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 0.4,
+            "output": 1.8,
+            "cache_read": 0.04,
+            "cache_write": 0.5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8506,7 +8825,16 @@
         "input": 0.2,
         "output": 1.2,
         "cache_read": 0.02,
-        "cache_write": 0.25
+        "cache_write": 0.25,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 0.4,
+            "output": 1.8,
+            "cache_read": 0.04,
+            "cache_write": 0.5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8596,7 +8924,16 @@
         "input": 2,
         "output": 10,
         "cache_read": 0.2,
-        "cache_write": 2.5
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8626,7 +8963,16 @@
         "input": 2,
         "output": 10,
         "cache_read": 0.2,
-        "cache_write": 2.5
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8716,7 +9062,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 2.5
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8746,7 +9101,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 2.5
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -8850,6 +9214,86 @@
     },
     {
       "provider": "openrouter",
+      "id": "openai/gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 20,
+            "output": 75,
+            "cache_read": 2,
+            "cache_write": 25
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-6-astra-pro",
+      "name": "GPT-6 Astra Pro",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 20,
+            "output": 75,
+            "cache_read": 2,
+            "cache_write": 25
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "openai/gpt-audio",
       "name": "OpenAI: GPT Audio",
       "api": "openai-chat-completions",
@@ -8942,11 +9386,11 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 65536,
       "cost": {
-        "input": 0.037,
-        "output": 0.17,
-        "cache_read": 0,
+        "input": 0.15,
+        "output": 0.6,
+        "cache_read": 0.075,
         "cache_write": 0
       },
       "compatibility": {
@@ -8970,7 +9414,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 117964,
       "cost": {
         "input": 0.03,
         "output": 0.13,
@@ -9439,7 +9883,7 @@
         "json"
       ],
       "context_window": 2000000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 2000000,
       "compatibility": {
         "openai_chat": {
           "instruction_role": "system",
@@ -9489,7 +9933,7 @@
         "json"
       ],
       "context_window": 200000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 8000,
       "cost": {
         "input": 0,
         "output": 0,
@@ -9519,7 +9963,7 @@
         "json"
       ],
       "context_window": 1000000,
-      "max_output_tokens": 30000,
+      "max_output_tokens": 128000,
       "cost": {
         "input": 0,
         "output": 0,
@@ -9693,7 +10137,7 @@
         "json"
       ],
       "context_window": 32768,
-      "max_output_tokens": 32768,
+      "max_output_tokens": 29491,
       "cost": {
         "input": 0.1,
         "output": 0.2,
@@ -9727,7 +10171,16 @@
         "input": 0.26,
         "output": 0.78,
         "cache_read": 0.052,
-        "cache_write": 0.325
+        "cache_write": 0.325,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 0.78,
+            "output": 2.34,
+            "cache_read": 0.156,
+            "cache_write": 0.975
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -9756,7 +10209,16 @@
         "input": 0.26,
         "output": 0.78,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 0.78,
+            "output": 2.34,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -9808,7 +10270,7 @@
         "tools",
         "json"
       ],
-      "context_window": 40960,
+      "context_window": 131072,
       "max_output_tokens": 16384,
       "cost": {
         "input": 0.12,
@@ -9867,11 +10329,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 16384,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.09,
-        "output": 0.55,
-        "cache_read": 0,
+        "input": 0.0875,
+        "output": 0.35,
+        "cache_read": 0.0175,
         "cache_write": 0
       },
       "compatibility": {
@@ -9896,7 +10358,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 117964,
       "cost": {
         "input": 0.23,
         "output": 2.3,
@@ -9924,7 +10386,7 @@
         "tools",
         "json"
       ],
-      "context_window": 40960,
+      "context_window": 131072,
       "max_output_tokens": 16384,
       "cost": {
         "input": 0.12,
@@ -9953,7 +10415,7 @@
         "tools",
         "json"
       ],
-      "context_window": 128000,
+      "context_window": 262144,
       "max_output_tokens": 32000,
       "cost": {
         "input": 0.04815,
@@ -10011,7 +10473,7 @@
         "tools",
         "json"
       ],
-      "context_window": 40960,
+      "context_window": 131072,
       "max_output_tokens": 16384,
       "cost": {
         "input": 0.08,
@@ -10099,7 +10561,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.07,
         "output": 0.28,
@@ -10133,7 +10595,23 @@
         "input": 0.195,
         "output": 0.975,
         "cache_read": 0.039,
-        "cache_write": 0.24375
+        "cache_write": 0.24375,
+        "tiers": [
+          {
+            "input_tokens_above": 32000,
+            "input": 0.325,
+            "output": 1.625,
+            "cache_read": 0.065,
+            "cache_write": 0.40625
+          },
+          {
+            "input_tokens_above": 128000,
+            "input": 0.52,
+            "output": 2.6,
+            "cache_read": 0.104,
+            "cache_write": 0.65
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10157,7 +10635,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.12,
         "output": 0.8,
@@ -10191,7 +10669,23 @@
         "input": 0.65,
         "output": 3.25,
         "cache_read": 0.13,
-        "cache_write": 0.8125
+        "cache_write": 0.8125,
+        "tiers": [
+          {
+            "input_tokens_above": 32000,
+            "input": 1.17,
+            "output": 5.85,
+            "cache_read": 0.234,
+            "cache_write": 1.4625
+          },
+          {
+            "input_tokens_above": 128000,
+            "input": 1.95,
+            "output": 9.75,
+            "cache_read": 0.39,
+            "cache_write": 2.4375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10220,7 +10714,23 @@
         "input": 0.78,
         "output": 3.9,
         "cache_read": 0.156,
-        "cache_write": 0.975
+        "cache_write": 0.975,
+        "tiers": [
+          {
+            "input_tokens_above": 32000,
+            "input": 1.56,
+            "output": 7.8,
+            "cache_read": 0.312,
+            "cache_write": 1.95
+          },
+          {
+            "input_tokens_above": 128000,
+            "input": 1.95,
+            "output": 9.75,
+            "cache_read": 0.39,
+            "cache_write": 2.4375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10249,7 +10759,23 @@
         "input": 0.78,
         "output": 3.9,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 32000,
+            "input": 1.56,
+            "output": 7.8,
+            "cache_read": 0,
+            "cache_write": 0
+          },
+          {
+            "input_tokens_above": 128000,
+            "input": 1.95,
+            "output": 9.75,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10273,9 +10799,9 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 16384,
       "cost": {
-        "input": 0.1,
+        "input": 0.09,
         "output": 1.1,
         "cache_read": 0.07,
         "cache_write": 0
@@ -10301,8 +10827,8 @@
         "tools",
         "json"
       ],
-      "context_window": 131072,
-      "max_output_tokens": 32768,
+      "context_window": 262144,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.15,
         "output": 1.2,
@@ -10331,7 +10857,7 @@
         "vision",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 262144,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.21,
@@ -10393,7 +10919,7 @@
         "vision",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 262144,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.13,
@@ -10424,7 +10950,7 @@
         "vision",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 262144,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.2,
@@ -10486,7 +11012,7 @@
         "vision",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 262144,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.117,
@@ -10549,7 +11075,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 65536,
       "cost": {
         "input": 0.26,
         "output": 2.08,
@@ -10611,11 +11137,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 16384,
       "cost": {
-        "input": 0.25,
+        "input": 0.3125,
         "output": 1.25,
-        "cache_read": 0.25,
+        "cache_read": 0.15625,
         "cache_write": 0
       },
       "compatibility": {
@@ -10642,11 +11168,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.5,
-        "output": 3.6,
-        "cache_read": 0.3,
+        "input": 0.55,
+        "output": 3.5,
+        "cache_read": 0.225,
         "cache_write": 0
       },
       "compatibility": {
@@ -10673,7 +11199,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 32768,
       "cost": {
         "input": 0.1,
         "output": 0.15,
@@ -10740,7 +11266,16 @@
         "input": 0.26,
         "output": 1.56,
         "cache_read": 0,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 0.325,
+            "output": 1.95,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10771,7 +11306,16 @@
         "input": 0.3,
         "output": 1.8,
         "cache_read": 0,
-        "cache_write": 0.375
+        "cache_write": 0.375,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 0.375,
+            "output": 2.25,
+            "cache_read": 0,
+            "cache_write": 0.46875
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10797,11 +11341,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 81920,
+      "max_output_tokens": 65536,
       "cost": {
-        "input": 0.32,
-        "output": 3.2,
-        "cache_read": 0,
+        "input": 0.3,
+        "output": 2,
+        "cache_read": 0.03,
         "cache_write": 0
       },
       "compatibility": {
@@ -10828,9 +11372,9 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 235929,
       "cost": {
-        "input": 0.14,
+        "input": 0.15,
         "output": 1,
         "cache_read": 0.05,
         "cache_write": 0
@@ -10864,7 +11408,16 @@
         "input": 0.1875,
         "output": 1.125,
         "cache_read": 0,
-        "cache_write": 0.234375
+        "cache_write": 0.234375,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 0.75,
+            "output": 3,
+            "cache_read": 0,
+            "cache_write": 0.9375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10894,7 +11447,16 @@
         "input": 1.027,
         "output": 6.162,
         "cache_read": 0,
-        "cache_write": 1.28375
+        "cache_write": 1.28375,
+        "tiers": [
+          {
+            "input_tokens_above": 128000,
+            "input": 1.58,
+            "output": 9.48,
+            "cache_read": 0,
+            "cache_write": 1.975
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10924,7 +11486,16 @@
         "input": 0.325,
         "output": 1.95,
         "cache_read": 0,
-        "cache_write": 0.40625
+        "cache_write": 0.40625,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 1.3,
+            "output": 3.9,
+            "cache_read": 0,
+            "cache_write": 1.625
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -10955,7 +11526,23 @@
         "input": 0.03,
         "output": 0.13,
         "cache_read": 0.006,
-        "cache_write": 0.038
+        "cache_write": 0.038,
+        "tiers": [
+          {
+            "input_tokens_above": 32000,
+            "input": 0.1,
+            "output": 0.4,
+            "cache_read": 0.02,
+            "cache_write": 0.125
+          },
+          {
+            "input_tokens_above": 256000,
+            "input": 0.2,
+            "output": 0.8,
+            "cache_read": 0.04,
+            "cache_write": 0.25
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11015,7 +11602,16 @@
         "input": 0.32,
         "output": 1.28,
         "cache_read": 0.064,
-        "cache_write": 0.4
+        "cache_write": 0.4,
+        "tiers": [
+          {
+            "input_tokens_above": 256000,
+            "input": 0.96,
+            "output": 3.84,
+            "cache_read": 0.192,
+            "cache_write": 1.2
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11069,12 +11665,12 @@
         "vision",
         "json"
       ],
-      "context_window": 262144,
+      "context_window": 1000000,
       "max_output_tokens": 131072,
       "cost": {
-        "input": 0.4,
+        "input": 0.42,
         "output": 3,
-        "cache_read": 0.05,
+        "cache_read": 0.085,
         "cache_write": 0
       },
       "compatibility": {
@@ -11132,7 +11728,7 @@
         "json"
       ],
       "context_window": 16384,
-      "max_output_tokens": 16384,
+      "max_output_tokens": 14745,
       "cost": {
         "input": 0.1,
         "output": 0.1,
@@ -11197,7 +11793,16 @@
         "input": 5,
         "output": 30,
         "cache_read": 0.5,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 10,
+            "output": 45,
+            "cache_read": 1,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11342,8 +11947,8 @@
         "vision",
         "json"
       ],
-      "context_window": 256000,
-      "max_output_tokens": 256000,
+      "context_window": 262144,
+      "max_output_tokens": 230400,
       "cost": {
         "input": 0.2,
         "output": 1.15,
@@ -11402,7 +12007,7 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 235929,
       "cost": {
         "input": 0.18,
         "output": 0.6,
@@ -11430,8 +12035,8 @@
         "tools",
         "json"
       ],
-      "context_window": 32768,
-      "max_output_tokens": 32768,
+      "context_window": 1024000,
+      "max_output_tokens": 819200,
       "cost": {
         "input": 0.4,
         "output": 0.4,
@@ -11460,8 +12065,8 @@
         "vision",
         "json"
       ],
-      "context_window": 524288,
-      "max_output_tokens": 4096,
+      "context_window": 1048576,
+      "max_output_tokens": 471859,
       "cost": {
         "input": 1,
         "output": 4.05,
@@ -11491,7 +12096,7 @@
         "vision",
         "json"
       ],
-      "context_window": 524288,
+      "context_window": 1048576,
       "max_output_tokens": 262144,
       "cost": {
         "input": 0.45,
@@ -11522,7 +12127,7 @@
         "vision",
         "json"
       ],
-      "context_window": 262144,
+      "context_window": 1048576,
       "max_output_tokens": 262144,
       "cost": {
         "input": 0,
@@ -11584,7 +12189,7 @@
         "vision",
         "json"
       ],
-      "context_window": 262144,
+      "context_window": 1048576,
       "max_output_tokens": 262144,
       "cost": {
         "input": 0,
@@ -11615,7 +12220,7 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 117964,
       "cost": {
         "input": 0.15,
         "output": 0.6,
@@ -11646,9 +12251,9 @@
       "context_window": 524288,
       "max_output_tokens": 131072,
       "cost": {
-        "input": 0.03,
-        "output": 0.12,
-        "cache_read": 0.006,
+        "input": 0.09,
+        "output": 0.36,
+        "cache_read": 0.018,
         "cache_write": 0
       },
       "compatibility": {
@@ -11674,12 +12279,21 @@
         "json"
       ],
       "context_window": 2000000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 1800000,
       "cost": {
         "input": 1.25,
         "output": 2.5,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 5,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11705,12 +12319,21 @@
         "json"
       ],
       "context_window": 1000000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 900000,
       "cost": {
         "input": 1.25,
         "output": 2.5,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 5,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11736,12 +12359,21 @@
         "json"
       ],
       "context_window": 500000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 450000,
       "cost": {
         "input": 2,
         "output": 6,
         "cache_read": 0.3,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 12,
+            "cache_read": 0.6,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11767,12 +12399,21 @@
         "json"
       ],
       "context_window": 500000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 450000,
       "cost": {
         "input": 2,
         "output": 6,
         "cache_read": 0.5,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 12,
+            "cache_read": 1,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11798,12 +12439,21 @@
         "json"
       ],
       "context_window": 256000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 230400,
       "cost": {
         "input": 1,
         "output": 2,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2,
+            "output": 4,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -11828,7 +12478,7 @@
         "vision",
         "json"
       ],
-      "context_window": 1048576,
+      "context_window": 1050000,
       "max_output_tokens": 131072,
       "cost": {
         "input": 0.14,
@@ -11858,7 +12508,7 @@
         "tools",
         "json"
       ],
-      "context_window": 1048576,
+      "context_window": 1050000,
       "max_output_tokens": 131072,
       "cost": {
         "input": 0.435,
@@ -11976,12 +12626,12 @@
         "tools",
         "json"
       ],
-      "context_window": 202752,
-      "max_output_tokens": 131072,
+      "context_window": 204800,
+      "max_output_tokens": 16384,
       "cost": {
-        "input": 0.5,
-        "output": 2,
-        "cache_read": 0.1,
+        "input": 0.43,
+        "output": 1.75,
+        "cache_read": 0.08,
         "cache_write": 0
       },
       "compatibility": {
@@ -12036,7 +12686,7 @@
         "tools",
         "json"
       ],
-      "context_window": 202752,
+      "context_window": 204800,
       "max_output_tokens": 131072,
       "cost": {
         "input": 0.4,
@@ -12065,10 +12715,10 @@
         "tools",
         "json"
       ],
-      "context_window": 202752,
-      "max_output_tokens": 16384,
+      "context_window": 200000,
+      "max_output_tokens": 117964,
       "cost": {
-        "input": 0.06,
+        "input": 0.0605,
         "output": 0.4,
         "cache_read": 0.01,
         "cache_write": 0
@@ -12094,12 +12744,12 @@
         "tools",
         "json"
       ],
-      "context_window": 198000,
+      "context_window": 204800,
       "max_output_tokens": 128000,
       "cost": {
         "input": 0.6,
-        "output": 1.9,
-        "cache_read": 0.119,
+        "output": 1.92,
+        "cache_read": 0.12,
         "cache_write": 0
       },
       "compatibility": {
@@ -12152,7 +12802,7 @@
         "tools",
         "json"
       ],
-      "context_window": 200000,
+      "context_window": 204800,
       "max_output_tokens": 128000,
       "cost": {
         "input": 0.966,
@@ -12184,9 +12834,9 @@
       "context_window": 1048576,
       "max_output_tokens": 131072,
       "cost": {
-        "input": 0.966,
-        "output": 3.036,
-        "cache_read": 0.1932,
+        "input": 0.6496,
+        "output": 2.0416,
+        "cache_read": 0.12064,
         "cache_write": 0
       },
       "compatibility": {
@@ -12239,8 +12889,8 @@
         "tools",
         "json"
       ],
-      "context_window": 256000,
-      "max_output_tokens": 256000,
+      "context_window": 32768,
+      "max_output_tokens": 29491,
       "cost": {
         "input": 0,
         "output": 0,
@@ -12268,12 +12918,12 @@
         "tools",
         "json"
       ],
-      "context_window": 1048576,
+      "context_window": 1310720,
       "max_output_tokens": 131072,
       "cost": {
-        "input": 1.4,
-        "output": 4.4,
-        "cache_read": 0.26,
+        "input": 0.84,
+        "output": 2.64,
+        "cache_read": 0.156,
         "cache_write": 0
       },
       "compatibility": {
@@ -12334,7 +12984,7 @@
       "cost": {
         "input": 10,
         "output": 50,
-        "cache_read": 1,
+        "cache_read": 0.25,
         "cache_write": 12.5
       },
       "compatibility": {
@@ -12456,11 +13106,11 @@
         "tools",
         "json"
       ],
-      "context_window": 1048576,
-      "max_output_tokens": 1048576,
+      "context_window": 1310720,
+      "max_output_tokens": 943718,
       "cost": {
-        "input": 0.04,
-        "output": 0.08,
+        "input": 0.03,
+        "output": 1,
         "cache_read": 0.008,
         "cache_write": 0
       },
@@ -12490,10 +13140,10 @@
       "context_window": 1048576,
       "max_output_tokens": 65536,
       "cost": {
-        "input": 0.375,
-        "output": 1.875,
-        "cache_read": 0.0375,
-        "cache_write": 0.020833
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
+        "cache_write": 0.041667
       },
       "compatibility": {
         "openai_chat": {
@@ -12524,7 +13174,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0.375
+        "cache_write": 0.375,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0.375
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -12549,12 +13208,12 @@
         "vision",
         "json"
       ],
-      "context_window": 974842,
-      "max_output_tokens": 131072,
+      "context_window": 1048576,
+      "max_output_tokens": 943718,
       "cost": {
-        "input": 2.6,
-        "output": 13,
-        "cache_read": 0.29,
+        "input": 1.5,
+        "output": 7.5,
+        "cache_read": 0.15,
         "cache_write": 0
       },
       "compatibility": {
@@ -12643,12 +13302,21 @@
         "json"
       ],
       "context_window": 500000,
-      "max_output_tokens": 4096,
+      "max_output_tokens": 450000,
       "cost": {
-        "input": 2,
-        "output": 6,
-        "cache_read": 0.5,
-        "cache_write": 0
+        "input": 1.6,
+        "output": 4.8,
+        "cache_read": 0.4,
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 3.2,
+            "output": 9.6,
+            "cache_read": 0.8,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_chat": {
@@ -12672,12 +13340,12 @@
         "tools",
         "json"
       ],
-      "context_window": 1048576,
-      "max_output_tokens": 131072,
+      "context_window": 1310720,
+      "max_output_tokens": 943718,
       "cost": {
-        "input": 1.4,
-        "output": 4.4,
-        "cache_read": 0.26,
+        "input": 0.6545,
+        "output": 2.057,
+        "cache_read": 0.107525,
         "cache_write": 0
       },
       "compatibility": {
@@ -12843,6 +13511,64 @@
       }
     },
     {
+      "provider": "groq",
+      "id": "qwen/qwen3.8-27b",
+      "name": "Qwen3.8 27B",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 131042,
+      "max_output_tokens": 16384,
+      "cost": {
+        "input": 0.8,
+        "output": 4,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "compatibility": {
+        "openai_chat": {
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true
+        }
+      }
+    },
+    {
+      "provider": "deepseek",
+      "id": "deepseek-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cache_read": 0.003,
+        "cache_write": 0
+      },
+      "compatibility": {
+        "openai_chat": {
+          "max_tokens_field": "max_tokens",
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "reasoning_content_replay": true,
+          "long_cache_retention": true,
+          "thinking_format": "deepseek"
+        }
+      }
+    },
+    {
       "provider": "deepseek",
       "id": "deepseek-v4-flash",
       "name": "DeepSeek V4 Flash",
@@ -12851,14 +13577,15 @@
       "capabilities": [
         "streaming",
         "tools",
-        "json"
+        "json",
+        "vision"
       ],
       "context_window": 1000000,
       "max_output_tokens": 384000,
       "cost": {
-        "input": 0.14,
-        "output": 0.28,
-        "cache_read": 0.0028,
+        "input": 0.15,
+        "output": 0.6,
+        "cache_read": 0.003,
         "cache_write": 0
       },
       "compatibility": {
@@ -12867,7 +13594,39 @@
           "instruction_role": "system",
           "reasoning_content_replay": true,
           "thinking_format": "deepseek",
-          "long_cache_retention": true
+          "long_cache_retention": true,
+          "tool_result_image_fallback": true
+        }
+      }
+    },
+    {
+      "provider": "deepseek",
+      "id": "deepseek-v4-flash-vision-exp",
+      "name": "DeepSeek V4 Flash Vision Exp",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cache_read": 0.003,
+        "cache_write": 0
+      },
+      "compatibility": {
+        "openai_chat": {
+          "max_tokens_field": "max_tokens",
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "reasoning_content_replay": true,
+          "long_cache_retention": true,
+          "thinking_format": "deepseek"
         }
       }
     },
@@ -12917,7 +13676,16 @@
         "input": 1.25,
         "output": 2.5,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 5,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_responses": {
@@ -12942,7 +13710,16 @@
         "input": 2,
         "output": 6,
         "cache_read": 0.3,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 12,
+            "cache_read": 0.6,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_responses": {
@@ -12967,7 +13744,16 @@
         "input": 2,
         "output": 6,
         "cache_read": 0.5,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 12,
+            "cache_read": 1,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_responses": {
@@ -12992,7 +13778,16 @@
         "input": 1,
         "output": 2,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2,
+            "output": 4,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       },
       "compatibility": {
         "openai_responses": {
@@ -13050,6 +13845,33 @@
       "compatibility": {
         "openai_chat": {
           "instruction_role": "system",
+          "long_cache_retention": true
+        }
+      }
+    },
+    {
+      "provider": "cerebras",
+      "id": "qwen-3.8-27b",
+      "name": "Qwen3.8 27B",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 65536,
+      "max_output_tokens": 32768,
+      "cost": {
+        "input": 0.99,
+        "output": 1.49,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "compatibility": {
+        "openai_chat": {
+          "tool_result_image_fallback": true,
           "long_cache_retention": true
         }
       }

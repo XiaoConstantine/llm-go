@@ -38,10 +38,10 @@ func TestDefaultProviderCompatibilityMatchesResolvedAPI(t *testing.T) {
 		t.Errorf("expected Anthropic compatibility with AdaptiveThinking, got %+v", compat)
 	}
 
-	// Anthropic routed through OpenAIChatCompletions -> should not attach Anthropic compatibility
+	// Anthropic routed through Chat Completions receives only protocol defaults.
 	compatWrongAPI := DefaultProviderCompatibility("anthropic", ModelEntry{Reasoning: true}, llm.APIOpenAIChatCompletions)
-	if compatWrongAPI != nil {
-		t.Errorf("expected nil compatibility when Anthropic is routed via Chat Completions, got %+v", compatWrongAPI)
+	if compatWrongAPI == nil || compatWrongAPI.OpenAIChat == nil || compatWrongAPI.Anthropic != nil || compatWrongAPI.OpenAIChat.LongCacheRetention != llm.CompatibilityEnabled {
+		t.Errorf("expected generic Chat Completions compatibility, got %+v", compatWrongAPI)
 	}
 
 	// OpenAI with OpenAIResponses -> valid
@@ -50,10 +50,10 @@ func TestDefaultProviderCompatibilityMatchesResolvedAPI(t *testing.T) {
 		t.Errorf("expected OpenAIResponses compatibility, got %+v", openaiCompat)
 	}
 
-	// OpenAI routed via OpenAIChatCompletions -> nil
+	// OpenAI routed via Chat Completions receives only protocol defaults.
 	openaiChatCompat := DefaultProviderCompatibility("openai", ModelEntry{}, llm.APIOpenAIChatCompletions)
-	if openaiChatCompat != nil {
-		t.Errorf("expected nil compatibility when OpenAI is routed via Chat Completions, got %+v", openaiChatCompat)
+	if openaiChatCompat == nil || openaiChatCompat.OpenAIChat == nil || openaiChatCompat.OpenAIResponses != nil {
+		t.Errorf("expected generic Chat Completions compatibility, got %+v", openaiChatCompat)
 	}
 }
 

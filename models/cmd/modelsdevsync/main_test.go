@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -105,6 +106,31 @@ func TestSyncCatalogUpdatesLimitsAndCost(t *testing.T) {
 	// Verify compatibility is preserved!
 	if m.Compatibility == nil || m.Compatibility.Anthropic == nil || !*m.Compatibility.Anthropic.StrictTools {
 		t.Errorf("expected compatibility to be preserved, got %+v", m.Compatibility)
+	}
+}
+
+func TestApplyModelUpdateKeepsCapabilitiesAndPricingUsable(t *testing.T) {
+	chat := sourceModel{
+		Provider: "deepseek", ID: "vision", Name: "Vision", API: llm.APIOpenAIChatCompletions,
+		Capabilities:  &[]llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools},
+		Compatibility: &sourceCompatibility{OpenAIChat: &sourceOpenAIChat{}},
+	}
+	if !applyModelUpdate(&chat, modelsdev.ModelEntry{Modalities: &modelsdev.Modalities{Input: []string{"text", "image"}}}) {
+		t.Fatal("vision update reported no change")
+	}
+	if !slices.Contains(*chat.Capabilities, llm.CapabilityVision) || chat.Compatibility.OpenAIChat.ToolResultImageFallback == nil || !*chat.Compatibility.OpenAIChat.ToolResultImageFallback {
+		t.Fatalf("vision model = %#v", chat)
+	}
+
+	audio := sourceModel{
+		Provider: "openrouter", ID: "audio", Name: "Audio", API: llm.APIOpenAIChatCompletions,
+		Capabilities: &[]llm.Capability{llm.CapabilityStreaming, llm.CapabilityAudio},
+	}
+	if applyModelUpdate(&audio, modelsdev.ModelEntry{Cost: &modelsdev.Cost{Input: floatPtr(1), Output: floatPtr(2)}}) {
+		t.Fatal("audio-only pricing changed the model")
+	}
+	if audio.Cost != nil {
+		t.Fatalf("audio cost = %#v, want nil", audio.Cost)
 	}
 }
 
@@ -345,6 +371,36 @@ func TestSyncCatalogAddNewModelWithContextOver200k(t *testing.T) {
 
 	if err := validateCatalog(catalog); err != nil {
 		t.Fatalf("validateCatalog failed on added model: %v", err)
+	}
+}
+
+func TestCreateSourceModelNormalizesIdentityAndKeepsProviderCompatibility(t *testing.T) {
+	entry := modelsdev.ModelEntry{
+		ID:        " deepseek-v4 ",
+		Name:      " DeepSeek V4 ",
+		ToolCall:  true,
+		Reasoning: true,
+		Limit:     &modelsdev.Limit{Context: 1_000_000, Output: 384_000},
+	}
+	model, ok := createSourceModel("deepseek", entry)
+	if !ok {
+		t.Fatal("createSourceModel rejected valid model")
+	}
+	if model.ID != "deepseek-v4" || model.Name != "DeepSeek V4" {
+		t.Fatalf("identity = %q/%q", model.ID, model.Name)
+	}
+	if model.Compatibility == nil || model.Compatibility.OpenAIChat == nil || model.Compatibility.OpenAIChat.ThinkingFormat != llm.ThinkingFormatDeepSeek {
+		t.Fatalf("compatibility = %#v", model.Compatibility)
+	}
+	if err := validateCatalog(&sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{model}}); err != nil {
+		t.Fatalf("validate normalized model: %v", err)
+	}
+
+	entry.ID = "router/model"
+	entry.Name = "Router Model"
+	model, ok = createSourceModel("openrouter", entry)
+	if !ok || model.Compatibility == nil || model.Compatibility.OpenAIChat == nil || model.Compatibility.OpenAIChat.ThinkingFormat != llm.ThinkingFormatOpenRouter || model.Compatibility.OpenAIChat.SessionAffinityFormat != llm.SessionAffinityOpenRouter {
+		t.Fatalf("OpenRouter compatibility = %#v, ok = %t", model.Compatibility, ok)
 	}
 }
 

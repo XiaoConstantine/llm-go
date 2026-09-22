@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 588 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 588", len(models))
+	if len(models) != 598 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 598", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -31,6 +31,16 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		compatibility.OpenAIChat.ReasoningContentReplay != llm.CompatibilityEnabled ||
 		compatibility.OpenAIChat.ThinkingFormat != llm.ThinkingFormatDeepSeek {
 		t.Fatalf("DeepSeek compatibility = %#v", compatibility)
+	}
+
+	deepseekV41, ok := catalog.Model(ProviderDeepSeek, "deepseek-flash")
+	if !ok || deepseekV41.Name != "DeepSeek V4.1 Flash" || !hasCapability(deepseekV41.Capabilities, llm.CapabilityVision) || deepseekV41.Compatibility == nil || deepseekV41.Compatibility.OpenAIChat == nil || deepseekV41.Compatibility.OpenAIChat.ToolResultImageFallback != llm.CompatibilityEnabled {
+		t.Fatalf("DeepSeek V4.1 Flash model = %#v", deepseekV41)
+	}
+
+	gpt56, ok := catalog.Model("openai", "gpt-5.6")
+	if !ok || gpt56.ContextWindow != 1_050_000 || gpt56.MaxOutputTokens != 128_000 || gpt56.Cost == nil || gpt56.Cost.Input != 4 || hasCapability(gpt56.Capabilities, llm.CapabilityJSON) {
+		t.Fatalf("GPT-5.6 model = %#v", gpt56)
 	}
 
 	automatic, ok := catalog.Model(ProviderOpenRouter, "openrouter/auto")
