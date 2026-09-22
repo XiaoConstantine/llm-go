@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 612 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 612", len(models))
+	if len(models) != 614 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 614", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -125,6 +125,8 @@ func TestBuiltinCatalogCodexRouteLimits(t *testing.T) {
 		{id: "gpt-5.6-sol", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-5.6-terra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-6-astra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-6-luna", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-6-sol", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 	}
 	for _, test := range tests {
 		model, ok := catalog.Model("openai-codex", test.id)

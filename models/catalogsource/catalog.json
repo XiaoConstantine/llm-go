@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 17,
+  "revision": 18,
   "models": [
     {
       "provider": "anthropic",
@@ -2309,6 +2309,60 @@
         "output": 50,
         "cache_read": 1,
         "cache_write": 12.5
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "api": "openai-codex-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 272000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_read": 0.01,
+        "cache_write": 0.125
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6-sol",
+      "name": "GPT-6 Sol",
+      "api": "openai-codex-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 272000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.2,
+        "cache_write": 2.5
       },
       "compatibility": {
         "openai_responses": {
