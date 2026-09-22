@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 598 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 598", len(models))
+	if len(models) != 609 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 609", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -41,6 +41,16 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	gpt56, ok := catalog.Model("openai", "gpt-5.6")
 	if !ok || gpt56.ContextWindow != 1_050_000 || gpt56.MaxOutputTokens != 128_000 || gpt56.Cost == nil || gpt56.Cost.Input != 4 || hasCapability(gpt56.Capabilities, llm.CapabilityJSON) {
 		t.Fatalf("GPT-5.6 model = %#v", gpt56)
+	}
+
+	opus55, ok := catalog.Model("anthropic", "claude-opus-5-5")
+	if !ok || opus55.ContextWindow != 1_000_000 || opus55.Cost == nil || opus55.Cost.Input != 4 || opus55.Compatibility == nil || opus55.Compatibility.Anthropic == nil || opus55.Compatibility.Anthropic.Temperature != llm.CompatibilityDisabled {
+		t.Fatalf("Claude Opus 5.5 model = %#v", opus55)
+	}
+
+	gpt6Sol, ok := catalog.Model("openai", "gpt-6-sol")
+	if !ok || gpt6Sol.ContextWindow != 1_050_000 || gpt6Sol.Cost == nil || gpt6Sol.Cost.Input != 2 || len(gpt6Sol.Cost.Tiers) != 1 || hasCapability(gpt6Sol.Capabilities, llm.CapabilityJSON) {
+		t.Fatalf("GPT-6 Sol model = %#v", gpt6Sol)
 	}
 
 	automatic, ok := catalog.Model(ProviderOpenRouter, "openrouter/auto")

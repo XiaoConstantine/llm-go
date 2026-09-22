@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 15,
+  "revision": 16,
   "models": [
     {
       "provider": "anthropic",
@@ -258,6 +258,34 @@
         "output": 25,
         "cache_read": 0.5,
         "cache_write": 6.25
+      },
+      "compatibility": {
+        "anthropic": {
+          "temperature": false,
+          "adaptive_thinking": true,
+          "strict_tools": true,
+          "tool_references": true
+        }
+      }
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "api": "anthropic-messages",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.2,
+        "cache_write": 5
       },
       "compatibility": {
         "anthropic": {
@@ -1312,6 +1340,43 @@
     },
     {
       "provider": "openai",
+      "id": "gpt-6-sol",
+      "name": "GPT-6 Sol",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true,
+          "explicit_prompt_cache_mode": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
       "id": "gpt-realtime-2.1",
       "name": "GPT-Realtime-2.1",
       "api": "openai-responses",
@@ -2227,7 +2292,7 @@
         "tools",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 1048576,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.8,
@@ -2256,7 +2321,7 @@
         "tools",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 1048576,
       "max_output_tokens": 32768,
       "cost": {
         "input": 3,
@@ -2285,7 +2350,7 @@
         "tools",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 1048576,
       "max_output_tokens": 32768,
       "cost": {
         "input": 0.7,
@@ -3113,6 +3178,37 @@
         "output": 50,
         "cache_read": 1,
         "cache_write": 12.5
+      },
+      "compatibility": {
+        "openai_chat": {
+          "thinking_format": "openrouter",
+          "cache_control_format": "anthropic",
+          "long_cache_retention": true,
+          "tool_result_image_fallback": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "anthropic/claude-opus-5.5",
+      "name": "Claude Opus 5.5",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.2,
+        "cache_write": 5
       },
       "compatibility": {
         "openai_chat": {
@@ -4136,9 +4232,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "cost": {
-        "input": 0.951432,
-        "output": 1.902864,
-        "cache_read": 0.079286,
+        "input": 0.904104,
+        "output": 1.808208,
+        "cache_read": 0.075342,
         "cache_write": 0
       },
       "compatibility": {
@@ -9294,6 +9390,86 @@
     },
     {
       "provider": "openrouter",
+      "id": "openai/gpt-6-sol",
+      "name": "GPT-6 Sol",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-6-sol-pro",
+      "name": "GPT-6 Sol Pro",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "openai/gpt-audio",
       "name": "OpenAI: GPT Audio",
       "api": "openai-chat-completions",
@@ -9414,10 +9590,10 @@
         "json"
       ],
       "context_window": 131072,
-      "max_output_tokens": 117964,
+      "max_output_tokens": 32768,
       "cost": {
-        "input": 0.03,
-        "output": 0.13,
+        "input": 0.018,
+        "output": 0.09,
         "cache_read": 0.03,
         "cache_write": 0
       },
@@ -11341,11 +11517,11 @@
         "json"
       ],
       "context_window": 262144,
-      "max_output_tokens": 65536,
+      "max_output_tokens": 262140,
       "cost": {
-        "input": 0.3,
-        "output": 2,
-        "cache_read": 0.03,
+        "input": 0.32,
+        "output": 2.7,
+        "cache_read": 0.15,
         "cache_write": 0
       },
       "compatibility": {
@@ -11980,9 +12156,9 @@
       "context_window": 262144,
       "max_output_tokens": 128000,
       "cost": {
-        "input": 0.132,
-        "output": 0.528,
-        "cache_read": 0.033,
+        "input": 0.0825,
+        "output": 0.33,
+        "cache_read": 0.020625,
         "cache_write": 0
       },
       "compatibility": {
@@ -12921,9 +13097,9 @@
       "context_window": 1310720,
       "max_output_tokens": 131072,
       "cost": {
-        "input": 0.84,
-        "output": 2.64,
-        "cache_read": 0.156,
+        "input": 0.6538,
+        "output": 2.0548,
+        "cache_read": 0.12142,
         "cache_write": 0
       },
       "compatibility": {
@@ -13046,10 +13222,10 @@
       "context_window": 1000000,
       "max_output_tokens": 128000,
       "cost": {
-        "input": 5,
-        "output": 25,
-        "cache_read": 0.5,
-        "cache_write": 6.25
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.2,
+        "cache_write": 5
       },
       "compatibility": {
         "openai_chat": {
@@ -13341,11 +13517,11 @@
         "json"
       ],
       "context_window": 1310720,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 131072,
       "cost": {
-        "input": 0.6545,
-        "output": 2.057,
-        "cache_read": 0.107525,
+        "input": 0.6538,
+        "output": 2.0548,
+        "cache_read": 0.12142,
         "cache_write": 0
       },
       "compatibility": {
@@ -15141,6 +15317,26 @@
     },
     {
       "provider": "amazon-bedrock",
+      "id": "anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "api": "bedrock-converse-stream",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.2,
+        "cache_write": 5
+      }
+    },
+    {
+      "provider": "amazon-bedrock",
       "id": "anthropic.claude-sonnet-4-20250514-v1:0",
       "name": "Claude Sonnet 4",
       "api": "bedrock-converse-stream",
@@ -15217,6 +15413,26 @@
         "output": 82.5,
         "cache_read": 0.5,
         "cache_write": 6.25
+      }
+    },
+    {
+      "provider": "amazon-bedrock",
+      "id": "au.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5 (AU)",
+      "api": "bedrock-converse-stream",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4.4,
+        "output": 22,
+        "cache_read": 0.22,
+        "cache_write": 5.5
       }
     },
     {
@@ -15378,6 +15594,26 @@
     },
     {
       "provider": "amazon-bedrock",
+      "id": "eu.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5 (EU)",
+      "api": "bedrock-converse-stream",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4.4,
+        "output": 22,
+        "cache_read": 0.22,
+        "cache_write": 5.5
+      }
+    },
+    {
+      "provider": "amazon-bedrock",
       "id": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
       "name": "Claude Sonnet 4 (EU)",
       "api": "bedrock-converse-stream",
@@ -15518,6 +15754,26 @@
     },
     {
       "provider": "amazon-bedrock",
+      "id": "global.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5 (Global)",
+      "api": "bedrock-converse-stream",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4,
+        "output": 20,
+        "cache_read": 0.2,
+        "cache_write": 5
+      }
+    },
+    {
+      "provider": "amazon-bedrock",
       "id": "global.anthropic.claude-sonnet-4-20250514-v1:0",
       "name": "Claude Sonnet 4 (Global)",
       "api": "bedrock-converse-stream",
@@ -15614,6 +15870,26 @@
         "output": 0.08,
         "cache_read": 0,
         "cache_write": 0
+      }
+    },
+    {
+      "provider": "amazon-bedrock",
+      "id": "jp.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5 (JP)",
+      "api": "bedrock-converse-stream",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4.4,
+        "output": 22,
+        "cache_read": 0.22,
+        "cache_write": 5.5
       }
     },
     {
@@ -16486,6 +16762,26 @@
         "output": 25,
         "cache_read": 0.5,
         "cache_write": 6.25
+      }
+    },
+    {
+      "provider": "amazon-bedrock",
+      "id": "us.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5 (US)",
+      "api": "bedrock-converse-stream",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 4.4,
+        "output": 22,
+        "cache_read": 0.22,
+        "cache_write": 5.5
       }
     },
     {
