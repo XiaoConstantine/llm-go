@@ -13,8 +13,8 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
 	models := catalog.Models("")
-	if len(models) != 609 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 609", len(models))
+	if len(models) != 612 {
+		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 612", len(models))
 	}
 
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
@@ -51,6 +51,11 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	gpt6Sol, ok := catalog.Model("openai", "gpt-6-sol")
 	if !ok || gpt6Sol.ContextWindow != 1_050_000 || gpt6Sol.Cost == nil || gpt6Sol.Cost.Input != 2 || len(gpt6Sol.Cost.Tiers) != 1 || hasCapability(gpt6Sol.Capabilities, llm.CapabilityJSON) {
 		t.Fatalf("GPT-6 Sol model = %#v", gpt6Sol)
+	}
+
+	gpt6Luna, ok := catalog.Model("openai", "gpt-6-luna")
+	if !ok || gpt6Luna.ContextWindow != 1_050_000 || gpt6Luna.Cost == nil || gpt6Luna.Cost.Input != 0.1 || len(gpt6Luna.Cost.Tiers) != 1 || hasCapability(gpt6Luna.Capabilities, llm.CapabilityJSON) {
+		t.Fatalf("GPT-6 Luna model = %#v", gpt6Luna)
 	}
 
 	automatic, ok := catalog.Model(ProviderOpenRouter, "openrouter/auto")

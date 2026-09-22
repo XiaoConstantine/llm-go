@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 16,
+  "revision": 17,
   "models": [
     {
       "provider": "anthropic",
@@ -1326,6 +1326,43 @@
             "output": 75,
             "cache_read": 2,
             "cache_write": 25
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true,
+          "explicit_prompt_cache_mode": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 0.2,
+            "output": 0.75,
+            "cache_read": 0.02,
+            "cache_write": 0.25
           }
         ]
       },
@@ -9374,6 +9411,86 @@
             "output": 75,
             "cache_read": 2,
             "cache_write": 25
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 0.2,
+            "output": 0.75,
+            "cache_read": 0.02,
+            "cache_write": 0.25
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_chat": {
+          "instruction_role": "system",
+          "tool_result_image_fallback": true,
+          "long_cache_retention": true,
+          "session_affinity": true,
+          "session_affinity_format": "openrouter",
+          "thinking_format": "openrouter"
+        }
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-6-luna-pro",
+      "name": "GPT-6 Luna Pro",
+      "api": "openai-chat-completions",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 0.2,
+            "output": 0.75,
+            "cache_read": 0.02,
+            "cache_write": 0.25
           }
         ]
       },
