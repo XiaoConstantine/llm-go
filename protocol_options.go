@@ -14,7 +14,9 @@ type ReasoningPolicy string
 
 const (
 	ReasoningPolicyDefault ReasoningPolicy = ""
-	ReasoningPolicyExact   ReasoningPolicy = "exact"
+	// ReasoningPolicyExact preserves requested efforts on OpenAI Chat,
+	// Responses, Azure, Codex, and Anthropic. Other adapters reject it.
+	ReasoningPolicyExact ReasoningPolicy = "exact"
 )
 
 // OpenAIChatOptions contains options specific to Chat Completions.
@@ -86,7 +88,8 @@ func newExtraFields(fields map[string]any, anthropic bool) (map[string]json.RawM
 		}
 		if anthropic {
 			for _, r := range key {
-				if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+				plain := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-'
+				if !plain {
 					return nil, fmt.Errorf("extra field %q must be a plain top-level name", key)
 				}
 			}

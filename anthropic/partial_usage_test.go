@@ -24,7 +24,11 @@ func TestPartialUsageSurvivesErrorAndTruncation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer stream.Close()
+			defer func() {
+				if err := stream.Close(); err != nil {
+					t.Errorf("close stream: %v", err)
+				}
+			}()
 			chunks, terminal := receiveAll(stream)
 			if terminal == nil || errors.Is(terminal, io.EOF) {
 				t.Fatalf("terminal=%v", terminal)
@@ -64,7 +68,11 @@ func TestPartialUsageSurvivesCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			t.Errorf("close stream: %v", err)
+		}
+	}()
 	chunk, err := stream.Recv()
 	if err != nil || chunk.Usage == nil {
 		t.Fatalf("chunk=%+v err=%v", chunk, err)

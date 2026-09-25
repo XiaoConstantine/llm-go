@@ -10,7 +10,7 @@ import (
 	llm "github.com/XiaoConstantine/llm-go"
 )
 
-func TestDocumentPartLegacyWire(t *testing.T) {
+func TestDocumentPartWire(t *testing.T) {
 	data := []byte("%PDF-fixture")
 	encoded := base64.StdEncoding.EncodeToString(data)
 	for _, test := range []struct {
