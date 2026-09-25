@@ -598,7 +598,7 @@ func checkRequest(provider, op string, request llm.Request) error {
 		for _, part := range message.Content {
 			switch part.Kind {
 			case llm.PartText:
-			case llm.PartImage:
+			case llm.PartImage, llm.PartFile:
 				if message.Role != llm.RoleUser {
 					return unsupported(provider, op, "image content is supported only in user messages")
 				}

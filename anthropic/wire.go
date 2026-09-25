@@ -7,6 +7,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"mime"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -72,6 +73,7 @@ type toolChoice struct {
 }
 
 type inputContentBlock struct {
+	Title        string          `json:"title,omitempty"`
 	Type         string          `json:"type"`
 	Text         *string         `json:"text,omitzero"`
 	Source       *imageSource    `json:"source,omitempty"`
@@ -591,11 +593,33 @@ func anthropicParts(op string, parts []llm.Part) ([]inputContentBlock, error) {
 				return nil, requestError(op, "content[%d] image media type %q is not supported", index, part.MediaType)
 			}
 			blocks = append(blocks, inputContentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(part.Data)}})
+		case llm.PartFile:
+			source := &imageSource{}
+			switch {
+			case part.MediaType == "application/pdf":
+				source.Type, source.MediaType, source.Data = "base64", "application/pdf", base64.StdEncoding.EncodeToString(part.Data)
+			case strings.HasPrefix(part.MediaType, "text/"):
+				source.Type, source.MediaType, source.Data = "text", "text/plain", string(part.Data)
+			default:
+				return nil, unsupported(op, "file media type must be application/pdf or text/*")
+			}
+			blocks = append(blocks, inputContentBlock{Type: "document", Source: source, Title: documentTitle(part.Filename)})
 		default:
 			return nil, unsupported(op, fmt.Sprintf("content[%d] kind %d is not supported", index, part.Kind))
 		}
 	}
 	return blocks, nil
+}
+
+var documentTitleCharacters = regexp.MustCompile(`[^a-zA-Z0-9\s\-()\[\]]`)
+var documentTitleWhitespace = regexp.MustCompile(`\s+`)
+
+func documentTitle(filename string) string {
+	title := strings.TrimSpace(documentTitleWhitespace.ReplaceAllString(documentTitleCharacters.ReplaceAllString(filename, " "), " "))
+	if title == "" {
+		return "Document"
+	}
+	return title
 }
 
 func parseAnthropicMessageData(raw json.RawMessage, model string) (anthropicMessageData, bool, error) {

@@ -77,11 +77,18 @@ type chatMessage struct {
 }
 
 type contentPart struct {
+	File         *fileContent      `json:"file,omitempty"`
 	Type         string            `json:"type"`
 	Text         *string           `json:"text,omitzero"`
 	ImageURL     *imageURL         `json:"image_url,omitempty"`
 	InputAudio   *inputAudio       `json:"input_audio,omitempty"`
 	CacheControl *chatCacheControl `json:"cache_control,omitempty"`
+}
+
+type fileContent struct {
+	FileData string `json:"file_data,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	Filename string `json:"filename,omitempty"`
 }
 
 type chatCacheControl struct {
@@ -765,6 +772,28 @@ func contentToWire(op string, role llm.Role, parts []llm.Part) (any, error) {
 					Format: format,
 				},
 			}
+		case llm.PartFile:
+			if role != llm.RoleUser {
+				return nil, unsupported(op, "file content is supported only in user messages")
+			}
+			file := &fileContent{}
+			switch {
+			case part.MediaType == "application/pdf":
+				if strings.HasPrefix(string(part.Data), "file-") {
+					file.FileID = string(part.Data)
+				} else {
+					file.FileData = "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(part.Data)
+					file.Filename = part.Filename
+					if file.Filename == "" {
+						file.Filename = fmt.Sprintf("part-%d.pdf", i)
+					}
+				}
+			case strings.HasPrefix(part.MediaType, "text/"):
+				file.FileData = base64.StdEncoding.EncodeToString(part.Data)
+			default:
+				return nil, unsupported(op, "file media type must be application/pdf or text/*")
+			}
+			content[i] = contentPart{Type: "file", File: file}
 		default:
 			return nil, unsupported(op, "content kind is not supported")
 		}

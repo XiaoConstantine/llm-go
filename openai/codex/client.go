@@ -547,6 +547,8 @@ func checkRequest(op string, request llm.Request) error {
 		for _, part := range message.Content {
 			switch part.Kind {
 			case llm.PartText:
+			case llm.PartFile:
+				return unsupported(op, "file content is not supported by the subscription endpoint")
 			case llm.PartImage:
 				if message.Role != llm.RoleUser {
 					return unsupported(op, "image content is supported only in user messages")

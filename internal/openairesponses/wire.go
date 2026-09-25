@@ -359,6 +359,22 @@ func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, 
 			}
 			content = append(content, image)
 			hasStructuredContent = true
+		case llm.PartFile:
+			if part.MediaType != "application/pdf" {
+				return nil, false, c.unsupported(op, "Responses file content requires application/pdf")
+			}
+			if part.CacheBreakpoint {
+				return nil, false, c.unsupported(op, "file cache breakpoints are not supported")
+			}
+			filename := part.Filename
+			if filename == "" {
+				filename = fmt.Sprintf("part-%d.pdf", partIndex)
+			}
+			file := openairesponses.ResponseInputContentUnionParam{OfInputFile: &openairesponses.ResponseInputFileParam{
+				Type: "input_file", Filename: param.NewOpt(filename), FileData: param.NewOpt("data:application/pdf;base64," + base64.StdEncoding.EncodeToString(part.Data)),
+			}}
+			content = append(content, file)
+			hasStructuredContent = true
 		case llm.PartAudio:
 			if part.CacheBreakpoint {
 				return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] audio cache breakpoints are not supported", messageIndex, partIndex))

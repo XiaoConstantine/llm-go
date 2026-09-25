@@ -31,6 +31,8 @@ const (
 	PartImage
 	// PartAudio contains encoded audio bytes in Part.Data.
 	PartAudio
+	// PartFile contains a user document in Data, with MediaType and optional Filename.
+	PartFile
 )
 
 // Part is one piece of message content. Text parts use Text and leave Data and
@@ -43,7 +45,8 @@ type Part struct {
 	Text            string
 	Data            []byte
 	MediaType       string
-	CacheBreakpoint bool `json:",omitzero"`
+	Filename        string `json:",omitzero"`
+	CacheBreakpoint bool   `json:",omitzero"`
 }
 
 // Message is one turn in a model conversation. ToolCalls are valid only on an
