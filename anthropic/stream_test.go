@@ -381,7 +381,7 @@ func TestStreamAcceptsStandardLineEndingsAndFinalEOFEvent(t *testing.T) {
 				t.Fatalf("Recv() terminal = %v", terminal)
 			}
 			_ = stream.Close()
-			if len(chunks) != 1 || chunks[0].FinishReason != llm.FinishReasonStop {
+			if len(chunks) != 2 || chunks[0].Usage == nil || chunks[1].FinishReason != llm.FinishReasonStop {
 				t.Fatalf("chunks = %#v", chunks)
 			}
 		})
@@ -406,7 +406,7 @@ func TestStreamMapsFinishReasons(t *testing.T) {
 				t.Fatalf("Stream() error = %v", err)
 			}
 			chunks, terminal := receiveAll(stream)
-			if !errors.Is(terminal, io.EOF) || len(chunks) != 1 || chunks[0].FinishReason != want {
+			if !errors.Is(terminal, io.EOF) || len(chunks) != 2 || chunks[0].Usage == nil || chunks[1].FinishReason != want {
 				t.Fatalf("stream result = (%#v, %v), want %q", chunks, terminal, want)
 			}
 			_ = stream.Close()
@@ -434,11 +434,12 @@ func TestStreamEmitsPartialToolArguments(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if len(chunks) != 5 {
-		t.Fatalf("len(chunks) = %d, want 5: %#v", len(chunks), chunks)
+	if len(chunks) != 6 {
+		t.Fatalf("len(chunks) = %d, want 6: %#v", len(chunks), chunks)
 	}
 	wantKinds := [][]llm.StreamEventKind{
-		{llm.StreamEventStart, llm.StreamEventToolCallStart},
+		{llm.StreamEventStart},
+		{llm.StreamEventToolCallStart},
 		{llm.StreamEventToolCallDelta},
 		{llm.StreamEventToolCallDelta},
 		{llm.StreamEventToolCallEnd},
@@ -454,16 +455,16 @@ func TestStreamEmitsPartialToolArguments(t *testing.T) {
 			}
 		}
 	}
-	if got := chunks[1].Events[0].Delta + chunks[2].Events[0].Delta; got != `{"city":"Paris"}` {
+	if got := chunks[2].Events[0].Delta + chunks[3].Events[0].Delta; got != `{"city":"Paris"}` {
 		t.Fatalf("tool argument deltas = %q", got)
 	}
-	final := chunks[4]
+	final := chunks[5]
 	if final.FinishReason != llm.FinishReasonToolCall || len(final.ToolCalls) != 1 || string(final.ToolCalls[0].Arguments) != `{"city":"Paris"}` {
 		t.Fatalf("final chunk = %#v", final)
 	}
-	endCall := chunks[3].Events[0].ToolCall
+	endCall := chunks[4].Events[0].ToolCall
 	if endCall == nil || endCall.ID != "toolu_one" || endCall.Name != "lookup" || string(endCall.Arguments) != `{"city":"Paris"}` {
-		t.Fatalf("tool end event = %#v", chunks[3].Events[0])
+		t.Fatalf("tool end event = %#v", chunks[4].Events[0])
 	}
 	endCall.Arguments[0] = '['
 	if string(final.ToolCalls[0].Arguments) != `{"city":"Paris"}` {
@@ -761,6 +762,10 @@ func TestStreamCloseAndCancellationReleaseBody(t *testing.T) {
 			t.Fatalf("Stream() error = %v", err)
 		}
 		chunk, err := stream.Recv()
+		if err != nil || chunk.Usage == nil {
+			t.Fatalf("initial usage = (%#v, %v)", chunk, err)
+		}
+		chunk, err = stream.Recv()
 		if err != nil || chunk.Content[0].Text != "ready" {
 			t.Fatalf("Recv() = (%#v, %v)", chunk, err)
 		}

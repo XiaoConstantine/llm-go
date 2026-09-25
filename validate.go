@@ -21,6 +21,9 @@ func (r Request) Validate() error {
 }
 
 func (r Request) validate() error {
+	if err := r.validateProtocolOptions(); err != nil {
+		return err
+	}
 	if len(r.Messages) == 0 {
 		return fmt.Errorf("messages must not be empty")
 	}
@@ -244,6 +247,9 @@ func validateMessage(message Message) error {
 	}
 
 	for i, part := range message.Content {
+		if part.Kind == PartFile && message.Role != RoleUser {
+			return fmt.Errorf("file content is supported only in user messages")
+		}
 		if err := validatePart(part); err != nil {
 			return fmt.Errorf("content[%d]: %w", i, err)
 		}
@@ -267,6 +273,12 @@ func validateMessage(message Message) error {
 }
 
 func validatePart(part Part) error {
+	if part.Filename != "" && part.Kind != PartFile {
+		return fmt.Errorf("filename is valid only for file parts")
+	}
+	if !utf8.ValidString(part.Filename) {
+		return fmt.Errorf("filename must be valid UTF-8")
+	}
 	switch part.Kind {
 	case PartText:
 		if len(part.Data) != 0 || part.MediaType != "" {
@@ -275,7 +287,10 @@ func validatePart(part Part) error {
 		if !utf8.ValidString(part.Text) {
 			return fmt.Errorf("text must be valid UTF-8")
 		}
-	case PartImage, PartAudio:
+	case PartImage, PartAudio, PartFile:
+		if part.Kind == PartFile && strings.HasPrefix(part.MediaType, "text/") && !utf8.Valid(part.Data) {
+			return fmt.Errorf("text document data must be valid UTF-8")
+		}
 		if part.Text != "" {
 			return fmt.Errorf("binary part must not contain text")
 		}
@@ -334,6 +349,9 @@ func validateToolResult(result ToolResult) error {
 		return fmt.Errorf("name must be valid UTF-8")
 	}
 	for i, part := range result.Content {
+		if part.Kind == PartFile {
+			return fmt.Errorf("file tool results are not supported")
+		}
 		if err := validatePart(part); err != nil {
 			return fmt.Errorf("content[%d]: %w", i, err)
 		}

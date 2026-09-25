@@ -172,11 +172,13 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 	}
 
 	params := openairesponses.ResponseNewParams{
-		Model:             shared.ResponsesModel(model),
-		Store:             param.NewOpt(false),
-		Input:             openairesponses.ResponseNewParamsInputUnion{OfInputItemList: input},
-		ParallelToolCalls: param.NewOpt(true),
-		Tools:             tools,
+		Model: shared.ResponsesModel(model),
+		Store: param.NewOpt(false),
+		Input: openairesponses.ResponseNewParamsInputUnion{OfInputItemList: input},
+		Tools: tools,
+	}
+	if request.ParallelToolCalls != nil {
+		params.ParallelToolCalls = param.NewOpt(*request.ParallelToolCalls)
 	}
 	if len(instructions) != 0 {
 		params.Instructions = param.NewOpt(strings.Join(instructions, "\n\n"))
@@ -189,6 +191,14 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 			params.Reasoning.Summary = shared.ReasoningSummaryAuto
 		}
 		params.Text.Verbosity = openairesponses.ResponseTextConfigVerbosityLow
+	}
+	if protocol := request.OpenAIResponses; protocol != nil {
+		if protocol.Verbosity != nil {
+			params.Text.Verbosity = openairesponses.ResponseTextConfigVerbosity(*protocol.Verbosity)
+		}
+		if protocol.ServiceTier != nil {
+			params.ServiceTier = openairesponses.ResponseNewParamsServiceTier(*protocol.ServiceTier)
+		}
 	}
 	if request.ResponseFormat == llm.ResponseFormatJSON {
 		if !options.JSONObjectOutput {
@@ -229,7 +239,7 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 	}
 	if request.ReasoningEffort != llm.ReasoningEffortDefault {
 		effort := request.ReasoningEffort
-		if options.Subscription && effort == llm.ReasoningEffortMinimal {
+		if options.Subscription && effort == llm.ReasoningEffortMinimal && request.ReasoningPolicy != llm.ReasoningPolicyExact {
 			effort = llm.ReasoningEffortLow
 		}
 		params.Reasoning.Effort = shared.ReasoningEffort(effort)
@@ -348,6 +358,22 @@ func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, 
 				image.OfInputImage.PromptCacheBreakpoint = openairesponses.NewResponseInputImagePromptCacheBreakpointParam()
 			}
 			content = append(content, image)
+			hasStructuredContent = true
+		case llm.PartFile:
+			if part.MediaType != "application/pdf" {
+				return nil, false, c.unsupported(op, "Responses file content requires application/pdf")
+			}
+			if part.CacheBreakpoint {
+				return nil, false, c.unsupported(op, "file cache breakpoints are not supported")
+			}
+			filename := part.Filename
+			if filename == "" {
+				filename = fmt.Sprintf("part-%d.pdf", partIndex)
+			}
+			file := openairesponses.ResponseInputContentUnionParam{OfInputFile: &openairesponses.ResponseInputFileParam{
+				Type: "input_file", Filename: param.NewOpt(filename), FileData: param.NewOpt("data:application/pdf;base64," + base64.StdEncoding.EncodeToString(part.Data)),
+			}}
+			content = append(content, file)
 			hasStructuredContent = true
 		case llm.PartAudio:
 			if part.CacheBreakpoint {
