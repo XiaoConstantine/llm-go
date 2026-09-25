@@ -15,26 +15,43 @@ import (
 )
 
 type chatRequest struct {
-	Model                string              `json:"model"`
-	Messages             []chatMessage       `json:"messages"`
-	Tools                []chatTool          `json:"tools,omitempty"`
-	Stream               bool                `json:"stream,omitzero"`
-	StreamOptions        *streamOptions      `json:"stream_options,omitempty"`
-	Temperature          *float64            `json:"temperature,omitempty"`
-	MaxCompletionTokens  *int                `json:"max_completion_tokens,omitempty"`
-	MaxTokens            *int                `json:"max_tokens,omitempty"`
-	ResponseFormat       *responseFormat     `json:"response_format,omitempty"`
-	ReasoningEffort      llm.ReasoningEffort `json:"reasoning_effort,omitempty"`
-	Reasoning            *reasoningOptions   `json:"reasoning,omitempty"`
-	Thinking             any                 `json:"thinking,omitempty"`
-	EnableThinking       *bool               `json:"enable_thinking,omitempty"`
-	TopP                 *float64            `json:"top_p,omitempty"`
-	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
-	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
-	Stop                 []string            `json:"stop,omitempty"`
-	ToolChoice           any                 `json:"tool_choice,omitempty"`
-	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
+	ParallelToolCalls    *bool                      `json:"parallel_tool_calls,omitempty"`
+	LogitBias            map[string]int64           `json:"logit_bias,omitempty"`
+	LogProbs             *bool                      `json:"logprobs,omitempty"`
+	TopLogProbs          *int                       `json:"top_logprobs,omitempty"`
+	User                 *string                    `json:"user,omitempty"`
+	Verbosity            *string                    `json:"verbosity,omitempty"`
+	Prediction           *chatPrediction            `json:"prediction,omitempty"`
+	Store                *bool                      `json:"store,omitempty"`
+	Metadata             map[string]string          `json:"metadata,omitempty"`
+	SafetyIdentifier     *string                    `json:"safety_identifier,omitempty"`
+	ServiceTier          *string                    `json:"service_tier,omitempty"`
+	ExtraFields          map[string]json.RawMessage `json:",embed"`
+	Model                string                     `json:"model"`
+	Messages             []chatMessage              `json:"messages"`
+	Tools                []chatTool                 `json:"tools,omitempty"`
+	Stream               bool                       `json:"stream,omitzero"`
+	StreamOptions        *streamOptions             `json:"stream_options,omitempty"`
+	Temperature          *float64                   `json:"temperature,omitempty"`
+	MaxCompletionTokens  *int                       `json:"max_completion_tokens,omitempty"`
+	MaxTokens            *int                       `json:"max_tokens,omitempty"`
+	ResponseFormat       *responseFormat            `json:"response_format,omitempty"`
+	ReasoningEffort      llm.ReasoningEffort        `json:"reasoning_effort,omitempty"`
+	Reasoning            *reasoningOptions          `json:"reasoning,omitempty"`
+	Thinking             any                        `json:"thinking,omitempty"`
+	EnableThinking       *bool                      `json:"enable_thinking,omitempty"`
+	TopP                 *float64                   `json:"top_p,omitempty"`
+	FrequencyPenalty     *float64                   `json:"frequency_penalty,omitempty"`
+	PresencePenalty      *float64                   `json:"presence_penalty,omitempty"`
+	Stop                 []string                   `json:"stop,omitempty"`
+	ToolChoice           any                        `json:"tool_choice,omitempty"`
+	PromptCacheKey       string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string                     `json:"prompt_cache_retention,omitempty"`
+}
+
+type chatPrediction struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
 }
 
 type reasoningOptions struct {
@@ -305,6 +322,16 @@ func newChatRequest(model string, request llm.Request) (chatRequest, error) {
 }
 
 func newChatRequestFor(op, model string, request llm.Request, compatibility llm.OpenAIChatCompatibility) (chatRequest, error) {
+	if request.ReasoningPolicy == llm.ReasoningPolicyExact && request.ReasoningEffort != llm.ReasoningEffortDefault {
+		format := compatibility.ThinkingFormat
+		if format == "" {
+			format = llm.ThinkingFormatOpenAI
+		}
+		if format == llm.ThinkingFormatOpenAI && compatibility.ReasoningEffort == llm.CompatibilityDisabled ||
+			format != llm.ThinkingFormatOpenAI && format != llm.ThinkingFormatOpenRouter && format != llm.ThinkingFormatString && request.ReasoningEffort != llm.ReasoningEffortNone && compatibility.ReasoningEffort != llm.CompatibilityEnabled {
+			return chatRequest{}, unsupported(op, "configured thinking format cannot preserve exact reasoning effort")
+		}
+	}
 	encoder := newMessageEncoder(op, request.Messages, compatibility)
 	messages := make([]chatMessage, 0, len(request.Messages))
 	for index := 0; index < len(request.Messages); {
@@ -340,14 +367,34 @@ func newChatRequestFor(op, model string, request llm.Request, compatibility llm.
 	}
 
 	wrequest := chatRequest{
-		Model:            model,
-		Messages:         messages,
-		Tools:            tools,
-		Temperature:      request.Temperature,
-		TopP:             request.TopP,
-		FrequencyPenalty: request.FrequencyPenalty,
-		PresencePenalty:  request.PresencePenalty,
-		Stop:             append([]string(nil), request.Stop...),
+		ParallelToolCalls: request.ParallelToolCalls,
+		Model:             model,
+		Messages:          messages,
+		Tools:             tools,
+		Temperature:       request.Temperature,
+		TopP:              request.TopP,
+		FrequencyPenalty:  request.FrequencyPenalty,
+		PresencePenalty:   request.PresencePenalty,
+		Stop:              append([]string(nil), request.Stop...),
+	}
+	if options := request.OpenAIChat; options != nil {
+		wrequest.LogitBias = options.LogitBias
+		wrequest.LogProbs = options.LogProbs
+		wrequest.TopLogProbs = options.TopLogProbs
+		if options.TopLogProbs != nil && options.LogProbs == nil {
+			enabled := true
+			wrequest.LogProbs = &enabled
+		}
+		wrequest.User = options.User
+		wrequest.Verbosity = options.Verbosity
+		if options.Prediction != nil {
+			wrequest.Prediction = &chatPrediction{Type: "content", Content: options.Prediction.Content}
+		}
+		wrequest.Store = options.Store
+		wrequest.Metadata = options.Metadata
+		wrequest.SafetyIdentifier = options.SafetyIdentifier
+		wrequest.ServiceTier = options.ServiceTier
+		wrequest.ExtraFields = options.ExtraFields.Fields()
 	}
 	applyReasoningOptions(&wrequest, request.ReasoningEffort, compatibility)
 	if request.MaxOutputTokens != 0 {

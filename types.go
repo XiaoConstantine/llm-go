@@ -213,6 +213,12 @@ type Request struct {
 	ToolChoice      ToolChoice
 	ResponseFormat  ResponseFormat
 	ReasoningEffort ReasoningEffort
+	// ReasoningPolicyExact refuses lossy effort conversions and implicit budgets.
+	ReasoningPolicy ReasoningPolicy
+	// Protocol options are checked against the selected client before I/O.
+	OpenAIChat      *OpenAIChatOptions
+	OpenAIResponses *OpenAIResponsesOptions
+	Anthropic       *AnthropicOptions
 	// ReasoningBudgetTokens requests an explicit provider reasoning-token
 	// budget. Zero leaves budgeting to the provider or ReasoningEffort.
 	ReasoningBudgetTokens int
@@ -223,13 +229,15 @@ type Request struct {
 	// SessionID supplies provider session-affinity identity independently of
 	// CacheRetention. When caching is enabled, it may also be used as the fallback
 	// prompt-cache key if CacheKey is empty.
-	SessionID        string
-	MaxOutputTokens  int
-	Temperature      *float64
-	TopP             *float64
-	PresencePenalty  *float64
-	FrequencyPenalty *float64
-	Stop             []string
+	SessionID         string
+	MaxOutputTokens   int
+	Temperature       *float64
+	TopP              *float64
+	TopK              *int
+	ParallelToolCalls *bool
+	PresencePenalty   *float64
+	FrequencyPenalty  *float64
+	Stop              []string
 }
 
 // HasCacheBreakpoints reports whether any message or tool-result content marks

@@ -21,6 +21,9 @@ func (r Request) Validate() error {
 }
 
 func (r Request) validate() error {
+	if err := r.validateProtocolOptions(); err != nil {
+		return err
+	}
 	if len(r.Messages) == 0 {
 		return fmt.Errorf("messages must not be empty")
 	}
