@@ -12,11 +12,6 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 	if catalog == nil {
 		t.Fatal("BuiltinCatalog() = nil")
 	}
-	models := catalog.Models("")
-	if len(models) != 614 {
-		t.Fatalf("len(BuiltinCatalog().Models()) = %d, want 614", len(models))
-	}
-
 	deepseek, ok := catalog.Model(ProviderDeepSeek, "deepseek-v4-flash")
 	if !ok {
 		t.Fatal("DeepSeek representative model is missing")

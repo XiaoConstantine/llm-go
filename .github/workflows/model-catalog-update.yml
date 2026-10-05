@@ -1,0 +1,172 @@
+name: Update model catalog
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: model-catalog-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download models.dev snapshot
+        run: |
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 120 --max-filesize 33554432 \
+            --output "$RUNNER_TEMP/modelsdev.json" https://models.dev/api.json
+          date -u '+%Y-%m-%dT%H:%M:%SZ' > "$RUNNER_TEMP/modelsdev-fetched-at.txt"
+          sha256sum "$RUNNER_TEMP/modelsdev.json" | cut -d ' ' -f 1 > "$RUNNER_TEMP/modelsdev-sha256.txt"
+
+      - name: Filter new model candidates
+        run: |
+          python3 - <<'PY' | tee "$RUNNER_TEMP/model-catalog-sync.txt"
+          import json
+          import os
+          from pathlib import Path
+
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          catalog = json.loads(Path("models/catalogsource/catalog.json").read_text())
+          dataset = json.loads((temporary / "modelsdev.json").read_text())
+          existing = {(model["provider"], model["id"]) for model in catalog["models"]}
+          for provider in ("anthropic", "openai", "google"):
+              if provider not in dataset:
+                  continue
+              entries = dataset[provider]["models"]
+              retained = {
+                  model_id: model
+                  for model_id, model in entries.items()
+                  if (provider, model_id) in existing
+                  or (
+                      model.get("tool_call") is True
+                      and (model.get("modalities") or {}).get("output") == ["text"]
+                  )
+              }
+              dataset[provider]["models"] = retained
+              print(f"{provider}: retained {len(retained)} records; excluded {len(entries) - len(retained)} new models")
+          (temporary / "modelsdev-candidates.json").write_text(json.dumps(dataset))
+          PY
+
+      - name: Sync and regenerate catalog
+        run: |
+          go run ./models/cmd/modelsdevsync \
+            -file "$RUNNER_TEMP/modelsdev-candidates.json" \
+            -catalog models/catalogsource/catalog.json \
+            -providers anthropic,openai,google -add-new \
+            | tee -a "$RUNNER_TEMP/model-catalog-sync.txt"
+          go generate ./models
+
+      - name: Detect catalog changes
+        id: changes
+        run: |
+          if git diff --quiet -- models/catalogsource/catalog.json models/catalog_generated.go; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            status=$?
+            if [ "$status" -ne 1 ]; then
+              exit "$status"
+            fi
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate catalog changes
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          go test -count=1 ./models/cmd/modelsdevsync ./models/cmd/cataloggen ./models/modelsdev
+          go build ./...
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          make fmt-check
+          go vet ./...
+
+      - name: Prepare pull request body
+        env:
+          CATALOG_CHANGED: ${{ steps.changes.outputs.changed }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$CATALOG_CHANGED" != 'true' ]; then
+            echo 'The latest models.dev snapshot has no catalog changes.' > "$RUNNER_TEMP/model-catalog-pr.md"
+            exit 0
+          fi
+          {
+            cat <<'BODY'
+          Updates the built-in Anthropic, OpenAI, and Google model catalog from one models.dev snapshot, including newly discovered models, pricing, and limits. Regenerates the Go catalog from the canonical source.
+
+          Automatically adds new models only when models.dev reports tool support and exactly text output. Existing catalog entries remain eligible for metadata updates regardless of those filters; other new models require manual review and maintenance.
+
+          Review provider compatibility, capabilities, pricing, and limits before merging. This synchronization excludes `openai-codex`; those route entries require separate maintenance. The workflow does not merge this pull request automatically.
+
+          Validation passed before opening or updating this pull request:
+
+          ```sh
+          go test -count=1 ./models/cmd/modelsdevsync ./models/cmd/cataloggen ./models/modelsdev
+          go build ./...
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          make fmt-check
+          go vet ./...
+          ```
+
+          BODY
+            printf 'Source: https://models.dev/api.json\n\n'
+            printf 'Fetched at (UTC): `%s`\n\n' "$(cat "$RUNNER_TEMP/modelsdev-fetched-at.txt")"
+            printf 'Snapshot SHA-256: `%s`\n\n' "$(cat "$RUNNER_TEMP/modelsdev-sha256.txt")"
+            printf '[Workflow run](%s)\n\n' "$WORKFLOW_RUN_URL"
+            printf 'Synchronization report:\n\n```text\n'
+            cat "$RUNNER_TEMP/model-catalog-sync.txt"
+            printf '\n```\n'
+          } > "$RUNNER_TEMP/model-catalog-pr.md"
+
+      # Run even without changes so the action can close a stale catalog PR.
+      - name: Open or update catalog pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ secrets.MODEL_CATALOG_TOKEN || github.token }}
+          base: ${{ github.event.repository.default_branch }}
+          branch: automation/model-catalog
+          delete-branch: true
+          add-paths: |
+            models/catalogsource/catalog.json
+            models/catalog_generated.go
+          commit-message: 'chore(models): sync model catalog from models.dev'
+          title: 'chore(models): sync model catalog from models.dev'
+          body-path: ${{ runner.temp }}/model-catalog-pr.md
+          draft: false
+
+      - name: Save catalog update evidence
+        if: ${{ !cancelled() && steps.changes.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: model-catalog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/modelsdev.json
+            ${{ runner.temp }}/modelsdev-candidates.json
+            ${{ runner.temp }}/modelsdev-fetched-at.txt
+            ${{ runner.temp }}/modelsdev-sha256.txt
+            ${{ runner.temp }}/model-catalog-sync.txt
+            ${{ runner.temp }}/model-catalog-pr.md
+          retention-days: 14
+          if-no-files-found: error
