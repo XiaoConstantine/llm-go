@@ -7,6 +7,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"mime"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -17,18 +18,20 @@ import (
 const maxMessages = 100_000
 
 type messageRequest struct {
-	Model         string           `json:"model"`
-	MaxTokens     int              `json:"max_tokens"`
-	Messages      []inputMessage   `json:"messages"`
-	System        []contentBlock   `json:"system,omitempty"`
-	Temperature   *float64         `json:"temperature,omitempty"`
-	TopP          *float64         `json:"top_p,omitempty"`
-	StopSequences []string         `json:"stop_sequences,omitempty"`
-	Tools         []toolDefinition `json:"tools,omitempty"`
-	ToolChoice    *toolChoice      `json:"tool_choice,omitempty"`
-	Thinking      *thinkingConfig  `json:"thinking,omitempty"`
-	OutputConfig  *outputConfig    `json:"output_config,omitempty"`
-	Stream        bool             `json:"stream,omitzero"`
+	TopK          *int                       `json:"top_k,omitempty"`
+	ExtraFields   map[string]json.RawMessage `json:",embed"`
+	Model         string                     `json:"model"`
+	MaxTokens     int                        `json:"max_tokens"`
+	Messages      []inputMessage             `json:"messages"`
+	System        []contentBlock             `json:"system,omitempty"`
+	Temperature   *float64                   `json:"temperature,omitempty"`
+	TopP          *float64                   `json:"top_p,omitempty"`
+	StopSequences []string                   `json:"stop_sequences,omitempty"`
+	Tools         []toolDefinition           `json:"tools,omitempty"`
+	ToolChoice    *toolChoice                `json:"tool_choice,omitempty"`
+	Thinking      *thinkingConfig            `json:"thinking,omitempty"`
+	OutputConfig  *outputConfig              `json:"output_config,omitempty"`
+	Stream        bool                       `json:"stream,omitzero"`
 }
 
 type inputMessage struct {
@@ -64,11 +67,13 @@ type outputConfig struct {
 }
 
 type toolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
 }
 
 type inputContentBlock struct {
+	Title        string          `json:"title,omitempty"`
 	Type         string          `json:"type"`
 	Text         *string         `json:"text,omitzero"`
 	Source       *imageSource    `json:"source,omitempty"`
@@ -155,6 +160,9 @@ type anthropicThinking struct {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if request.OpenAIChat != nil || request.OpenAIResponses != nil {
+		return unsupported(op, "non-Anthropic protocol options are not supported")
+	}
 	if request.PresencePenalty != nil || request.FrequencyPenalty != nil {
 		return unsupported(op, "presence and frequency penalties are not supported")
 	}
@@ -231,11 +239,15 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 	}
 
 	wrequest := messageRequest{
+		TopK:          request.TopK,
 		Model:         model,
 		MaxTokens:     maxTokens,
 		Temperature:   request.Temperature,
 		TopP:          request.TopP,
 		StopSequences: append([]string(nil), request.Stop...),
+	}
+	if options := request.Anthropic; options != nil {
+		wrequest.ExtraFields = options.ExtraFields.Fields()
 	}
 	cache := anthropicCacheControl(request.CacheRetention)
 	if subscriptionOAuth {
@@ -264,8 +276,18 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 		}
 	}
 	applyAnthropicToolChoice(&wrequest, request.ToolChoice)
+	if request.ParallelToolCalls != nil && len(request.Tools) != 0 && request.ToolChoice.Mode != llm.ToolChoiceNone {
+		if wrequest.ToolChoice == nil {
+			wrequest.ToolChoice = &toolChoice{Type: "auto"}
+		}
+		disabled := !*request.ParallelToolCalls
+		wrequest.ToolChoice.DisableParallelToolUse = &disabled
+	}
 	if err := applyAnthropicThinking(op, &wrequest, request, compatibility); err != nil {
 		return messageRequest{}, nil, err
+	}
+	if options := request.Anthropic; options != nil && options.ThinkingDisplay != nil && wrequest.Thinking != nil {
+		wrequest.Thinking.Display = *options.ThinkingDisplay
 	}
 	encoder := newMessageEncoder(op, request.Messages, model, compatibility.EmptyThinkingSignature == llm.CompatibilityEnabled)
 	for messageIndex, message := range request.Messages {
@@ -340,7 +362,7 @@ func applyAnthropicThinking(op string, wire *messageRequest, request llm.Request
 		}
 		wire.Thinking = &thinkingConfig{Type: "adaptive", Display: "summarized"}
 		effort := request.ReasoningEffort
-		if effort == llm.ReasoningEffortMinimal {
+		if effort == llm.ReasoningEffortMinimal && request.ReasoningPolicy != llm.ReasoningPolicyExact {
 			effort = llm.ReasoningEffortLow
 		}
 		if effort != llm.ReasoningEffortDefault {
@@ -349,6 +371,9 @@ func applyAnthropicThinking(op string, wire *messageRequest, request llm.Request
 		return nil
 	}
 	budget := request.ReasoningBudgetTokens
+	if request.ReasoningPolicy == llm.ReasoningPolicyExact && budget == 0 {
+		return requestError(op, "exact non-adaptive thinking requires an explicit budget; effort-to-budget conversion is disabled")
+	}
 	explicitBudget := budget != 0
 	if !explicitBudget {
 		switch request.ReasoningEffort {
@@ -568,11 +593,33 @@ func anthropicParts(op string, parts []llm.Part) ([]inputContentBlock, error) {
 				return nil, requestError(op, "content[%d] image media type %q is not supported", index, part.MediaType)
 			}
 			blocks = append(blocks, inputContentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(part.Data)}})
+		case llm.PartFile:
+			source := &imageSource{}
+			switch {
+			case part.MediaType == "application/pdf":
+				source.Type, source.MediaType, source.Data = "base64", "application/pdf", base64.StdEncoding.EncodeToString(part.Data)
+			case strings.HasPrefix(part.MediaType, "text/"):
+				source.Type, source.MediaType, source.Data = "text", "text/plain", string(part.Data)
+			default:
+				return nil, unsupported(op, "file media type must be application/pdf or text/*")
+			}
+			blocks = append(blocks, inputContentBlock{Type: "document", Source: source, Title: documentTitle(part.Filename)})
 		default:
 			return nil, unsupported(op, fmt.Sprintf("content[%d] kind %d is not supported", index, part.Kind))
 		}
 	}
 	return blocks, nil
+}
+
+var documentTitleCharacters = regexp.MustCompile(`[^a-zA-Z0-9\s\-()\[\]]`)
+var documentTitleWhitespace = regexp.MustCompile(`\s+`)
+
+func documentTitle(filename string) string {
+	title := strings.TrimSpace(documentTitleWhitespace.ReplaceAllString(documentTitleCharacters.ReplaceAllString(filename, " "), " "))
+	if title == "" {
+		return "Document"
+	}
+	return title
 }
 
 func parseAnthropicMessageData(raw json.RawMessage, model string) (anthropicMessageData, bool, error) {

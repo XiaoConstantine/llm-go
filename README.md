@@ -51,6 +51,55 @@ unsupported cache keys and session-affinity mappings fail before provider I/O.
 OpenAI Responses also supports durable background jobs through
 `llm.BackgroundGenerator`.
 
+### Request options and exact reasoning
+
+`Request` accepts protocol-specific options without exposing provider SDK types:
+
+| Request field | Adapters | Behavior |
+| --- | --- | --- |
+| `OpenAIChat` | `openai` | Logit bias, logprobs, user, verbosity, text prediction, store, metadata, safety identifier, service tier, and validated extra fields |
+| `OpenAIResponses` | `openai/responses`, `openai/azure`, `openai/codex` | Text verbosity and service tier |
+| `Anthropic` | `anthropic` | Thinking display and validated extra fields |
+| `TopK` | `anthropic` | Optional nonnegative integer; an explicit zero is retained |
+| `ParallelToolCalls` | The five adapters above | Optional boolean; `nil` omits the field, while explicit `false` and `true` are preserved |
+
+For Anthropic, parallel control maps to `disable_parallel_tool_use` inside the
+tool choice and is emitted only when tools are enabled. Extra-field constructors
+copy JSON values, reject fields owned by the typed request, and preserve literal
+top-level keys and null values. Anthropic extra keys must be plain names.
+Unsupported protocol options are rejected before provider I/O.
+
+`ReasoningPolicyExact` is supported by those same five adapters. It preserves
+the requested effort instead of converting `minimal` to `low`, rejects thinking
+formats that cannot preserve the effort, and requires an explicit token budget
+for non-adaptive Anthropic thinking. Effort and budget cannot be combined under
+this policy. Model compatibility and endpoint restrictions still apply.
+Gemini, Vertex, Bedrock, and Mistral reject the exact policy and the new fields
+in the table; the zero-value policy retains their existing behavior.
+
+Responses requests with a nil `ParallelToolCalls` omit `parallel_tool_calls`.
+Set the pointer explicitly when a particular wire value is required.
+
+### Document input
+
+Use `Part{Kind: PartFile, Data: data, MediaType: mime, Filename: name}` in a user
+message. Data must be nonempty; text documents and filenames must be valid UTF-8.
+Documents are not accepted in assistant, system, or tool-result content.
+
+| Adapter | Document MIME types |
+| --- | --- |
+| `openai` | `application/pdf`, `text/*` |
+| `openai/responses`, `openai/azure` | `application/pdf` |
+| `anthropic` | `application/pdf`, `text/*` |
+
+These are serializer capabilities, not a guarantee that every model accepts
+documents. Codex and the other adapters do not implement document input.
+With OpenAI Chat, PDF Data starting with `file-` is sent as a provider file ID;
+other PDF Data is sent inline.
+Inline PDFs without a filename receive `part-<index>.pdf`. Anthropic maps text
+documents to `text/plain` and derives a sanitized document title from Filename,
+falling back to `Document` when it is empty.
+
 ### Codex transport modes
 
 `openai/codex.Config.Transport` supports these modes; the default remains SSE.
@@ -252,6 +301,13 @@ if err := stream.Close(); err != nil {
 `Chunk.Events` exposes typed lifecycle events for text, reasoning, and partial
 or completed tool calls. Completed values remain available through the ordinary
 chunk fields for response assembly.
+
+Anthropic emits cumulative usage as soon as it is reported, including a
+usage-only chunk at message start. Keep the last non-nil `Chunk.Usage` rather
+than summing snapshots; it remains meaningful if a later event fails or the
+caller cancels. Early usage is not a success marker. Applications must allow
+chunks without text or a finish reason. Since `WithRetry` retries only before
+the first committed chunk, an early usage chunk also ends that retry window.
 
 ## Errors and cancellation
 

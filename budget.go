@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"maps"
 )
 
 // TokenEstimator estimates input tokens for a request. Implementations must
@@ -139,5 +140,46 @@ func cloneRequest(request Request) Request {
 		value := *request.FrequencyPenalty
 		clone.FrequencyPenalty = &value
 	}
+	clone.TopK = cloneRequestPointer(request.TopK)
+	clone.ParallelToolCalls = cloneRequestPointer(request.ParallelToolCalls)
+	if request.OpenAIChat != nil {
+		options := *request.OpenAIChat
+		options.LogitBias = maps.Clone(options.LogitBias)
+		options.LogProbs = cloneRequestPointer(options.LogProbs)
+		options.TopLogProbs = cloneRequestPointer(options.TopLogProbs)
+		options.User = cloneRequestPointer(options.User)
+		options.Verbosity = cloneRequestPointer(options.Verbosity)
+		options.Prediction = cloneRequestPointer(options.Prediction)
+		options.Store = cloneRequestPointer(options.Store)
+		options.Metadata = maps.Clone(options.Metadata)
+		options.SafetyIdentifier = cloneRequestPointer(options.SafetyIdentifier)
+		options.ServiceTier = cloneRequestPointer(options.ServiceTier)
+		if options.ExtraFields.fields != nil {
+			options.ExtraFields.fields = cloneExtraFields(options.ExtraFields.fields)
+		}
+		clone.OpenAIChat = &options
+	}
+	if request.OpenAIResponses != nil {
+		options := *request.OpenAIResponses
+		options.Verbosity = cloneRequestPointer(options.Verbosity)
+		options.ServiceTier = cloneRequestPointer(options.ServiceTier)
+		clone.OpenAIResponses = &options
+	}
+	if request.Anthropic != nil {
+		options := *request.Anthropic
+		options.ThinkingDisplay = cloneRequestPointer(options.ThinkingDisplay)
+		if options.ExtraFields.fields != nil {
+			options.ExtraFields.fields = cloneExtraFields(options.ExtraFields.fields)
+		}
+		clone.Anthropic = &options
+	}
 	return clone
+}
+
+func cloneRequestPointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }

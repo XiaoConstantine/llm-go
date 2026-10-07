@@ -582,6 +582,9 @@ func (c *Client) hasCapability(capability llm.Capability) bool {
 }
 
 func checkRequest(provider, op string, request llm.Request) error {
+	if request.TopK != nil || request.OpenAIChat != nil || request.Anthropic != nil {
+		return requestError(provider, op, "top-k and non-Responses protocol options are not supported")
+	}
 	if key := request.CacheKey; utf8.RuneCountInString(key) > 64 {
 		return requestError(provider, op, "prompt cache key must not exceed 64 characters")
 	}
@@ -595,7 +598,7 @@ func checkRequest(provider, op string, request llm.Request) error {
 		for _, part := range message.Content {
 			switch part.Kind {
 			case llm.PartText:
-			case llm.PartImage:
+			case llm.PartImage, llm.PartFile:
 				if message.Role != llm.RoleUser {
 					return unsupported(provider, op, "image content is supported only in user messages")
 				}

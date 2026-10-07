@@ -528,6 +528,9 @@ func (c *Client) hasCapability(capability llm.Capability) bool {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if request.TopK != nil || request.OpenAIChat != nil || request.Anthropic != nil {
+		return unsupported(op, "top-k and non-Responses protocol options are not supported")
+	}
 	if key := request.CacheKey; utf8.RuneCountInString(key) > 64 {
 		return requestError(op, "prompt cache key must not exceed 64 characters")
 	}
@@ -544,6 +547,8 @@ func checkRequest(op string, request llm.Request) error {
 		for _, part := range message.Content {
 			switch part.Kind {
 			case llm.PartText:
+			case llm.PartFile:
+				return unsupported(op, "file content is not supported by the subscription endpoint")
 			case llm.PartImage:
 				if message.Role != llm.RoleUser {
 					return unsupported(op, "image content is supported only in user messages")

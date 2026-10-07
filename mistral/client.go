@@ -217,6 +217,12 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if request.TopK != nil || request.ParallelToolCalls != nil || request.OpenAIChat != nil || request.OpenAIResponses != nil || request.Anthropic != nil {
+		return unsupported(op, "top-k, parallel tool controls, and foreign protocol options are not supported")
+	}
+	if request.ReasoningPolicy == llm.ReasoningPolicyExact {
+		return unsupported(op, "exact reasoning policy is not supported")
+	}
 	if request.ReasoningBudgetTokens != 0 {
 		return unsupported(op, "Mistral Conversations does not support explicit reasoning token budgets")
 	}

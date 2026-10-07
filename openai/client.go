@@ -724,6 +724,9 @@ func (c *Client) hasCapability(target llm.Capability) bool {
 }
 
 func checkRequest(op string, request llm.Request) error {
+	if request.TopK != nil || request.OpenAIResponses != nil || request.Anthropic != nil {
+		return unsupported(op, "top-k and non-Chat protocol options are not supported")
+	}
 	if key := request.CacheKey; utf8.RuneCountInString(key) > 64 {
 		return requestError(op, "prompt cache key must not exceed 64 characters")
 	}
