@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 19,
+  "revision": 20,
   "models": [
     {
       "provider": "amazon-bedrock",
@@ -2050,6 +2050,41 @@
     },
     {
       "provider": "anthropic",
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "api": "anthropic-messages",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "tiers": [
+          {
+            "input_tokens_above": 100000,
+            "input": 0.5,
+            "output": 2.5,
+            "cache_read": 0.05,
+            "cache_write": 0.625
+          }
+        ]
+      },
+      "compatibility": {
+        "anthropic": {
+          "adaptive_thinking": true,
+          "strict_tools": true
+        }
+      }
+    },
+    {
+      "provider": "anthropic",
       "id": "claude-opus-4-5",
       "name": "Claude Opus 4.5 (latest)",
       "api": "anthropic-messages",
@@ -2250,7 +2285,7 @@
         "tools",
         "vision"
       ],
-      "context_window": 1000000,
+      "context_window": 200000,
       "max_output_tokens": 64000,
       "cost": {
         "input": 3,
@@ -2276,7 +2311,7 @@
         "tools",
         "vision"
       ],
-      "context_window": 1000000,
+      "context_window": 200000,
       "max_output_tokens": 64000,
       "cost": {
         "input": 3,
@@ -2361,7 +2396,7 @@
       "cost": {
         "input": 2,
         "output": 10,
-        "cache_read": 0.2,
+        "cache_read": 0.1,
         "cache_write": 2.5
       },
       "compatibility": {
