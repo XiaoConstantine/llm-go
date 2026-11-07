@@ -5,7 +5,7 @@ use, multimodal messages, reasoning, and usage accounting. Provider SDK types
 stay behind a small common API, so applications can switch protocols without
 changing their conversation model.
 
-> Requires Go 1.27 or newer. The public API is still under active development.
+> Requires Go 1.27.3 or newer. The public API is still under active development.
 
 ## Highlights
 
