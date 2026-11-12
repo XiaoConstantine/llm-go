@@ -14,6 +14,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
 	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
+	"github.com/XiaoConstantine/llm-go/internal/responsebody"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaioption "github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
@@ -142,6 +143,10 @@ func (c *Client) requestMiddleware(credentials Credentials, sessionID string, ca
 		*downstreamErr = err
 		if err == nil && response != nil && response.StatusCode >= http.StatusBadRequest {
 			return response, errRawErrorResponse
+		}
+		if err == nil && response != nil && response.Body != nil {
+			// Match the WebSocket JSON budget, with room for SSE framing.
+			response.Body = responsebody.SSE(response.Body, maxProviderDataBytes+(1<<20))
 		}
 		return response, err
 	}

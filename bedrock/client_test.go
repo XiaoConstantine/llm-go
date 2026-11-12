@@ -3,19 +3,362 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
+
+func TestSDKRetryAttemptsAndHeaders(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, attempts := range []int{1, 2} {
+			t.Run(fmt.Sprintf("stream=%t/attempts=%d", streaming, attempts), func(t *testing.T) {
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					n := calls.Add(1)
+					if got, want := r.Header.Get("X-Attempt"), fmt.Sprint(n); got != want {
+						t.Errorf("X-Attempt = %q, want %q", got, want)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("X-Amzn-Errortype", "ThrottlingException")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"message":"slow down"}`))
+				}))
+				defer server.Close()
+				// No HTTPClient or static Headers: attempt metadata must work with defaults.
+				client := mustClient(t, Config{Model: "model", Region: "us-east-1", BaseURL: server.URL,
+					SkipAuth: true, Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+				retrying, err := llm.WithRetry(client, llm.RetryPolicy{MaxAttempts: attempts, InitialBackoff: time.Nanosecond,
+					Hook: func(_ context.Context, attempt llm.Attempt) (http.Header, error) {
+						return http.Header{"X-Attempt": {fmt.Sprint(attempt.Number)}}, nil
+					}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}}
+				if streaming {
+					stream, streamErr := retrying.Stream(context.Background(), request)
+					if streamErr != nil {
+						t.Fatal(streamErr)
+					}
+					_, err = llm.CollectStructural(stream)
+				} else {
+					_, err = retrying.Generate(context.Background(), request)
+				}
+				var modelErr *llm.Error
+				if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindRateLimit {
+					t.Fatalf("error = %v, want rate limit", err)
+				}
+				if got := calls.Load(); int(got) != attempts {
+					t.Fatalf("HTTP attempts = %d, want %d", got, attempts)
+				}
+			})
+		}
+	}
+}
+
+func TestSDKDefaultClientCustomCA(t *testing.T) {
+	for _, profile := range []bool{false, true} {
+		t.Run(fmt.Sprintf("profile=%t", profile), func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeSDKResponse(t, w)
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			bundle := filepath.Join(dir, "ca.pem")
+			if err := os.WriteFile(bundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+				t.Fatal(err)
+			}
+			config := Config{Model: "model", Region: "us-east-1", BaseURL: server.URL, SkipAuth: true}
+			if profile {
+				path := filepath.Join(dir, "config")
+				if err := os.WriteFile(path, []byte("[profile custom]\nca_bundle = "+bundle+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("AWS_CA_BUNDLE", "")
+				t.Setenv("AWS_CONFIG_FILE", path)
+				config.Profile = "custom"
+			} else {
+				t.Setenv("AWS_CA_BUNDLE", bundle)
+			}
+			client := mustClient(t, config)
+			response, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+			if err != nil || response.Text() != "ok" {
+				t.Fatalf("custom CA Generate = %v, %v", response, err)
+			}
+		})
+	}
+}
+
+func TestSDKHeadersDoNotReachCredentials(t *testing.T) {
+	for _, customClient := range []bool{false, true} {
+		t.Run(fmt.Sprintf("customClient=%t", customClient), func(t *testing.T) {
+			var credentialCalls atomic.Int32
+			imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				credentialCalls.Add(1)
+				if r.Header.Get("X-Static") != "" || r.Header.Get("X-Attempt") != "" {
+					t.Errorf("caller headers reached credential endpoint %s", r.URL.Path)
+				}
+				switch r.URL.Path {
+				case "/latest/api/token":
+					_, _ = io.WriteString(w, "imds-token")
+				case "/latest/meta-data/iam/security-credentials/":
+					_, _ = io.WriteString(w, "test-role")
+				case "/latest/meta-data/iam/security-credentials/test-role":
+					_, _ = fmt.Fprintf(w, `{"Code":"Success","AccessKeyId":"test-key","SecretAccessKey":"test-secret","Token":"test-token","Expiration":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+				default:
+					t.Errorf("unexpected credential request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer imds.Close()
+			useTestIMDS(t, imds.URL)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Static") != "static" || r.Header.Get("X-Attempt") != "attempt" {
+					t.Error("caller headers missing from Bedrock request")
+				}
+				writeSDKResponse(t, w)
+			}))
+			defer server.Close()
+			config := Config{Model: "model", Region: "us-east-1", BaseURL: server.URL, Headers: http.Header{"X-Static": {"static"}}}
+			if customClient {
+				config.HTTPClient = server.Client()
+			}
+			client := mustClient(t, config)
+			retrying, err := llm.WithRetry(client, llm.RetryPolicy{MaxAttempts: 1, Hook: func(context.Context, llm.Attempt) (http.Header, error) {
+				return http.Header{"X-Attempt": {"attempt"}}, nil
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := retrying.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+			if err != nil || response.Text() != "ok" || credentialCalls.Load() == 0 {
+				t.Fatalf("Generate = %v, %v; credential calls = %d", response, err, credentialCalls.Load())
+			}
+		})
+	}
+}
+
+func TestSDKIMDSFailureDoesNotAcquireRetryHint(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", streaming), func(t *testing.T) {
+			var imdsCalls, bedrockCalls, attempts atomic.Int32
+			imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				imdsCalls.Add(1)
+				switch r.URL.Path {
+				case "/latest/api/token":
+					_, _ = io.WriteString(w, "imds-token")
+				case "/latest/meta-data/iam/security-credentials/":
+					w.WriteHeader(http.StatusUnauthorized)
+				default:
+					t.Errorf("unexpected credential request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer imds.Close()
+			useTestIMDS(t, imds.URL)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				bedrockCalls.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			client := mustClient(t, Config{Model: "model", Region: "us-east-1", BaseURL: server.URL,
+				Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+			retrying, err := llm.WithRetry(client, llm.RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Nanosecond,
+				Hook: func(context.Context, llm.Attempt) (http.Header, error) {
+					attempts.Add(1)
+					return nil, nil
+				}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}
+			if streaming {
+				stream, openErr := retrying.Stream(ctx, request)
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				_, err = llm.CollectStructural(stream)
+			} else {
+				_, err = retrying.Generate(ctx, request)
+			}
+			var modelErr *llm.Error
+			if !errors.As(err, &modelErr) || modelErr.Retryable != nil {
+				t.Errorf("credential failure acquired retry hint: %v", err)
+			}
+			// IMDS still owns its three token/role attempts; llm.WithRetry must
+			// not multiply those attempts or reach Bedrock without credentials.
+			if attempts.Load() != 1 || imdsCalls.Load() != 6 || bedrockCalls.Load() != 0 {
+				t.Errorf("attempts=%d IMDS calls=%d Bedrock calls=%d, want 1/6/0", attempts.Load(), imdsCalls.Load(), bedrockCalls.Load())
+			}
+		})
+	}
+}
+
+func useTestIMDS(t *testing.T, endpoint string) {
+	t.Helper()
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK", "AWS_BEDROCK_SKIP_AUTH", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "missing-config"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "missing-credentials"))
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "false")
+	t.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT", endpoint)
+}
+
+func TestSDKClockSkewRetryHint(t *testing.T) {
+	for _, skew := range []time.Duration{0, 2 * time.Hour} {
+		for _, streaming := range []bool{false, true} {
+			for _, attempts := range []int{1, 2} {
+				t.Run(fmt.Sprintf("skew=%s/stream=%t/attempts=%d", skew, streaming, attempts), func(t *testing.T) {
+					var calls atomic.Int32
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						n := calls.Add(1)
+						if r.Header.Get("X-Attempt") != fmt.Sprint(n) {
+							t.Errorf("SDK made hidden attempt %d", n)
+						}
+						serverTime := time.Now().Add(skew)
+						w.Header().Set("Date", serverTime.UTC().Format(http.TimeFormat))
+						if n == 1 || skew == 0 {
+							w.Header().Set("Content-Type", "application/json")
+							w.Header().Set("X-Amzn-Errortype", "InvalidSignatureException")
+							w.WriteHeader(http.StatusForbidden)
+							_, _ = io.WriteString(w, `{"message":"bad signature"}`)
+							return
+						}
+						signedAt, err := time.Parse("20060102T150405Z", r.Header.Get("X-Amz-Date"))
+						if err != nil || serverTime.Sub(signedAt).Abs() > time.Minute {
+							t.Errorf("retry signing time was not corrected: %v", err)
+						}
+						writeSDKResponse(t, w)
+					}))
+					defer server.Close()
+					client := mustClient(t, Config{Model: "model", Region: "us-east-1", BaseURL: server.URL, SkipAuth: true, Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+					retrying, err := llm.WithRetry(client, llm.RetryPolicy{MaxAttempts: attempts, InitialBackoff: time.Nanosecond,
+						Hook: func(_ context.Context, attempt llm.Attempt) (http.Header, error) {
+							return http.Header{"X-Attempt": {fmt.Sprint(attempt.Number)}}, nil
+						}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}
+					var response *llm.Response
+					if streaming {
+						stream, openErr := retrying.Stream(context.Background(), request)
+						if openErr != nil {
+							t.Fatal(openErr)
+						}
+						response, err = llm.CollectStructural(stream)
+					} else {
+						response, err = retrying.Generate(context.Background(), request)
+					}
+					if skew != 0 && attempts == 2 {
+						if err != nil || response.Text() != "ok" || calls.Load() != 2 {
+							t.Fatalf("skew retry = %v, %v; HTTP attempts=%d", response, err, calls.Load())
+						}
+					} else {
+						var modelErr *llm.Error
+						if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindAuthentication || calls.Load() != 1 {
+							t.Fatalf("authentication error = %v; HTTP attempts=%d", err, calls.Load())
+						}
+						if got := modelErr.Retryable != nil && *modelErr.Retryable; got != (skew != 0) {
+							t.Fatalf("retry hint=%t, want %t", got, skew != 0)
+						}
+						var apiErr smithy.APIError
+						if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidSignatureException" {
+							t.Fatal("SDK error lost from error chain")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func writeSDKResponse(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+	encoder := eventstream.NewEncoder()
+	for _, event := range []struct{ kind, payload string }{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"ok"}}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+	} {
+		err := encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{
+			{Name: ":message-type", Value: eventstream.StringValue("event")},
+			{Name: ":event-type", Value: eventstream.StringValue(event.kind)},
+			{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+		}, Payload: []byte(event.payload)})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+	}
+}
+
+func TestStreamCloseWithContextIgnoringRuntime(t *testing.T) {
+	events := make(chan types.ConverseStreamOutput)
+	started := make(chan struct{})
+	closed := make(chan struct{})
+	client := mustClient(t, Config{Model: "model", Capabilities: []llm.Capability{llm.CapabilityStreaming},
+		Runtime: stalledRuntime{events: events, started: started, closed: closed}})
+	stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	done := make(chan error, 1)
+	go func() { done <- stream.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(events) // Unblock the old implementation without leaking the test goroutine.
+		t.Fatalf("Stream.Close blocked on a runtime that ignores cancellation; after unblocking it returned %v", <-done)
+	}
+	select {
+	case <-closed:
+	default:
+		t.Fatal("Stream.Close returned before the runtime stream was closed")
+	}
+}
+
+type stalledRuntime struct {
+	events  chan types.ConverseStreamOutput
+	started chan struct{}
+	closed  chan struct{}
+}
+
+func (r stalledRuntime) ConverseStream(context.Context, *bedrockruntime.ConverseStreamInput) (EventStream, error) {
+	return r, nil
+}
+func (r stalledRuntime) Events() <-chan types.ConverseStreamOutput {
+	close(r.started)
+	return r.events
+}
+func (r stalledRuntime) Close() error { close(r.closed); return nil }
+func (r stalledRuntime) Err() error   { return nil }
 
 func TestGenerateTextReasoningUsageAndReplay(t *testing.T) {
 	runtime := &fakeRuntime{events: []types.ConverseStreamOutput{

@@ -2,11 +2,13 @@ package gemini
 
 import (
 	"context"
+	"io"
 	"strings"
 
 	"encoding/json/jsontext"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/responsebody"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"google.golang.org/genai"
 )
@@ -28,10 +30,15 @@ func (c *Client) produceStream(
 	}()
 
 	ctx, metadata := withErrorMetadata(ctx)
+	var body io.ReadCloser
+	ctx = context.WithValue(ctx, responseBodyKey{}, &body)
 	accumulator := newStreamAccumulatorFor(c.provider, c.model, request)
 	for response, streamErr := range c.sdkClient.Models.GenerateContentStream(ctx, c.model, contents, generationConfig) {
 		if contextErr := contextErr(ctx); contextErr != nil {
 			return contextErr
+		}
+		if limitErr := responsebody.Err(body); limitErr != nil {
+			return sdkError("stream", limitErr)
 		}
 		if streamErr != nil {
 			return metadata.sdkError("stream", streamErr)

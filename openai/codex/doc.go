@@ -14,4 +14,13 @@
 // response.create is sent; strict WebSocket modes never fall back, and ambiguous
 // response.create write failures are not retried internally. Call Client.Close
 // to release cached and active WebSocket resources early.
+// Idle connections continue reading control frames. Peer closure or data
+// observed without an active lease evicts the connection. Frames arriving after
+// a new lease begins are not correlated with the preceding response.
+// A reused connection closed before any response event reports a transport
+// error, without resending the request or falling back to SSE.
+//
+// SSE wire events, including all lines and delimiters, are limited to 17 MiB:
+// the WebSocket JSON budget of 16 MiB plus 1 MiB for SSE framing. Larger events
+// are malformed responses. HTTP error bodies are limited to 1 MiB.
 package codex

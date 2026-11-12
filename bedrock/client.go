@@ -5,6 +5,10 @@
 // become {}. Missing, null, or zero usage totals are derived from input, output,
 // cache-read, and cache-write counts. A nonzero total that disagrees with those
 // categories leaves Usage nil without discarding the response content.
+//
+// SDK retries are disabled. Use llm.WithRetry for explicit retries, including
+// SDK-detected clock skew: the SDK retains the corrected signing time and its
+// typed retry hint is preserved on the returned llm.Error.
 package bedrock
 
 import (
@@ -21,7 +25,6 @@ import (
 
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
-	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -33,7 +36,8 @@ import (
 
 const defaultProvider = "amazon-bedrock"
 
-// EventStream is one Bedrock event stream.
+// EventStream is one Bedrock event stream. Close must release its resources
+// and return promptly; Client stops waiting for Events when its context ends.
 type EventStream interface {
 	Events() <-chan types.ConverseStreamOutput
 	Close() error
@@ -42,6 +46,7 @@ type EventStream interface {
 
 // ConverseStreamAPI is the Bedrock operation used by Client. It permits
 // deterministic transports and tests without changing request semantics.
+// Implementations must honor context cancellation while opening the stream.
 type ConverseStreamAPI interface {
 	ConverseStream(context.Context, *bedrockruntime.ConverseStreamInput) (EventStream, error)
 }
@@ -63,6 +68,11 @@ func (runtime awsRuntime) ConverseStream(ctx context.Context, input *bedrockrunt
 // through the AWS SDK chain, then to us-east-1 when neither Region nor Profile
 // is set. APIKey is a Bedrock bearer token. Otherwise normal AWS credentials
 // are used. SkipAuth installs dummy credentials for unauthenticated gateways.
+// A nil HTTPClient preserves the AWS SDK's default client and CA-bundle
+// configuration. Static and per-attempt headers apply only to Bedrock runtime
+// requests, never to credential resolution. SDK retries are disabled; use
+// llm.WithRetry for an explicit retry policy. SDK-detected clock skew carries a
+// Retryable hint so an explicit retry can use the corrected signing time.
 type Config struct {
 	Provider     string
 	Model        string
@@ -146,18 +156,9 @@ func New(config Config) (_ *Client, err error) {
 	if profile != "" {
 		loadOptions = append(loadOptions, awsconfig.WithSharedConfigProfile(profile))
 	}
-	if config.HTTPClient != nil || len(config.Headers) != 0 {
-		baseClient := config.HTTPClient
-		if baseClient == nil {
-			baseClient = http.DefaultClient
-		}
-		clone := *baseClient
-		transport := baseClient.Transport
-		if transport == nil {
-			transport = http.DefaultTransport
-		}
-		clone.Transport = staticHeaderTransport{base: transport, headers: config.Headers.Clone()}
-		loadOptions = append(loadOptions, awsconfig.WithHTTPClient(requestmeta.WrapClient(&clone)))
+	if config.HTTPClient != nil {
+		clone := *config.HTTPClient
+		loadOptions = append(loadOptions, awsconfig.WithHTTPClient(&clone))
 	}
 	if skipAuth {
 		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("dummy-access-key", "dummy-secret-key", "")))
@@ -171,6 +172,10 @@ func New(config Config) (_ *Client, err error) {
 		token = strings.TrimSpace(os.Getenv("AWS_BEARER_TOKEN_BEDROCK"))
 	}
 	sdkClient := bedrockruntime.NewFromConfig(awsConfig, func(options *bedrockruntime.Options) {
+		options.Retryer = aws.NopRetryer{}
+		// Wrap only the resolved runtime client, not the credential chain's
+		// client. NewFromConfig has already applied the SDK transport defaults.
+		options.HTTPClient = headerClient{base: options.HTTPClient, headers: config.Headers.Clone()}
 		if shouldPinEndpoint(baseURL, configuredRegion, profileIndicator(hasProfile)) {
 			options.BaseEndpoint = aws.String(baseURL)
 		}
@@ -190,24 +195,29 @@ func profileIndicator(configured bool) string {
 	return ""
 }
 
-type staticHeaderTransport struct {
-	base    http.RoundTripper
+type headerClient struct {
+	base    bedrockruntime.HTTPClient
 	headers http.Header
 }
 
-func (transport staticHeaderTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (client headerClient) Do(request *http.Request) (*http.Response, error) {
+	attemptHeaders := llm.AttemptHeaders(request.Context())
+	if len(attemptHeaders) == 0 && len(client.headers) == 0 {
+		return client.base.Do(request)
+	}
 	clone := request.Clone(request.Context())
-	clone.Header = request.Header.Clone()
-	for name, values := range transport.headers {
-		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Host") || strings.EqualFold(name, "Content-Length") {
-			continue
-		}
-		clone.Header.Del(name)
-		for _, value := range values {
-			clone.Header.Add(name, value)
+	for _, headers := range []http.Header{attemptHeaders, client.headers} {
+		for name, values := range headers {
+			if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Host") || strings.EqualFold(name, "Content-Length") {
+				continue
+			}
+			clone.Header.Del(name)
+			for _, value := range values {
+				clone.Header.Add(name, value)
+			}
 		}
 	}
-	return transport.base.RoundTrip(clone)
+	return client.base.Do(clone)
 }
 
 var standardEndpoint = regexp.MustCompile(`^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$`)

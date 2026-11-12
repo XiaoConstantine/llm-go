@@ -15,6 +15,7 @@ import (
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
+	"github.com/XiaoConstantine/llm-go/internal/responsebody"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"google.golang.org/genai"
 )
@@ -25,6 +26,9 @@ const (
 	defaultAPIVersion = "v1beta"
 	vertexProvider    = "google-vertex"
 	vertexAPIVersion  = "v1"
+	// Bound HTTP response bytes, including base64 media and JSON framing.
+	// Apply the same resource budget to unary responses and stream chunks.
+	maxResponseBodyBytes = 64 << 20
 )
 
 // Config configures a Gemini Developer API client. Model and APIKey are
@@ -39,6 +43,12 @@ const (
 // Headers are used as supplied, without being mutated by Client. A nil
 // HTTPClient uses [http.DefaultClient], which has no overall request timeout;
 // callers should use context deadlines or configure a client timeout.
+// Successful unary bodies and individual streamed chunks share a 64 MiB
+// adapter resource budget, including base64 inline media and JSON/SSE framing
+// (roughly 48 MiB raw media, less framing). Responses above this budget that
+// were accepted before these limits were introduced now return short
+// malformed-response errors. The total stream length is not limited. Error
+// bodies are truncated at 1 MiB. These limits also apply to NewVertex.
 type Config struct {
 	Provider           string
 	Model              string
@@ -166,7 +176,10 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	}
 
 	httpClient := requestmeta.WrapClient(config.HTTPClient)
-	httpClient.Transport = errorMetadataTransport{base: httpClient.Transport}
+	httpClient.Transport = responseLimitTransport{
+		base:         errorMetadataTransport{base: httpClient.Transport},
+		maxBodyBytes: maxResponseBodyBytes,
+	}
 	headers := config.Headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -206,6 +219,35 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 		compatibility: compatibility,
 		sdkClient:     sdkClient,
 	}, nil
+}
+
+// responseBodyKey carries an operation-local capture for the synchronous SDK
+// stream iterator; neither the client nor its transport stores mutable state.
+// The capture allows the caller to prefer a reader's limit error over an SDK
+// JSON error that includes the entire partial event.
+type responseBodyKey struct{}
+
+type responseLimitTransport struct {
+	base         http.RoundTripper
+	maxBodyBytes int64
+}
+
+func (t responseLimitTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if err == nil && response != nil && response.Body != nil {
+		switch {
+		case response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices:
+			response.Body = responsebody.Truncate(response.Body, 1<<20)
+		case request.URL.Query().Get("alt") == "sse":
+			response.Body = responsebody.SSEChunks(response.Body, t.maxBodyBytes)
+		default:
+			response.Body = responsebody.Limit(response.Body, t.maxBodyBytes)
+		}
+		if captured, ok := request.Context().Value(responseBodyKey{}).(*io.ReadCloser); ok {
+			*captured = response.Body
+		}
+	}
+	return response, err
 }
 
 func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error) {

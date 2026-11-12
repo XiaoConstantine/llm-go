@@ -24,6 +24,12 @@ type Client = gemini.Client
 // BaseURL is optional and primarily intended for gateways and tests. APIVersion
 // defaults to v1. Capabilities and Headers have the same ownership and feature
 // semantics as the Gemini GenerateContent adapter.
+// The Gemini adapter's resource budgets also apply: 64 MiB per successful unary
+// body or streamed chunk, including base64 inline media and JSON/SSE framing
+// (roughly 48 MiB raw media, less framing), and 1 MiB of HTTP error body detail.
+// Responses above the budget that were accepted before these limits were
+// introduced now return short malformed-response errors. The total stream
+// length is not limited.
 type Config struct {
 	Provider           string
 	Model              string

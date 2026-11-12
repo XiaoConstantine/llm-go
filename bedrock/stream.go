@@ -89,7 +89,19 @@ func (c *Client) produce(ctx context.Context, op string, request llm.Request, in
 		}
 	}
 	decoder := &decoder{op: op, model: c.model, declared: declared, seenIDs: seen, blocks: make(map[int32]*blockState)}
-	for event := range eventStream.Events() {
+	events := eventStream.Events()
+receive:
+	for {
+		var event types.ConverseStreamOutput
+		select {
+		case <-ctx.Done():
+			return contextErr(ctx)
+		case value, ok := <-events:
+			if !ok {
+				break receive
+			}
+			event = value
+		}
 		if contextErr := contextErr(ctx); contextErr != nil {
 			return contextErr
 		}
@@ -435,7 +447,17 @@ func sdkError(op string, err error) error {
 			kind = llm.KindContextLimit
 		}
 	}
-	return &llm.Error{Kind: kind, Op: op, Provider: defaultProvider, HTTPStatus: status, RetryAfter: retryAfter, Err: err}
+	var retryable *bool
+	// The AWS retry middleware marks confirmed clock-skew errors with this
+	// interface even with NopRetryer. Require a service API response as well:
+	// IMDS credential errors also implement this interface, but must not gain
+	// a Bedrock retry hint. Ordinary signature failures have no SDK hint.
+	var hint interface{ RetryableError() bool }
+	if apiErr != nil && status != 0 && errors.As(err, &hint) && hint.RetryableError() {
+		value := true
+		retryable = &value
+	}
+	return &llm.Error{Kind: kind, Op: op, Provider: defaultProvider, HTTPStatus: status, RetryAfter: retryAfter, Retryable: retryable, Err: err}
 }
 
 func parseRetryAfter(value string) time.Duration {

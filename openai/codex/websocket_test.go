@@ -807,6 +807,132 @@ func TestWebSocketBusySessionUsesTransientConnection(t *testing.T) {
 	}
 }
 
+func TestWebSocketIdlePeerCloseReconnects(t *testing.T) {
+	for _, scenario := range []string{"abrupt", "clean", "idle data then close", "trailing data then close"} {
+		t.Run(scenario, func(t *testing.T) {
+			var connections atomic.Int32
+			var requests atomic.Int32
+			closePeer := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := testUpgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				n := connections.Add(1)
+				defer func() { _ = conn.Close() }()
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+				requests.Add(1)
+				completeWS(t, conn, "resp", "ok")
+				if n == 1 {
+					if scenario == "trailing data then close" {
+						writeWSEvent(t, conn, false, `{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"stale"}`)
+					}
+					<-closePeer
+					if scenario == "idle data then close" {
+						writeWSEvent(t, conn, false, `{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"stale"}`)
+					}
+					if scenario != "abrupt" {
+						_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "idle"), time.Now().Add(time.Second))
+						_, _, _ = conn.ReadMessage()
+					}
+					return
+				}
+				_, _, _ = conn.ReadMessage()
+			}))
+			defer server.Close()
+			closed := make(chan struct{}, 2)
+			client := wsClient(t, server, TransportAuto, func(config *Config) {
+				config.WebSocketDialer = &websocket.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+					conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+					if err != nil {
+						return nil, err
+					}
+					return &observedCloseConn{Conn: conn, closed: closed}, nil
+				}}
+			})
+			request := textRequest("hello")
+			request.SessionID = "session"
+			if _, err := client.Generate(context.Background(), request); err != nil {
+				close(closePeer)
+				t.Fatal(err)
+			}
+			close(closePeer)
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("idle peer closure was not detected and cleaned up")
+			}
+			response, err := client.Generate(context.Background(), request)
+			if err != nil || response.Text() != "ok" {
+				t.Fatalf("next Generate = %v, %v", response, err)
+			}
+			if connections.Load() != 2 || requests.Load() != 2 {
+				t.Fatalf("connections=%d requests=%d, want two distinct single attempts", connections.Load(), requests.Load())
+			}
+		})
+	}
+}
+
+type observedCloseConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *observedCloseConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { c.closed <- struct{}{} })
+	return err
+}
+
+func TestWebSocketReusedCloseBeforeEventIsTransport(t *testing.T) {
+	var connections atomic.Int32
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		connections.Add(1)
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+		requests.Add(1)
+		completeWS(t, conn, "resp", "ok")
+		_, _, _ = conn.ReadMessage()
+		requests.Add(1)
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "closing"), time.Now().Add(time.Second))
+	}))
+	defer server.Close()
+	client := wsClient(t, server, TransportAuto)
+	request := textRequest("hello")
+	request.SessionID = "session"
+	if _, err := client.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Generate(context.Background(), request)
+	if response != nil {
+		t.Fatalf("response = %v", response)
+	}
+	requireModelError(t, err, llm.KindTransport, "generate")
+	if connections.Load() != 1 || requests.Load() != 2 {
+		t.Fatalf("ambiguous request was resent: connections=%d requests=%d", connections.Load(), requests.Load())
+	}
+}
+
+type failedWriteConn struct {
+	net.Conn
+	fail atomic.Bool
+}
+
+func (c *failedWriteConn) Write(p []byte) (int, error) {
+	if c.fail.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	return c.Conn.Write(p)
+}
+
 func TestWebSocketFailedCachedWriteIsNotRetried(t *testing.T) {
 	var connections atomic.Int32
 	var requests atomic.Int32
@@ -826,22 +952,24 @@ func TestWebSocketFailedCachedWriteIsNotRetried(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := wsClient(t, server, TransportWebSocket)
+	var wire *failedWriteConn
+	client := wsClient(t, server, TransportWebSocket, func(config *Config) {
+		config.WebSocketDialer = &websocket.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			wire = &failedWriteConn{Conn: conn}
+			return wire, nil
+		}}
+	})
 	request := textRequest("hello")
 	request.SessionID = "session"
 	if _, err := client.Generate(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	client.webSockets.mu.Lock()
-	var dead *websocket.Conn
-	for _, entry := range client.webSockets.entries {
-		dead = entry.conn
-	}
-	client.webSockets.mu.Unlock()
-	if dead == nil {
-		t.Fatal("missing cached connection")
-	}
-	_ = dead.Close()
+	// Fail the write itself, not an idle socket health check before the write.
+	wire.fail.Store(true)
 	if response, err := client.Generate(context.Background(), request); err == nil || response != nil {
 		t.Fatalf("ambiguous failed write = %#v, %v; want nil error response", response, err)
 	}

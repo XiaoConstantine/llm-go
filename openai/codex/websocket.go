@@ -39,6 +39,7 @@ type webSocketContinuation struct {
 
 type cachedWebSocket struct {
 	conn         *websocket.Conn
+	reader       *webSocketReader
 	busy         bool
 	createdAt    time.Time
 	sequence     uint64
@@ -49,13 +50,15 @@ type cachedWebSocket struct {
 type webSocketCache struct {
 	mu           sync.Mutex
 	closed       bool
+	closeDone    chan struct{}
 	entries      map[webSocketCacheKey]*cachedWebSocket
-	connections  map[*websocket.Conn]struct{}
+	connections  map[*websocket.Conn]*webSocketReader
 	nextSequence uint64
 }
 
 func newWebSocketCache() webSocketCache {
-	return webSocketCache{entries: make(map[webSocketCacheKey]*cachedWebSocket), connections: make(map[*websocket.Conn]struct{})}
+	return webSocketCache{entries: make(map[webSocketCacheKey]*cachedWebSocket),
+		connections: make(map[*websocket.Conn]*webSocketReader), closeDone: make(chan struct{})}
 }
 
 // Close closes all cached Codex WebSocket sessions. It is idempotent and safe
@@ -68,10 +71,14 @@ func (c *Client) Close() error {
 	c.webSockets.mu.Lock()
 	if c.webSockets.closed {
 		c.webSockets.mu.Unlock()
+		<-c.webSockets.closeDone
 		return nil
 	}
+	if c.webSockets.closeDone == nil {
+		c.webSockets.closeDone = make(chan struct{})
+	}
 	c.webSockets.closed = true
-	connections := make([]*websocket.Conn, 0, len(c.webSockets.connections))
+	readers := make([]*webSocketReader, 0, len(c.webSockets.connections))
 	for key, entry := range c.webSockets.entries {
 		delete(c.webSockets.entries, key)
 		if entry.idleTimer != nil {
@@ -79,14 +86,14 @@ func (c *Client) Close() error {
 			entry.idleTimer = nil
 		}
 	}
-	for conn := range c.webSockets.connections {
-		delete(c.webSockets.connections, conn)
-		connections = append(connections, conn)
+	for _, reader := range c.webSockets.connections {
+		readers = append(readers, reader)
 	}
 	c.webSockets.mu.Unlock()
-	for _, conn := range connections {
-		_ = conn.Close()
+	for _, reader := range readers {
+		reader.close()
 	}
+	close(c.webSockets.closeDone)
 	return nil
 }
 
@@ -94,8 +101,10 @@ type webSocketLease struct {
 	client    *Client
 	key       webSocketCacheKey
 	conn      *websocket.Conn
+	reader    *webSocketReader
 	entry     *cachedWebSocket
 	transient bool
+	reused    bool
 	released  bool
 }
 
@@ -104,6 +113,10 @@ func (l *webSocketLease) release(keep bool, continuation *webSocketContinuation)
 		return
 	}
 	l.released = true
+	l.client.webSockets.mu.Lock()
+	close(l.reader.leaseDone)
+	l.reader.leaseDone = nil
+	l.client.webSockets.mu.Unlock()
 	if l.transient || l.entry == nil {
 		l.client.closeWebSocket(l.conn)
 		return
@@ -160,14 +173,16 @@ func cloneWebSocketContinuation(value *webSocketContinuation) *webSocketContinua
 	}
 }
 
-func (c *Client) registerWebSocket(conn *websocket.Conn) bool {
+func (c *Client) registerWebSocket(conn *websocket.Conn) *webSocketReader {
 	c.webSockets.mu.Lock()
 	defer c.webSockets.mu.Unlock()
 	if c.webSockets.closed {
-		return false
+		return nil
 	}
-	c.webSockets.connections[conn] = struct{}{}
-	return true
+	reader := &webSocketReader{conn: conn, messages: make(chan webSocketMessage), leaseDone: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
+	c.webSockets.connections[conn] = reader
+	go reader.run(c)
+	return reader
 }
 
 func (c *Client) closeWebSocket(conn *websocket.Conn) {
@@ -175,9 +190,85 @@ func (c *Client) closeWebSocket(conn *websocket.Conn) {
 		return
 	}
 	c.webSockets.mu.Lock()
-	delete(c.webSockets.connections, conn)
+	reader := c.webSockets.connections[conn]
 	c.webSockets.mu.Unlock()
-	_ = conn.Close()
+	if reader != nil {
+		reader.close()
+	} else {
+		_ = conn.Close()
+	}
+}
+
+// One reader owns each connection for its whole lifetime, including idle time.
+// Unbuffered delivery bounds read-ahead to one message and keeps gorilla's
+// single-reader contract intact across successive leases.
+type webSocketReader struct {
+	conn      *websocket.Conn
+	messages  chan webSocketMessage // Per lease; protected by the cache mutex.
+	leaseDone chan struct{}         // Nil while idle; protected by the cache mutex.
+	stop      chan struct{}
+	done      chan struct{}
+	once      sync.Once
+	err       error // Published by closing done.
+}
+
+type webSocketMessage struct {
+	kind int
+	data []byte
+}
+
+func (r *webSocketReader) run(c *Client) {
+	defer func() {
+		c.webSockets.mu.Lock()
+		for key, entry := range c.webSockets.entries {
+			if entry.conn == r.conn {
+				delete(c.webSockets.entries, key)
+				if entry.idleTimer != nil {
+					entry.idleTimer.Stop()
+					entry.idleTimer = nil
+				}
+			}
+		}
+		c.webSockets.mu.Unlock()
+		_ = r.conn.Close()
+		c.webSockets.mu.Lock()
+		delete(c.webSockets.connections, r.conn)
+		close(r.done)
+		c.webSockets.mu.Unlock()
+	}()
+	for {
+		kind, data, err := r.conn.ReadMessage()
+		if err != nil {
+			r.err = err
+			return
+		}
+		c.webSockets.mu.Lock()
+		messages, leaseDone := r.messages, r.leaseDone
+		c.webSockets.mu.Unlock()
+		if leaseDone == nil {
+			r.err = errors.New("unsolicited data on idle Codex WebSocket")
+			return
+		}
+		select {
+		case messages <- webSocketMessage{kind: kind, data: data}:
+		case <-leaseDone:
+			// A frame read ahead of release belongs to that lease, never the
+			// next request. Do not park the reader on a completed lease.
+			r.err = errors.New("unsolicited data after Codex WebSocket response")
+			return
+		case <-r.stop:
+			r.err = io.ErrClosedPipe
+			return
+		}
+	}
+}
+
+func (r *webSocketReader) close() {
+	r.once.Do(func() {
+		close(r.stop)
+		_ = r.conn.Close()
+	})
+	<-r.done
 }
 
 func (c *Client) webSocketClosed() bool {
@@ -216,16 +307,17 @@ func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*w
 	if err != nil {
 		return nil, Credentials{}, err
 	}
-	if !c.registerWebSocket(conn) {
+	reader := c.registerWebSocket(conn)
+	if reader == nil {
 		_ = conn.Close()
 		return nil, Credentials{}, transportError(op, errors.New("codex WebSocket client is closed"))
 	}
 	key = credentialCacheKey(sessionID, resolved)
 	if sessionID == "" || attemptScoped {
-		return &webSocketLease{client: c, key: key, conn: conn, transient: true}, resolved, nil
+		return &webSocketLease{client: c, key: key, conn: conn, reader: reader, transient: true}, resolved, nil
 	}
 
-	entry := &cachedWebSocket{conn: conn, busy: true, createdAt: time.Now()}
+	entry := &cachedWebSocket{conn: conn, reader: reader, busy: true, createdAt: time.Now()}
 	c.webSockets.mu.Lock()
 	if c.webSockets.closed {
 		c.webSockets.mu.Unlock()
@@ -236,7 +328,7 @@ func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*w
 		// Another request won the connection race. Keep its session connection and
 		// use this newly authenticated socket transiently to avoid frame interleaving.
 		c.webSockets.mu.Unlock()
-		return &webSocketLease{client: c, key: key, conn: conn, transient: true}, resolved, nil
+		return &webSocketLease{client: c, key: key, conn: conn, reader: reader, transient: true}, resolved, nil
 	}
 	var evicted *cachedWebSocket
 	if len(c.webSockets.entries) >= c.webSocketMaxSessions {
@@ -250,7 +342,7 @@ func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*w
 			// Capacity is fully occupied by active requests. The new authenticated
 			// connection remains transient rather than disrupting active work.
 			c.webSockets.mu.Unlock()
-			return &webSocketLease{client: c, key: key, conn: conn, transient: true}, resolved, nil
+			return &webSocketLease{client: c, key: key, conn: conn, reader: reader, transient: true}, resolved, nil
 		}
 		for evictedKey, candidate := range c.webSockets.entries {
 			if candidate == evicted {
@@ -270,7 +362,7 @@ func (c *Client) acquireWebSocket(ctx context.Context, op, sessionID string) (*w
 	if evicted != nil {
 		c.closeWebSocket(evicted.conn)
 	}
-	return &webSocketLease{client: c, key: key, conn: conn, entry: entry}, resolved, nil
+	return &webSocketLease{client: c, key: key, conn: conn, reader: reader, entry: entry}, resolved, nil
 }
 
 func (c *Client) takeCachedWebSocket(key webSocketCacheKey) *webSocketLease {
@@ -299,8 +391,10 @@ func (c *Client) takeCachedWebSocket(key webSocketCacheKey) *webSocketLease {
 		entry.idleTimer = nil
 	}
 	entry.busy = true
+	entry.reader.messages = make(chan webSocketMessage)
+	entry.reader.leaseDone = make(chan struct{})
 	c.webSockets.mu.Unlock()
-	return &webSocketLease{client: c, key: key, conn: entry.conn, entry: entry}
+	return &webSocketLease{client: c, key: key, conn: entry.conn, reader: entry.reader, entry: entry, reused: true}
 }
 
 func (c *Client) currentCredentials(ctx context.Context, op, rejected string, rejectedErr error) (Credentials, error) {
@@ -565,7 +659,7 @@ func (c *Client) produceWebSocket(ctx context.Context, op string, params openair
 			lease.release(false, nil)
 			return requestError(op, "encode response.create: %v", err)
 		}
-		stream := newWebSocketEventStream(ctx, op, lease.conn)
+		stream := newWebSocketEventStream(ctx, op, lease.reader, lease.reused)
 		if err := lease.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 			_ = stream.Close()
 			lease.release(false, nil)
@@ -614,7 +708,9 @@ func previousResponseNotFound(err error) bool {
 type webSocketEventStream struct {
 	ctx           context.Context
 	op            string
-	conn          *websocket.Conn
+	reader        *webSocketReader
+	reused        bool
+	received      bool
 	current       openairesponses.ResponseStreamEventUnion
 	err           error
 	terminal      bool
@@ -626,13 +722,13 @@ type webSocketEventStream struct {
 	closeOnce     sync.Once
 }
 
-func newWebSocketEventStream(ctx context.Context, op string, conn *websocket.Conn) *webSocketEventStream {
-	stream := &webSocketEventStream{ctx: ctx, op: op, conn: conn, stopWatcher: make(chan struct{}), watcherDone: make(chan struct{})}
+func newWebSocketEventStream(ctx context.Context, op string, reader *webSocketReader, reused bool) *webSocketEventStream {
+	stream := &webSocketEventStream{ctx: ctx, op: op, reader: reader, reused: reused, stopWatcher: make(chan struct{}), watcherDone: make(chan struct{})}
 	go func() {
 		defer close(stream.watcherDone)
 		select {
 		case <-ctx.Done():
-			_ = conn.Close()
+			_ = reader.conn.Close()
 		case <-stream.stopWatcher:
 		}
 	}()
@@ -643,11 +739,19 @@ func (s *webSocketEventStream) Next() bool {
 	if s.err != nil || s.terminal {
 		return false
 	}
-	messageType, data, err := s.conn.ReadMessage()
+	var message webSocketMessage
+	var err error
+	select {
+	case <-s.ctx.Done():
+		err = contextErr(s.ctx)
+	case <-s.reader.done:
+		err = s.reader.err
+	case message = <-s.reader.messages:
+	}
 	if err != nil {
 		if contextErr := contextErr(s.ctx); contextErr != nil {
 			s.err = contextErr
-		} else if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		} else if (!s.reused || s.received) && websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 			// A clean close without a terminal event is handled by Codec as malformed.
 			s.err = nil
 		} else if strings.Contains(strings.ToLower(err.Error()), "read limit") || websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
@@ -657,6 +761,8 @@ func (s *webSocketEventStream) Next() bool {
 		}
 		return false
 	}
+	s.received = true
+	messageType, data := message.kind, message.data
 	if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
 		s.err = malformedResponse(s.op, "WebSocket delivered unsupported message type %d", messageType)
 		return false

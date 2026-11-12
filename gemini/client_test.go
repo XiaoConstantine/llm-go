@@ -1,9 +1,11 @@
 package gemini
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -540,6 +542,138 @@ func TestGenerateClassifiesResponseReadError(t *testing.T) {
 	if !errors.Is(err, readErr) {
 		t.Fatalf("Generate() error = %v, want read cause", err)
 	}
+}
+
+func TestDefaultResponseBodyBudget(t *testing.T) {
+	// Verify the factory's real 64 MiB budget without asking the SDK to buffer
+	// a full-size body. Boundary/SDK decoding tests below use a small budget.
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", streaming), func(t *testing.T) {
+			const limit = 64 << 20
+			body := &countedLimitBody{Reader: io.LimitReader(responsePaddingReader{}, limit+2)}
+			client, err := New(Config{Model: "model", APIKey: "key", HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: body, Header: make(http.Header), Request: r}, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			url := "https://provider.example/generate"
+			if streaming {
+				url += "?alt=sse"
+			}
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.sdkClient.ClientConfig().HTTPClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			read, err := io.Copy(io.Discard, response.Body)
+			if read != limit || body.read != limit+1 || !errors.Is(err, bufio.ErrTooLong) {
+				t.Fatalf("read=%d source bytes=%d error=%v, want 64 MiB plus one overflow byte", read, body.read, err)
+			}
+		})
+	}
+}
+
+func TestResponseReadLimitsWithSmallBudget(t *testing.T) {
+	const limit = 4 << 10
+	unary := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
+	first := `{"candidates":[{"content":{"role":"model","parts":[{"text":"o"}]}}]}`
+	tail := `{"candidates":[{"content":{"role":"model","parts":[{"text":"k"}]},"finishReason":"STOP"}]}`
+	event := func(newline string) string {
+		return "data: " + first + strings.Repeat(" ", limit-len("data: ")-len(first)-2*len(newline)) + newline + newline + "data: " + tail + newline + newline
+	}
+	for _, vertex := range []bool{false, true} {
+		for _, test := range []struct {
+			name      string
+			streaming bool
+			wire      string
+			tooLarge  bool
+		}{
+			{"unary boundary", false, unary + strings.Repeat(" ", limit-len(unary)), false},
+			{"unary over", false, unary + strings.Repeat(" ", limit-len(unary)+1), true},
+			{"LF boundary and larger total stream", true, event("\n"), false},
+			{"CRLF boundary and larger total stream", true, event("\r\n"), false},
+			{"unterminated line", true, "data: " + strings.Repeat("x", limit*2), true},
+			{"multiline event", true, strings.Repeat("data: x\n", limit/4), true},
+			{"mixed boundaries", true, strings.Repeat("data: x\n\r\n", limit/4), true},
+		} {
+			t.Run(fmt.Sprintf("vertex=%t/%s", vertex, test.name), func(t *testing.T) {
+				body := &countedLimitBody{Reader: strings.NewReader(test.wire)}
+				contentType, op, provider := "application/json", "generate", defaultProvider
+				if test.streaming {
+					contentType, op = "text/event-stream", "stream"
+				}
+				config := Config{Model: "model", APIKey: "key", Capabilities: []llm.Capability{llm.CapabilityStreaming},
+					HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: body, Request: r}, nil
+					})}}
+				var client *Client
+				var err error
+				if vertex {
+					provider = vertexProvider
+					client, err = NewVertex(config, "", "")
+				} else {
+					client, err = New(config)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Change only this test client's transport budget. Requests still
+				// pass through the real SDK parser and public Generate/Stream API.
+				httpClient := client.sdkClient.ClientConfig().HTTPClient
+				transport := httpClient.Transport.(responseLimitTransport)
+				transport.maxBodyBytes = limit
+				httpClient.Transport = transport
+				var response *llm.Response
+				if test.streaming {
+					stream, openErr := client.Stream(context.Background(), textRequest("hello"))
+					if openErr != nil {
+						t.Fatal(openErr)
+					}
+					response, err = llm.CollectStructural(stream)
+				} else {
+					response, err = client.Generate(context.Background(), textRequest("hello"))
+				}
+				if !body.closed {
+					t.Error("response body was not closed")
+				}
+				if test.tooLarge {
+					requireModelError(t, err, llm.KindMalformedResponse, op, provider)
+					if !errors.Is(err, bufio.ErrTooLong) || len(err.Error()) > 1024 || body.read != limit+1 {
+						t.Errorf("error length=%d source bytes=%d error=%v, want short size error and %d bytes", len(err.Error()), body.read, err, limit+1)
+					}
+				} else if err != nil || response.Text() != "ok" {
+					t.Fatalf("response=%v error=%v, want ok", response, err)
+				}
+			})
+		}
+	}
+}
+
+type countedLimitBody struct {
+	io.Reader
+	read   int
+	closed bool
+}
+
+func (b *countedLimitBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	b.read += n
+	return n, err
+}
+func (b *countedLimitBody) Close() error { b.closed = true; return nil }
+
+type responsePaddingReader struct{}
+
+func (responsePaddingReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = ' '
+	}
+	return len(p), nil
 }
 
 func mustTestClient(t *testing.T, server *httptest.Server, capabilities ...llm.Capability) *Client {

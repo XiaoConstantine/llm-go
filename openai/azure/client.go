@@ -24,6 +24,8 @@ const (
 // required. DeploymentName defaults to Model. BaseURL takes precedence over
 // ResourceName; when only ResourceName is set, the endpoint is constructed as
 // https://<resource>.openai.azure.com/openai/v1. APIVersion defaults to "v1".
+// The Responses adapter's limits also apply: 17 MiB per streaming wire event
+// and 1 MiB of HTTP error body detail.
 type Config struct {
 	Provider       string
 	Model          string

@@ -24,6 +24,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
 	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
+	"github.com/XiaoConstantine/llm-go/internal/responsebody"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaioption "github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
@@ -36,6 +37,9 @@ const (
 	providerDataAPI      = "openai-responses"
 	maxProviderDataBytes = 16 << 20
 	maxBackgroundBody    = 2 * maxProviderDataBytes
+	maxErrorBodyBytes    = 1 << 20
+	// Allow the existing JSON budget plus SSE fields and delimiters.
+	maxStreamEventBytes = maxProviderDataBytes + (1 << 20)
 )
 
 // APIError is an error reported in a Responses event stream.
@@ -51,6 +55,10 @@ type APIError = internalresponses.APIError
 // owns Authorization, Content-Type, and Accept. A nil HTTPClient uses
 // [http.DefaultClient], so callers should use context deadlines when an
 // unbounded request is not acceptable.
+// Error bodies are truncated at 1 MiB. Streaming wire events (including all
+// lines and delimiters) are limited to 17 MiB (the 16 MiB JSON budget plus
+// 1 MiB for SSE framing); oversized events are malformed
+// responses. Stored background responses retain their 32 MiB limit.
 type Config struct {
 	Provider string
 	Model    string
@@ -154,6 +162,7 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 		}
 	}
 	httpClient := requestmeta.WrapClient(config.HTTPClient)
+	httpClient.Transport = responseLimitTransport{base: httpClient.Transport}
 
 	sdkOptions := []openaioption.RequestOption{
 		openaioption.WithMaxRetries(0),
@@ -189,6 +198,20 @@ func newClient(config Config, options Options, configuredCompatibility *llm.Open
 		compatibility:           modelCompatibility,
 		compatibilityConfigured: configuredCompatibility != nil,
 	}, nil
+}
+
+type responseLimitTransport struct{ base http.RoundTripper }
+
+func (t responseLimitTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if err == nil && response != nil && response.Body != nil {
+		if response.StatusCode >= http.StatusBadRequest {
+			response.Body = responsebody.Truncate(response.Body, maxErrorBodyBytes)
+		} else if request.Header.Get("Accept") == "text/event-stream" {
+			response.Body = responsebody.SSE(response.Body, maxStreamEventBytes)
+		}
+	}
+	return response, err
 }
 
 func configureCapabilities(provider string, configured []llm.Capability) ([]llm.Capability, error) {
