@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -312,10 +315,11 @@ func TestSyncCatalogAddNewModelWithContextOver200k(t *testing.T) {
 			Name: "Google",
 			Models: map[string]modelsdev.ModelEntry{
 				"gemini-2.5-pro": {
-					ID:        "gemini-2.5-pro",
-					Name:      "Gemini 2.5 Pro",
-					Reasoning: true,
-					ToolCall:  true,
+					ID:         "gemini-2.5-pro",
+					Name:       "Gemini 2.5 Pro",
+					Reasoning:  true,
+					ToolCall:   true,
+					Modalities: &modelsdev.Modalities{Output: []string{"text"}},
 					Limit: &modelsdev.Limit{
 						Context: 1000000,
 						Output:  8192,
@@ -376,11 +380,12 @@ func TestSyncCatalogAddNewModelWithContextOver200k(t *testing.T) {
 
 func TestCreateSourceModelNormalizesIdentityAndKeepsProviderCompatibility(t *testing.T) {
 	entry := modelsdev.ModelEntry{
-		ID:        " deepseek-v4 ",
-		Name:      " DeepSeek V4 ",
-		ToolCall:  true,
-		Reasoning: true,
-		Limit:     &modelsdev.Limit{Context: 1_000_000, Output: 384_000},
+		ID:         " deepseek-v4 ",
+		Name:       " DeepSeek V4 ",
+		ToolCall:   true,
+		Reasoning:  true,
+		Modalities: &modelsdev.Modalities{Output: []string{"text"}},
+		Limit:      &modelsdev.Limit{Context: 1_000_000, Output: 384_000},
 	}
 	model, ok := createSourceModel("deepseek", entry)
 	if !ok {
@@ -401,6 +406,54 @@ func TestCreateSourceModelNormalizesIdentityAndKeepsProviderCompatibility(t *tes
 	model, ok = createSourceModel("openrouter", entry)
 	if !ok || model.Compatibility == nil || model.Compatibility.OpenAIChat == nil || model.Compatibility.OpenAIChat.ThinkingFormat != llm.ThinkingFormatOpenRouter || model.Compatibility.OpenAIChat.SessionAffinityFormat != llm.SessionAffinityOpenRouter {
 		t.Fatalf("OpenRouter compatibility = %#v, ok = %t", model.Compatibility, ok)
+	}
+}
+
+func TestSyncCatalogFiltersNewModelsAndUsesProviderAPI(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		api      llm.API
+	}{
+		{"mistral", llm.APIMistralConversations},
+		{"google-vertex", llm.APIGoogleVertex},
+		{"amazon-bedrock", llm.APIBedrockConverseStream},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			entries := map[string]modelsdev.ModelEntry{}
+			for _, candidate := range []struct {
+				id     string
+				tools  bool
+				output []string
+			}{
+				{"generation", true, []string{"text"}},
+				{"embedding", false, []string{"text"}},
+				{"image", true, []string{"image"}},
+				{"multimodal", true, []string{"text", "image"}},
+				{"unknown", true, nil},
+				{"existing", false, []string{"image"}},
+			} {
+				entries[candidate.id] = modelsdev.ModelEntry{ID: candidate.id, ToolCall: candidate.tools,
+					Modalities: &modelsdev.Modalities{Output: candidate.output}, Limit: &modelsdev.Limit{Context: 1000, Output: 123}}
+			}
+			catalog := &sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{{
+				Provider: test.provider, ID: "existing", Name: "Existing", API: test.api,
+				Reasoning: boolPtr(false), Capabilities: &[]llm.Capability{llm.CapabilityStreaming},
+				ContextWindow: intPtr(500), MaxOutputTokens: intPtr(100),
+			}}}
+			result, err := syncCatalog(catalog, modelsdev.Dataset{test.provider: {Models: entries}}, SyncOptions{Providers: []string{test.provider}, AddNew: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(result.AddedModels, []string{test.provider + "/generation"}) || !slices.Equal(result.UpdatedModels, []string{test.provider + "/existing"}) || len(catalog.Models) != 2 {
+				t.Fatalf("sync result = %#v, model count = %d", result, len(catalog.Models))
+			}
+			if !slices.Equal(result.ExcludedModels, []string{test.provider + "/embedding", test.provider + "/image", test.provider + "/multimodal", test.provider + "/unknown"}) {
+				t.Fatalf("excluded models = %v", result.ExcludedModels)
+			}
+			if err := validateCatalog(catalog); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -474,6 +527,210 @@ func TestValidateCatalogRejectsInvalidData(t *testing.T) {
 	}
 	if err := validateCatalog(bad3); err == nil {
 		t.Error("expected error for tier threshold exceeding context window")
+	}
+}
+
+func TestSyncCatalogSkipsInvalidCacheReadPrices(t *testing.T) {
+	for _, cost := range []*modelsdev.Cost{
+		{Input: floatPtr(.1), CacheRead: floatPtr(.3)}, // Explicit invalid rates are not clamped.
+		{Input: floatPtr(5), Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(200), Input: floatPtr(.1), CacheRead: floatPtr(.2)}}},
+		// A discarded cost must not report its provisional base-price clamp.
+		{Input: floatPtr(.1), Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(200), Input: floatPtr(.1), CacheRead: floatPtr(.2)}}},
+	} {
+		catalog := &sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{{
+			Provider: "openrouter", ID: "existing", Name: "Existing", API: llm.APIOpenAIChatCompletions,
+			Reasoning: boolPtr(false), Capabilities: &[]llm.Capability{llm.CapabilityStreaming},
+			ContextWindow: intPtr(1000), MaxOutputTokens: intPtr(100),
+			Cost: &sourceCost{Input: floatPtr(3), Output: floatPtr(7), CacheRead: floatPtr(.3), CacheWrite: floatPtr(4)},
+		}}}
+		before := catalog.Models[0]
+		beforeCost := *before.Cost
+		before.Cost = &beforeCost
+		dataset := modelsdev.Dataset{"openrouter": {Models: map[string]modelsdev.ModelEntry{
+			"existing": {ID: "existing", Limit: &modelsdev.Limit{Context: 2000, Output: 200}, Reasoning: true, Modalities: &modelsdev.Modalities{Input: []string{"text", "image"}}, Cost: cost},
+			"bad-new":  {ID: "bad-new", ToolCall: true, Modalities: &modelsdev.Modalities{Output: []string{"text"}}, Limit: &modelsdev.Limit{Context: 1000, Output: 100}, Cost: &modelsdev.Cost{Input: floatPtr(.1), CacheRead: floatPtr(.2)}},
+			"good-new": {ID: "good-new", ToolCall: true, Modalities: &modelsdev.Modalities{Output: []string{"text"}}, Limit: &modelsdev.Limit{Context: 1000, Output: 100}, Cost: &modelsdev.Cost{Input: floatPtr(.2), CacheRead: floatPtr(.2)}},
+		}}}
+		result, err := syncCatalog(catalog, dataset, SyncOptions{Providers: []string{"openrouter"}, AddNew: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := catalog.Models[0]
+		if !slices.Equal(result.UpdatedModels, []string{"openrouter/existing"}) || !slices.Equal(result.AddedModels, []string{"openrouter/good-new"}) || !reflect.DeepEqual(got.Cost, before.Cost) || *got.ContextWindow != 2000 || *got.MaxOutputTokens != 200 || !*got.Reasoning || !slices.Contains(*got.Capabilities, llm.CapabilityVision) {
+			t.Fatalf("cost skip lost metadata or applied invalid prices: result=%#v, model=%#v", result, got)
+		}
+		if len(result.ClampedModels) != 0 {
+			t.Fatalf("discarded prices reported as clamped: %v", result.ClampedModels)
+		}
+		if len(result.SkippedModels) != 2 || !strings.Contains(result.SkippedModels[0], "openrouter/bad-new:") || !strings.Contains(result.SkippedModels[1], "openrouter/existing: cost skipped:") || !strings.Contains(result.SkippedModels[1], "cache_read") {
+			t.Fatalf("skipped models = %v", result.SkippedModels)
+		}
+		if err := validateCatalog(catalog); err != nil {
+			t.Fatal(err)
+		}
+		// The written output must remain acceptable on the next sync as well.
+		path := filepath.Join(t.TempDir(), "catalog.json")
+		if err := writeCatalog(path, catalog); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCatalog(path); err != nil {
+			t.Fatal(err)
+		}
+		// Hand-edited catalogs must obey the same rule, for base and tier rates.
+		catalog.Models[0].Cost.CacheRead = floatPtr(4)
+		if cost.Tiers != nil {
+			catalog.Models[0].Cost.CacheRead = floatPtr(.3)
+			catalog.Models[0].Cost.Tiers = []sourceTier{{InputTokensAbove: intPtr(200), Input: floatPtr(.1), Output: floatPtr(1), CacheRead: floatPtr(.2), CacheWrite: floatPtr(0)}}
+		}
+		if err := validateCatalog(catalog); err == nil || !strings.Contains(err.Error(), "cache_read") {
+			t.Fatalf("invalid cache price validation = %v", err)
+		}
+	}
+}
+
+func TestSyncCatalogRecordedPartialCost(t *testing.T) {
+	catalog, err := loadCatalog(filepath.Join("..", "..", "catalogsource", "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataset, err := loadDataset(filepath.Join("..", "..", "modelsdev", "testdata", "partial-cost.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run := range 2 {
+		result, err := syncCatalog(catalog, dataset, SyncOptions{Providers: []string{"openrouter"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.SkippedModels) != 0 {
+			t.Fatalf("skipped prices: %v", result.SkippedModels)
+		}
+		if slices.Contains(result.UpdatedModels, "openrouter/meta-llama/llama-3.1-8b-instruct") != (run == 0) {
+			t.Fatalf("updates on run %d = %v", run, result.UpdatedModels)
+		}
+		var wantClamped []string
+		if run == 0 {
+			wantClamped = []string{"openrouter/meta-llama/llama-3.1-8b-instruct"}
+		}
+		if !slices.Equal(result.ClampedModels, wantClamped) {
+			t.Fatalf("clamped models on run %d = %v, want %v", run, result.ClampedModels, wantClamped)
+		}
+		for _, model := range catalog.Models {
+			if model.Provider == "openrouter" && model.ID == "meta-llama/llama-3.1-8b-instruct" {
+				if model.Cost == nil || *model.Cost.Input != .02 || *model.Cost.Output != .04 || *model.Cost.CacheRead != .02 {
+					t.Fatalf("merged cost = %#v", model.Cost)
+				}
+			}
+		}
+		if err := validateCatalog(catalog); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSyncCatalogRetainsTierRates(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cost *modelsdev.Cost
+		want llm.ModelCostTier
+	}{
+		{"omitted", &modelsdev.Cost{Input: floatPtr(5)}, llm.ModelCostTier{InputTokensAbove: 200000, Input: 6, Output: 14, CacheRead: .6, CacheWrite: 8}},
+		{"moved", &modelsdev.Cost{Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(300000), Output: floatPtr(19)}}}, llm.ModelCostTier{InputTokensAbove: 300000, Input: 3, Output: 19, CacheRead: .3, CacheWrite: 4}},
+		{"matching", &modelsdev.Cost{Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(200000), Output: floatPtr(19)}}}, llm.ModelCostTier{InputTokensAbove: 200000, Input: 6, Output: 19, CacheRead: .6, CacheWrite: 8}},
+		{"lower input", &modelsdev.Cost{Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(200000), Input: floatPtr(.2)}}}, llm.ModelCostTier{InputTokensAbove: 200000, Input: .2, Output: 14, CacheRead: .2, CacheWrite: 8}},
+		{"legacy", &modelsdev.Cost{ContextOver200k: &modelsdev.CostRates{Output: floatPtr(19)}}, llm.ModelCostTier{InputTokensAbove: 200000, Input: 6, Output: 19, CacheRead: .6, CacheWrite: 8}},
+		{"filtered", &modelsdev.Cost{Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(1000000), Input: floatPtr(20)}}}, llm.ModelCostTier{InputTokensAbove: 200000, Input: 6, Output: 14, CacheRead: .6, CacheWrite: 8}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			catalog := &sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{{Provider: "openrouter", ID: "m", Name: "M", API: llm.APIOpenAIChatCompletions,
+				Reasoning: boolPtr(false), Capabilities: &[]llm.Capability{llm.CapabilityStreaming}, ContextWindow: intPtr(1000000), MaxOutputTokens: intPtr(1000),
+				Cost: &sourceCost{Input: floatPtr(3), Output: floatPtr(7), CacheRead: floatPtr(.3), CacheWrite: floatPtr(4), Tiers: []sourceTier{
+					{InputTokensAbove: intPtr(200000), Input: floatPtr(6), Output: floatPtr(14), CacheRead: floatPtr(.6), CacheWrite: floatPtr(8)},
+					{InputTokensAbove: intPtr(500000), Input: floatPtr(8), Output: floatPtr(20), CacheRead: floatPtr(.8), CacheWrite: floatPtr(10)},
+				}},
+			}}}
+			dataset := modelsdev.Dataset{"openrouter": {Models: map[string]modelsdev.ModelEntry{"m": {ID: "m", Cost: test.cost}}}}
+			for run := range 2 {
+				result, err := syncCatalog(catalog, dataset, SyncOptions{Providers: []string{"openrouter"}})
+				if err != nil || len(result.SkippedModels) > 0 {
+					t.Fatalf("sync = %#v, %v", result, err)
+				}
+				if run == 1 && len(result.UpdatedModels) > 0 {
+					t.Fatalf("non-idempotent tier update: %v", result.UpdatedModels)
+				}
+				got := map[int]llm.ModelCostTier{}
+				for _, tier := range catalog.Models[0].Cost.Tiers {
+					got[*tier.InputTokensAbove] = llm.ModelCostTier{InputTokensAbove: *tier.InputTokensAbove, Input: *tier.Input, Output: *tier.Output, CacheRead: *tier.CacheRead, CacheWrite: *tier.CacheWrite}
+				}
+				want := map[int]llm.ModelCostTier{test.want.InputTokensAbove: test.want}
+				if test.name == "filtered" || test.name == "omitted" {
+					want[500000] = llm.ModelCostTier{InputTokensAbove: 500000, Input: 8, Output: 20, CacheRead: .8, CacheWrite: 10}
+				}
+				var wantClamped []string
+				if run == 0 && test.name == "lower input" {
+					wantClamped = []string{"openrouter/m"}
+				}
+				if !slices.Equal(result.ClampedModels, wantClamped) {
+					t.Fatalf("clamped models = %v, want %v", result.ClampedModels, wantClamped)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("tiers = %#v, want %#v", got, want)
+				}
+				if err := validateCatalog(catalog); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestSyncCatalogDropsTiersOutsideMergedContext(t *testing.T) {
+	for _, window := range []int{200000, 272000, 272001} {
+		for _, variant := range []string{"no cost", "invalid price", "retained upstream", "omitted upstream"} {
+			t.Run(fmt.Sprintf("%s/%d", variant, window), func(t *testing.T) {
+				catalog, err := loadCatalog(filepath.Join("..", "..", "catalogsource", "catalog.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				entry := modelsdev.ModelEntry{ID: "openai/gpt-5.6-sol", Limit: &modelsdev.Limit{Context: window}}
+				switch variant {
+				case "invalid price":
+					entry.Cost = &modelsdev.Cost{Input: floatPtr(.1), CacheRead: floatPtr(.3)}
+				case "retained upstream":
+					entry.Cost = &modelsdev.Cost{Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(272000), Output: floatPtr(20)}}}
+				case "omitted upstream":
+					entry.Cost = &modelsdev.Cost{Input: floatPtr(3)}
+				}
+				dataset := modelsdev.Dataset{"openrouter": {Models: map[string]modelsdev.ModelEntry{entry.ID: entry}}}
+				for run := range 2 {
+					result, err := syncCatalog(catalog, dataset, SyncOptions{Providers: []string{"openrouter"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := validateCatalog(catalog); err != nil {
+						t.Fatal(err)
+					}
+					if run == 1 && len(result.UpdatedModels) > 0 {
+						t.Fatalf("second sync changed models: %v", result.UpdatedModels)
+					}
+					for _, model := range catalog.Models {
+						if model.Provider != "openrouter" || model.ID != entry.ID {
+							continue
+						}
+						wantTiers := 0
+						if window > 272000 {
+							wantTiers = 1
+						}
+						if *model.ContextWindow != window || len(model.Cost.Tiers) != wantTiers {
+							t.Fatalf("context=%d tiers=%d, want %d/%d", *model.ContextWindow, len(model.Cost.Tiers), window, wantTiers)
+						}
+						if variant == "invalid price" && (*model.Cost.Input != 2 || *model.Cost.CacheRead != .2 || len(result.SkippedModels) != 1) {
+							t.Fatalf("invalid base cost not skipped: %+v, %v", model.Cost, result.SkippedModels)
+						}
+					}
+				}
+			})
+		}
 	}
 }
 

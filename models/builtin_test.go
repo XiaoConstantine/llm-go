@@ -279,6 +279,33 @@ func TestBuiltinCatalogMatchesProviderProfiles(t *testing.T) {
 	}
 }
 
+func TestBuiltinCatalogVertexJSONAndLongContextPricing(t *testing.T) {
+	catalog := BuiltinCatalog()
+	for _, model := range catalog.Models(ProviderGoogleVertex) {
+		google, ok := catalog.Model("google", model.ID)
+		if !ok || !hasCapability(google.Capabilities, llm.CapabilityJSON) {
+			continue
+		}
+		if !hasCapability(model.Capabilities, llm.CapabilityJSON) {
+			t.Errorf("Vertex %s lacks the JSON capability of its Gemini counterpart", model.ID)
+		}
+	}
+	for _, test := range []struct {
+		id                  string
+		input, output, read float64
+	}{
+		{"gemini-2.5-pro", 2.5, 15, 0.25},
+		{"gemini-3.1-pro-preview", 4, 18, 0.4},
+		{"gemini-3.1-pro-preview-customtools", 4, 18, 0.4},
+	} {
+		model, ok := catalog.Model(ProviderGoogleVertex, test.id)
+		want := []llm.ModelCostTier{{InputTokensAbove: 200_000, Input: test.input, Output: test.output, CacheRead: test.read}}
+		if !ok || model.Cost == nil || !slices.Equal(model.Cost.Tiers, want) {
+			t.Errorf("Vertex %s cost = %#v, want tier %#v", test.id, model.Cost, want)
+		}
+	}
+}
+
 func TestBuiltinCatalogReturnsOwnedMetadata(t *testing.T) {
 	first, ok := BuiltinCatalog().Model(ProviderDeepSeek, "deepseek-v4-flash")
 	if !ok {

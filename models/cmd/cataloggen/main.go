@@ -15,25 +15,10 @@ import (
 	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/catalogmeta"
 )
 
 const schemaVersion = 1
-
-var providerAPIs = map[string]llm.API{
-	"amazon-bedrock": llm.APIBedrockConverseStream,
-	"anthropic":      llm.APIAnthropicMessages,
-	"cerebras":       llm.APIOpenAIChatCompletions,
-	"deepseek":       llm.APIOpenAIChatCompletions,
-	"fireworks":      llm.APIOpenAIChatCompletions,
-	"google":         llm.APIGeminiGenerateContent,
-	"google-vertex":  llm.APIGoogleVertex,
-	"groq":           llm.APIOpenAIChatCompletions,
-	"mistral":        llm.APIMistralConversations,
-	"openai":         llm.APIOpenAIResponses,
-	"openai-codex":   llm.APIOpenAICodexResponses,
-	"openrouter":     llm.APIOpenAIChatCompletions,
-	"xai":            llm.APIOpenAIResponses,
-}
 
 type sourceCatalog struct {
 	SchemaVersion int           `json:"schema_version"`
@@ -207,7 +192,7 @@ func (source sourceModel) model() (llm.Model, error) {
 	if source.Name == "" || !utf8.ValidString(source.Name) || strings.TrimSpace(source.Name) != source.Name {
 		return llm.Model{}, errors.New("name must be nonempty valid UTF-8 without surrounding whitespace")
 	}
-	expectedAPI, knownProvider := providerAPIs[source.Provider]
+	expectedAPI, knownProvider := catalogmeta.ProviderAPI(source.Provider)
 	if !knownProvider {
 		return llm.Model{}, fmt.Errorf("unsupported built-in provider %q", source.Provider)
 	}
@@ -223,7 +208,7 @@ func (source sourceModel) model() (llm.Model, error) {
 	capabilities := append([]llm.Capability(nil), (*source.Capabilities)...)
 	seen := make(map[llm.Capability]struct{}, len(capabilities))
 	for _, capability := range capabilities {
-		if !supportsCapability(source.API, capability) {
+		if !catalogmeta.SupportsCapability(source.API, capability) {
 			return llm.Model{}, fmt.Errorf("API %q does not support capability %q", source.API, capability)
 		}
 		if _, exists := seen[capability]; exists {
@@ -256,31 +241,6 @@ func (source sourceModel) model() (llm.Model, error) {
 	return model, nil
 }
 
-func supportsCapability(api llm.API, capability llm.Capability) bool {
-	switch api {
-	case llm.APIOpenAIChatCompletions:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIOpenAIResponses:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision
-	case llm.APIOpenAICodexResponses:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIAnthropicMessages:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	case llm.APIGeminiGenerateContent, llm.APIGoogleVertex:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIMistralConversations:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	case llm.APIBedrockConverseStream:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	default:
-		return false
-	}
-}
-
 func (source *sourceCost) model() (*llm.ModelCost, error) {
 	if source == nil {
 		return nil, nil
@@ -288,11 +248,19 @@ func (source *sourceCost) model() (*llm.ModelCost, error) {
 	if source.Input == nil || source.Output == nil || source.CacheRead == nil || source.CacheWrite == nil {
 		return nil, errors.New("input, output, cache_read, and cache_write are required and must not be null")
 	}
+	// A curated cache-read rate must not cost more than an uncached input token.
+	// Do not impose a cache-write ratio: providers can bill storage separately.
+	if err := catalogmeta.ValidateCacheReadRate(*source.Input, *source.CacheRead); err != nil {
+		return nil, err
+	}
 	cost := &llm.ModelCost{Input: *source.Input, Output: *source.Output, CacheRead: *source.CacheRead,
 		CacheWrite: *source.CacheWrite, Tiers: make([]llm.ModelCostTier, len(source.Tiers))}
 	for index, tier := range source.Tiers {
 		if tier.InputTokensAbove == nil || tier.Input == nil || tier.Output == nil || tier.CacheRead == nil || tier.CacheWrite == nil {
 			return nil, fmt.Errorf("tier %d input_tokens_above, input, output, cache_read, and cache_write are required and must not be null", index)
+		}
+		if err := catalogmeta.ValidateCacheReadRate(*tier.Input, *tier.CacheRead); err != nil {
+			return nil, fmt.Errorf("tier %d: %w", index, err)
 		}
 		cost.Tiers[index] = llm.ModelCostTier{InputTokensAbove: *tier.InputTokensAbove, Input: *tier.Input,
 			Output: *tier.Output, CacheRead: *tier.CacheRead, CacheWrite: *tier.CacheWrite}

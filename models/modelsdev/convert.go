@@ -6,22 +6,21 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/catalogmeta"
 )
 
 // DefaultProviderAPI returns the default wire protocol for a known provider ID.
+// Unknown providers retain the OpenAI Chat Completions fallback; use
+// WithAPIResolver when a custom provider uses another protocol.
 func DefaultProviderAPI(provider string) llm.API {
-	switch strings.TrimSpace(provider) {
-	case "anthropic":
-		return llm.APIAnthropicMessages
-	case "openai", "xai":
-		return llm.APIOpenAIResponses
-	case "google":
-		return llm.APIGeminiGenerateContent
-	case "openai-codex", "codex":
-		return llm.APIOpenAICodexResponses
-	default:
-		return llm.APIOpenAIChatCompletions
+	provider = strings.TrimSpace(provider)
+	if provider == "codex" {
+		provider = "openai-codex"
 	}
+	if api, ok := catalogmeta.ProviderAPI(provider); ok {
+		return api
+	}
+	return llm.APIOpenAIChatCompletions
 }
 
 // DefaultProviderCompatibility returns default compatibility settings for a model
@@ -95,8 +94,13 @@ func cloneCompatibility(compatibility *llm.ModelCompatibility) *llm.ModelCompati
 	return &clone
 }
 
-// ConvertModel maps a models.dev ModelEntry into an llm.Model.
+// ConvertModel maps a models.dev ModelEntry into an llm.Model. It rejects invalid
+// prices, including base or tier cache-read rates above their input rates.
 func ConvertModel(provider string, entry ModelEntry, api llm.API, compat *llm.ModelCompatibility) (llm.Model, error) {
+	return convertModel(provider, entry, api, compat, nil)
+}
+
+func convertModel(provider string, entry ModelEntry, api llm.API, compat *llm.ModelCompatibility, baselineCost *llm.ModelCost) (llm.Model, error) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		return llm.Model{}, fmt.Errorf("provider must not be empty")
@@ -131,10 +135,18 @@ func ConvertModel(provider string, entry ModelEntry, api llm.API, compat *llm.Mo
 		return llm.Model{}, fmt.Errorf("max output tokens (%d) must not exceed context window (%d)", maxOutputTokens, contextWindow)
 	}
 
-	cost := convertCost(entry.Cost, contextWindow)
+	cost := convertCost(entry.Cost, contextWindow, baselineCost)
 	if cost != nil {
 		if err := cost.Validate(); err != nil {
 			return llm.Model{}, fmt.Errorf("cost: %w", err)
+		}
+		if err := catalogmeta.ValidateCacheReadRate(cost.Input, cost.CacheRead); err != nil {
+			return llm.Model{}, fmt.Errorf("cost: %w", err)
+		}
+		for index, tier := range cost.Tiers {
+			if err := catalogmeta.ValidateCacheReadRate(tier.Input, tier.CacheRead); err != nil {
+				return llm.Model{}, fmt.Errorf("cost tier %d: %w", index, err)
+			}
 		}
 	}
 
@@ -167,19 +179,19 @@ func deriveCapabilities(entry ModelEntry, api llm.API) []llm.Capability {
 	// Streaming is standard on generation endpoints
 	caps = append(caps, llm.CapabilityStreaming)
 
-	if entry.ToolCall && supportsCapability(api, llm.CapabilityTools) {
+	if entry.ToolCall && catalogmeta.SupportsCapability(api, llm.CapabilityTools) {
 		caps = append(caps, llm.CapabilityTools)
 	}
 
-	if entry.StructuredOutput && supportsCapability(api, llm.CapabilityJSON) {
+	if entry.StructuredOutput && catalogmeta.SupportsCapability(api, llm.CapabilityJSON) {
 		caps = append(caps, llm.CapabilityJSON)
 	}
 
 	if entry.Modalities != nil {
-		if slices.Contains(entry.Modalities.Input, "image") && supportsCapability(api, llm.CapabilityVision) {
+		if slices.Contains(entry.Modalities.Input, "image") && catalogmeta.SupportsCapability(api, llm.CapabilityVision) {
 			caps = append(caps, llm.CapabilityVision)
 		}
-		if slices.Contains(entry.Modalities.Input, "audio") && supportsCapability(api, llm.CapabilityAudio) {
+		if slices.Contains(entry.Modalities.Input, "audio") && catalogmeta.SupportsCapability(api, llm.CapabilityAudio) {
 			caps = append(caps, llm.CapabilityAudio)
 		}
 	}
@@ -187,40 +199,29 @@ func deriveCapabilities(entry ModelEntry, api llm.API) []llm.Capability {
 	return caps
 }
 
-func supportsCapability(api llm.API, capability llm.Capability) bool {
-	switch api {
-	case llm.APIOpenAIChatCompletions:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIOpenAIResponses:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision
-	case llm.APIOpenAICodexResponses:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIAnthropicMessages:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	case llm.APIGeminiGenerateContent:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	default:
-		return true
+func convertCost(entry *Cost, contextWindow int, baseline *llm.ModelCost) *llm.ModelCost {
+	var cost *llm.ModelCost
+	if baseline != nil {
+		clone := *baseline
+		clone.Tiers = slices.DeleteFunc(slices.Clone(baseline.Tiers), func(tier llm.ModelCostTier) bool {
+			return contextWindow > 0 && tier.InputTokensAbove >= contextWindow
+		})
+		cost = &clone
 	}
-}
-
-func convertCost(entry *Cost, contextWindow int) *llm.ModelCost {
 	if entry == nil {
-		return nil
+		return cost
 	}
 
 	hasBase := entry.Input != nil || entry.Output != nil || entry.CacheRead != nil || entry.CacheWrite != nil
 	hasTiers := len(entry.Tiers) > 0 || entry.ContextOver200k != nil
 
 	if !hasBase && !hasTiers {
-		return nil
+		return cost
 	}
 
-	cost := &llm.ModelCost{}
+	if cost == nil {
+		cost = &llm.ModelCost{}
+	}
 	if entry.Input != nil {
 		cost.Input = *entry.Input
 	}
@@ -233,67 +234,54 @@ func convertCost(entry *Cost, contextWindow int) *llm.ModelCost {
 	if entry.CacheWrite != nil {
 		cost.CacheWrite = *entry.CacheWrite
 	}
+	cost.CacheRead = catalogmeta.ClampRetainedCacheRead(cost.Input, cost.CacheRead, entry.CacheRead)
 
-	for _, t := range entry.Tiers {
-		threshold := 0
-		if t.InputTokensAbove != nil {
-			threshold = *t.InputTokensAbove
-		} else if t.Tier != nil && t.Tier.Size > 0 {
-			threshold = t.Tier.Size
-		}
-		if threshold <= 0 {
-			continue
-		}
-		if contextWindow > 0 && threshold >= contextWindow {
-			continue
-		}
-		tierCost := llm.ModelCostTier{
-			InputTokensAbove: threshold,
-			Input:            cost.Input,
-			Output:           cost.Output,
-			CacheRead:        cost.CacheRead,
-			CacheWrite:       cost.CacheWrite,
-		}
-		if t.Input != nil {
-			tierCost.Input = *t.Input
-		}
-		if t.Output != nil {
-			tierCost.Output = *t.Output
-		}
-		if t.CacheRead != nil {
-			tierCost.CacheRead = *t.CacheRead
-		}
-		if t.CacheWrite != nil {
-			tierCost.CacheWrite = *t.CacheWrite
-		}
-		cost.Tiers = append(cost.Tiers, tierCost)
+	// Omitted tiers are not a request to remove curated tiered pricing.
+	if !hasTiers {
+		return cost
 	}
-
-	if len(cost.Tiers) == 0 && entry.ContextOver200k != nil {
-		threshold := 200000
-		if contextWindow == 0 || threshold < contextWindow {
-			rates := entry.ContextOver200k
-			tierCost := llm.ModelCostTier{
-				InputTokensAbove: threshold,
-				Input:            cost.Input,
-				Output:           cost.Output,
-				CacheRead:        cost.CacheRead,
-				CacheWrite:       cost.CacheWrite,
-			}
-			if rates.Input != nil {
-				tierCost.Input = *rates.Input
-			}
-			if rates.Output != nil {
-				tierCost.Output = *rates.Output
-			}
-			if rates.CacheRead != nil {
-				tierCost.CacheRead = *rates.CacheRead
-			}
-			if rates.CacheWrite != nil {
-				tierCost.CacheWrite = *rates.CacheWrite
-			}
-			cost.Tiers = append(cost.Tiers, tierCost)
+	var tiers []llm.ModelCostTier
+	mergeTier := func(threshold int, input, output, cacheRead, cacheWrite *float64) {
+		if threshold <= 0 || (contextWindow > 0 && threshold >= contextWindow) {
+			return
 		}
+		tier := llm.ModelCostTier{InputTokensAbove: threshold, Input: cost.Input, Output: cost.Output, CacheRead: cost.CacheRead, CacheWrite: cost.CacheWrite}
+		for _, baselineTier := range cost.Tiers {
+			if baselineTier.InputTokensAbove == threshold {
+				tier = baselineTier
+				break
+			}
+		}
+		if input != nil {
+			tier.Input = *input
+		}
+		if output != nil {
+			tier.Output = *output
+		}
+		if cacheRead != nil {
+			tier.CacheRead = *cacheRead
+		}
+		if cacheWrite != nil {
+			tier.CacheWrite = *cacheWrite
+		}
+		tier.CacheRead = catalogmeta.ClampRetainedCacheRead(tier.Input, tier.CacheRead, cacheRead)
+		tiers = append(tiers, tier)
+	}
+	for _, tier := range entry.Tiers {
+		threshold := 0
+		if tier.InputTokensAbove != nil {
+			threshold = *tier.InputTokensAbove
+		} else if tier.Tier != nil {
+			threshold = tier.Tier.Size
+		}
+		mergeTier(threshold, tier.Input, tier.Output, tier.CacheRead, tier.CacheWrite)
+	}
+	if len(tiers) == 0 && entry.ContextOver200k != nil {
+		rates := entry.ContextOver200k
+		mergeTier(200000, rates.Input, rates.Output, rates.CacheRead, rates.CacheWrite)
+	}
+	if len(tiers) > 0 {
+		cost.Tiers = tiers
 	}
 
 	return cost

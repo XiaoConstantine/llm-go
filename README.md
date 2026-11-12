@@ -120,6 +120,37 @@ uses `CredentialManager` and optional secret-free provider filters. Refreshes ru
 only when called; the manager owns no permanent goroutines and needs no Close.
 The [`modelsdev`](./models/modelsdev) package provides a `CatalogSource`
 implementation to dynamically fetch models from [models.dev](https://models.dev).
+`modelsdev.NewSource()` protects `models.BuiltinCatalog()` by default. For matching
+entries it updates only limits and non-null cost rates, preserving API, capabilities,
+compatibility, name, and reasoning. Missing rates retain baseline values; an
+omitted cache-read rate is capped at the merged input rate. A non-empty list of
+surviving upstream tiers defines the set of thresholds, with matching thresholds
+inheriting baseline rates. Baseline tiers are retained only when upstream omits
+tiers or all upstream tiers are filtered out. Retained tiers at or above the
+merged, known context window are dropped. An explicit zero rate replaces the
+previous rate. New models use protocol defaults.
+
+```go
+source := modelsdev.NewSource() // Preserve built-in metadata by default.
+// Explicit opt-out: derive all metadata from upstream fields and protocol defaults.
+unprotected := modelsdev.NewSource(modelsdev.WithBaseline(nil))
+```
+
+Pass the same catalog to `modelsdev.WithBaseline` and `CatalogManagerConfig.Baseline`.
+A custom API or compatibility resolver disables the implicit built-in baseline.
+An explicit `WithBaseline` takes precedence over resolvers for matching models,
+regardless of option order. `CatalogManager` still replaces matching entries
+wholesale for every source. Invalid upstream records, including records with
+invalid base or tier prices, are skipped in full rather than partially updating
+their limits. If every unfiltered record fails conversion, refresh returns a
+malformed-response error and retains the previous overlay and stored snapshot.
+
+**Persisted snapshot limitation:** a `CatalogStore` saves the curated fields captured
+at fetch time. After a library or baseline upgrade, offline restore or HTTP 304
+can restore those old fields over the newer baseline. Clear the store (and recreate
+the manager), or refresh with `models.CatalogRefreshOptions{Force: true}` using a
+source constructed against the new baseline. A conditional refresh alone does not
+repair stale curated metadata.
 
 ### Built-in provider profiles
 

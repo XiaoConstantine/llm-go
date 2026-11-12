@@ -1,0 +1,193 @@
+{
+  "anthropic": {
+    "models": {
+      "claude-opus-4-5": {
+        "id": "claude-opus-4-5",
+        "name": "Claude Opus 4.5 (latest)",
+        "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
+        "family": "claude-opus",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          {
+            "type": "budget_tokens",
+            "min": 1024
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2025-05",
+        "release_date": "2025-11-24",
+        "last_updated": "2025-11-24",
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 200000,
+          "output": 64000
+        },
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cache_read": 0.5,
+          "cache_write": 6.25
+        },
+        "canonical_model_id": "anthropic/claude-opus-4-5"
+      }
+    }
+  },
+  "openai": {
+    "models": {
+      "gpt-5": {
+        "id": "gpt-5",
+        "name": "GPT-5",
+        "description": "Original GPT-5 workhorse for reasoning, coding, writing, and tool workflows",
+        "family": "gpt",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "knowledge": "2024-09-30",
+        "release_date": "2025-08-07",
+        "last_updated": "2025-08-07",
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 400000,
+          "input": 272000,
+          "output": 128000
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 2.5,
+                "output": 20,
+                "cache_read": 0.25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "flex": {
+              "cost": {
+                "input": 0.625,
+                "output": 5,
+                "cache_read": 0.0625
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
+                }
+              }
+            }
+          }
+        },
+        "cost": {
+          "input": 1.25,
+          "output": 10,
+          "cache_read": 0.125
+        },
+        "canonical_model_id": "openai/gpt-5"
+      }
+    }
+  },
+  "openrouter": {
+    "models": {
+      "meta-llama/llama-3.1-8b-instruct": {
+        "id": "meta-llama/llama-3.1-8b-instruct",
+        "name": "Llama-3.1-8B-Instruct",
+        "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
+        "family": "llama",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2023-12",
+        "release_date": "2024-07-23",
+        "last_updated": "2024-07-23",
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "open_weights": true,
+        "limit": {"context": 131072, "output": 16384},
+        "cost": {"input": 0.02, "output": 0.04},
+        "canonical_model_id": "meta/llama-3.1-8b-instruct"
+      },
+      "deepseek/deepseek-v3.1-terminus": {
+        "id": "deepseek/deepseek-v3.1-terminus",
+        "name": "DeepSeek V3.1 Terminus",
+        "description": "DeepSeek chat model for instruction following, coding, and analysis",
+        "family": "deepseek",
+        "attachment": false,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2025-03-31",
+        "release_date": "2025-09-22",
+        "last_updated": "2025-09-22",
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": true,
+        "limit": {
+          "context": 163840,
+          "output": 147456
+        },
+        "cost": {
+          "input": 0.27,
+          "output": 1
+        }
+      }
+    }
+  }
+}

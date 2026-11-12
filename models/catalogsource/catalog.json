@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 22,
+  "revision": 23,
   "models": [
     {
       "provider": "amazon-bedrock",
@@ -415,10 +415,10 @@
       "context_window": 1000000,
       "max_output_tokens": 128000,
       "cost": {
-        "input": 16.5,
-        "output": 82.5,
-        "cache_read": 0.5,
-        "cache_write": 6.25
+        "input": 5.5,
+        "output": 27.5,
+        "cache_read": 0.55,
+        "cache_write": 6.875
       }
     },
     {
@@ -3465,7 +3465,8 @@
       "capabilities": [
         "streaming",
         "tools",
-        "vision"
+        "vision",
+        "json"
       ],
       "context_window": 1048576,
       "max_output_tokens": 65536,
@@ -3485,7 +3486,8 @@
       "capabilities": [
         "streaming",
         "tools",
-        "vision"
+        "vision",
+        "json"
       ],
       "context_window": 1048576,
       "max_output_tokens": 65536,
@@ -3525,7 +3527,8 @@
       "capabilities": [
         "streaming",
         "tools",
-        "vision"
+        "vision",
+        "json"
       ],
       "context_window": 1048576,
       "max_output_tokens": 65536,
@@ -3533,7 +3536,16 @@
         "input": 1.25,
         "output": 10,
         "cache_read": 0.125,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 2.5,
+            "output": 15,
+            "cache_read": 0.25,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -3545,7 +3557,8 @@
       "capabilities": [
         "streaming",
         "tools",
-        "vision"
+        "vision",
+        "json"
       ],
       "context_window": 1048576,
       "max_output_tokens": 65536,
@@ -3585,7 +3598,8 @@
       "capabilities": [
         "streaming",
         "tools",
-        "vision"
+        "vision",
+        "json"
       ],
       "context_window": 1048576,
       "max_output_tokens": 65536,
@@ -3593,7 +3607,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -3605,7 +3628,8 @@
       "capabilities": [
         "streaming",
         "tools",
-        "vision"
+        "vision",
+        "json"
       ],
       "context_window": 1048576,
       "max_output_tokens": 65536,
@@ -3613,7 +3637,16 @@
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -13347,8 +13380,8 @@
       "context_window": 131072,
       "max_output_tokens": 32768,
       "cost": {
-        "input": 0.018,
-        "output": 0.09,
+        "input": 0.03,
+        "output": 0.13,
         "cache_read": 0.03,
         "cache_write": 0
       },

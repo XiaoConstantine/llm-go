@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/catalogmeta"
 	"github.com/XiaoConstantine/llm-go/models/modelsdev"
 )
 
@@ -32,22 +33,6 @@ var defaultProviderMapping = map[string]string{
 	"openai":     "openai",
 	"openrouter": "openrouter",
 	"xai":        "xai",
-}
-
-var providerAPIs = map[string]llm.API{
-	"amazon-bedrock": llm.APIBedrockConverseStream,
-	"anthropic":      llm.APIAnthropicMessages,
-	"cerebras":       llm.APIOpenAIChatCompletions,
-	"deepseek":       llm.APIOpenAIChatCompletions,
-	"fireworks":      llm.APIOpenAIChatCompletions,
-	"google":         llm.APIGeminiGenerateContent,
-	"google-vertex":  llm.APIGoogleVertex,
-	"groq":           llm.APIOpenAIChatCompletions,
-	"mistral":        llm.APIMistralConversations,
-	"openai":         llm.APIOpenAIResponses,
-	"openai-codex":   llm.APIOpenAICodexResponses,
-	"openrouter":     llm.APIOpenAIChatCompletions,
-	"xai":            llm.APIOpenAIResponses,
 }
 
 const maxResponseSize = 32 << 20
@@ -148,10 +133,13 @@ type SyncOptions struct {
 
 // SyncResult summarizes modifications during synchronization.
 type SyncResult struct {
-	UpdatedModels []string
-	AddedModels   []string
-	Unchanged     int
-	Total         int
+	UpdatedModels  []string
+	AddedModels    []string
+	ExcludedModels []string
+	SkippedModels  []string
+	ClampedModels  []string
+	Unchanged      int
+	Total          int
 }
 
 func main() {
@@ -159,7 +147,7 @@ func main() {
 	url := flag.String("url", modelsdev.DefaultURL, "models.dev API URL")
 	file := flag.String("file", "", "path to local models.dev JSON file (optional)")
 	providersFlag := flag.String("providers", "", "comma-separated list of providers to sync (default: all built-in)")
-	addNew := flag.Bool("add-new", false, "add newly discovered models from models.dev")
+	addNew := flag.Bool("add-new", false, "add new tool-calling models with text-only output from models.dev")
 	dryRun := flag.Bool("dry-run", false, "report changes without writing to catalog file")
 	outputPath := flag.String("output", "", "output catalog file (default: same as -catalog)")
 	flag.Parse()
@@ -209,6 +197,18 @@ func main() {
 	fmt.Printf("  Added models:   %d\n", len(result.AddedModels))
 	for _, m := range result.AddedModels {
 		fmt.Printf("    + %s\n", m)
+	}
+	fmt.Printf("  Excluded new models: %d\n", len(result.ExcludedModels))
+	for _, m := range result.ExcludedModels {
+		fmt.Printf("    - %s (discovery requirements)\n", m)
+	}
+	fmt.Printf("  Skipped costs: %d\n", len(result.SkippedModels))
+	for _, m := range result.SkippedModels {
+		fmt.Printf("    ! %s\n", m)
+	}
+	fmt.Printf("  Clamped cache-read prices: %d\n", len(result.ClampedModels))
+	for _, m := range result.ClampedModels {
+		fmt.Printf("    ! %s (retained cache_read capped at input)\n", m)
 	}
 	fmt.Printf("  Unchanged:      %d\n", result.Unchanged)
 	fmt.Printf("  Total models:   %d\n", result.Total)
@@ -298,7 +298,7 @@ func validateCatalog(catalog *sourceCatalog) error {
 		if m.Name == "" || !utf8.ValidString(m.Name) || strings.TrimSpace(m.Name) != m.Name {
 			return fmt.Errorf("models[%d]: name must be nonempty valid UTF-8 without surrounding whitespace", i)
 		}
-		expectedAPI, knownProvider := providerAPIs[m.Provider]
+		expectedAPI, knownProvider := catalogmeta.ProviderAPI(m.Provider)
 		if !knownProvider {
 			return fmt.Errorf("models[%d]: unsupported built-in provider %q", i, m.Provider)
 		}
@@ -313,7 +313,7 @@ func validateCatalog(catalog *sourceCatalog) error {
 		}
 		capSeen := make(map[llm.Capability]struct{}, len(*m.Capabilities))
 		for _, cap := range *m.Capabilities {
-			if !supportsCapability(m.API, cap) {
+			if !catalogmeta.SupportsCapability(m.API, cap) {
 				return fmt.Errorf("models[%d] %s/%s: API %q does not support capability %q", i, m.Provider, m.ID, m.API, cap)
 			}
 			if _, exists := capSeen[cap]; exists {
@@ -352,6 +352,9 @@ func validateCatalog(catalog *sourceCatalog) error {
 				return fmt.Errorf("models[%d] %s/%s: compatibility: %w", i, m.Provider, m.ID, err)
 			}
 		}
+		if err := validateCacheReadPrices(m.Cost); err != nil {
+			return fmt.Errorf("models[%d] %s/%s: %w", i, m.Provider, m.ID, err)
+		}
 		providerModels := seen[m.Provider]
 		if providerModels == nil {
 			providerModels = make(map[string]struct{})
@@ -365,27 +368,23 @@ func validateCatalog(catalog *sourceCatalog) error {
 	return nil
 }
 
-func supportsCapability(api llm.API, capability llm.Capability) bool {
-	switch api {
-	case llm.APIOpenAIChatCompletions:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIOpenAIResponses:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision
-	case llm.APIOpenAICodexResponses:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIAnthropicMessages:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	case llm.APIGeminiGenerateContent, llm.APIGoogleVertex:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIMistralConversations, llm.APIBedrockConverseStream:
-		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
-	default:
-		return false
+func validateCacheReadPrices(cost *sourceCost) error {
+	if cost == nil {
+		return nil
 	}
+	if cost.Input != nil && cost.CacheRead != nil {
+		if err := catalogmeta.ValidateCacheReadRate(*cost.Input, *cost.CacheRead); err != nil {
+			return err
+		}
+	}
+	for index, tier := range cost.Tiers {
+		if tier.Input != nil && tier.CacheRead != nil {
+			if err := catalogmeta.ValidateCacheReadRate(*tier.Input, *tier.CacheRead); err != nil {
+				return fmt.Errorf("tier %d: %w", index, err)
+			}
+		}
+	}
+	return nil
 }
 
 func convertSourceCompatibility(source *sourceCompatibility) *llm.ModelCompatibility {
@@ -500,6 +499,26 @@ func syncCatalog(catalog *sourceCatalog, dataset modelsdev.Dataset, opts SyncOpt
 			continue
 		}
 
+		// Check prices before applying them, without discarding independent metadata.
+		// Audio pricing is not imported by applyModelUpdate either.
+		if modelEntry.Cost != nil && (m.Capabilities == nil || !slices.Contains(*m.Capabilities, llm.CapabilityAudio)) {
+			candidate := *m
+			if m.Cost != nil {
+				cost := *m.Cost
+				candidate.Cost = &cost
+			}
+			if modelEntry.Limit != nil && modelEntry.Limit.Context > 0 {
+				candidate.ContextWindow = &modelEntry.Limit.Context
+			}
+			_, clamped := updateSourceCost(&candidate, modelEntry.Cost)
+			if err := validateCacheReadPrices(candidate.Cost); err != nil {
+				result.SkippedModels = append(result.SkippedModels, fmt.Sprintf("%s/%s: cost skipped: %v", m.Provider, m.ID, err))
+				modelEntry.Cost = nil
+			} else if clamped {
+				result.ClampedModels = append(result.ClampedModels, fmt.Sprintf("%s/%s", m.Provider, m.ID))
+			}
+		}
+
 		updated := applyModelUpdate(m, modelEntry)
 		if updated {
 			changesMade = true
@@ -529,6 +548,11 @@ func syncCatalog(catalog *sourceCatalog, dataset modelsdev.Dataset, opts SyncOpt
 
 				newModel, ok := createSourceModel(provider, entry)
 				if !ok {
+					result.ExcludedModels = append(result.ExcludedModels, fmt.Sprintf("%s/%s", provider, modelID))
+					continue
+				}
+				if err := validateCacheReadPrices(newModel.Cost); err != nil {
+					result.SkippedModels = append(result.SkippedModels, fmt.Sprintf("%s/%s: new model skipped (cost): %v", provider, modelID, err))
 					continue
 				}
 				catalog.Models = append(catalog.Models, newModel)
@@ -549,6 +573,11 @@ func syncCatalog(catalog *sourceCatalog, dataset modelsdev.Dataset, opts SyncOpt
 		catalog.Revision++
 	}
 
+	sort.Strings(result.UpdatedModels)
+	sort.Strings(result.AddedModels)
+	sort.Strings(result.ExcludedModels)
+	sort.Strings(result.SkippedModels)
+	sort.Strings(result.ClampedModels)
 	result.Total = len(catalog.Models)
 	return result, nil
 }
@@ -591,17 +620,36 @@ func applyModelUpdate(m *sourceModel, entry modelsdev.ModelEntry) bool {
 	// Audio-capable models may bill text and audio tokens at different rates,
 	// which ModelCost cannot represent without undercounting one modality.
 	if entry.Cost != nil && (m.Capabilities == nil || !slices.Contains(*m.Capabilities, llm.CapabilityAudio)) {
-		costUpdated := updateSourceCost(m, entry.Cost)
+		costUpdated, _ := updateSourceCost(m, entry.Cost)
 		if costUpdated {
 			changed = true
 		}
+	}
+	// Limits still apply when upstream pricing is absent or rejected.
+	if pruneSourceCostTiers(m) {
+		changed = true
 	}
 
 	return changed
 }
 
-func updateSourceCost(m *sourceModel, cost *modelsdev.Cost) bool {
-	var changed bool
+func pruneSourceCostTiers(m *sourceModel) bool {
+	if m.Cost == nil || m.ContextWindow == nil || *m.ContextWindow <= 0 {
+		return false
+	}
+	// Preflight price validation uses a shallow cost copy; do not mutate its slice.
+	tiers := slices.DeleteFunc(slices.Clone(m.Cost.Tiers), func(tier sourceTier) bool {
+		return *tier.InputTokensAbove >= *m.ContextWindow
+	})
+	if len(tiers) == len(m.Cost.Tiers) {
+		return false
+	}
+	m.Cost.Tiers = tiers
+	return true
+}
+
+func updateSourceCost(m *sourceModel, cost *modelsdev.Cost) (changed, clamped bool) {
+	changed = pruneSourceCostTiers(m)
 	if m.Cost == nil {
 		zero := 0.0
 		m.Cost = &sourceCost{
@@ -630,84 +678,61 @@ func updateSourceCost(m *sourceModel, cost *modelsdev.Cost) bool {
 		changed = true
 	}
 
-	baseInput := m.Cost.Input
-	baseOutput := m.Cost.Output
-	baseRead := m.Cost.CacheRead
-	baseWrite := m.Cost.CacheWrite
-
-	// Update tiers idempotently with non-null values
-	var newTiers []sourceTier
-	if len(cost.Tiers) > 0 {
-		for _, t := range cost.Tiers {
-			threshold := 0
-			if t.InputTokensAbove != nil {
-				threshold = *t.InputTokensAbove
-			} else if t.Tier != nil && t.Tier.Size > 0 {
-				threshold = t.Tier.Size
-			}
-			if threshold > 0 && (m.ContextWindow == nil || threshold < *m.ContextWindow) {
-				tInput := baseInput
-				if t.Input != nil && *t.Input >= 0 {
-					tInput = t.Input
-				}
-				tOutput := baseOutput
-				if t.Output != nil && *t.Output >= 0 {
-					tOutput = t.Output
-				}
-				tRead := baseRead
-				if t.CacheRead != nil && *t.CacheRead >= 0 {
-					tRead = t.CacheRead
-				}
-				tWrite := baseWrite
-				if t.CacheWrite != nil && *t.CacheWrite >= 0 {
-					tWrite = t.CacheWrite
-				}
-
-				newTiers = append(newTiers, sourceTier{
-					InputTokensAbove: &threshold,
-					Input:            tInput,
-					Output:           tOutput,
-					CacheRead:        tRead,
-					CacheWrite:       tWrite,
-				})
-			}
-		}
-	} else if cost.ContextOver200k != nil {
-		threshold := 200000
-		if m.ContextWindow == nil || threshold < *m.ContextWindow {
-			tInput := baseInput
-			if cost.ContextOver200k.Input != nil && *cost.ContextOver200k.Input >= 0 {
-				tInput = cost.ContextOver200k.Input
-			}
-			tOutput := baseOutput
-			if cost.ContextOver200k.Output != nil && *cost.ContextOver200k.Output >= 0 {
-				tOutput = cost.ContextOver200k.Output
-			}
-			tRead := baseRead
-			if cost.ContextOver200k.CacheRead != nil && *cost.ContextOver200k.CacheRead >= 0 {
-				tRead = cost.ContextOver200k.CacheRead
-			}
-			tWrite := baseWrite
-			if cost.ContextOver200k.CacheWrite != nil && *cost.ContextOver200k.CacheWrite >= 0 {
-				tWrite = cost.ContextOver200k.CacheWrite
-			}
-
-			newTiers = append(newTiers, sourceTier{
-				InputTokensAbove: &threshold,
-				Input:            tInput,
-				Output:           tOutput,
-				CacheRead:        tRead,
-				CacheWrite:       tWrite,
-			})
-		}
+	read := catalogmeta.ClampRetainedCacheRead(*m.Cost.Input, *m.Cost.CacheRead, cost.CacheRead)
+	if read != *m.Cost.CacheRead {
+		m.Cost.CacheRead = &read
+		changed, clamped = true, true
 	}
 
-	if !tiersEqual(m.Cost.Tiers, newTiers) {
+	// Seed matching thresholds from their curated tier, new thresholds from base rates.
+	var newTiers []sourceTier
+	mergeTier := func(threshold int, input, output, cacheRead, cacheWrite *float64) {
+		if threshold <= 0 || (m.ContextWindow != nil && threshold >= *m.ContextWindow) {
+			return
+		}
+		tier := sourceTier{InputTokensAbove: &threshold, Input: m.Cost.Input, Output: m.Cost.Output, CacheRead: m.Cost.CacheRead, CacheWrite: m.Cost.CacheWrite}
+		for _, baselineTier := range m.Cost.Tiers {
+			if *baselineTier.InputTokensAbove == threshold {
+				tier = baselineTier
+				break
+			}
+		}
+		if input != nil && *input >= 0 {
+			tier.Input = input
+		}
+		if output != nil && *output >= 0 {
+			tier.Output = output
+		}
+		if cacheRead != nil && *cacheRead >= 0 {
+			tier.CacheRead = cacheRead
+		}
+		if cacheWrite != nil && *cacheWrite >= 0 {
+			tier.CacheWrite = cacheWrite
+		}
+		read := catalogmeta.ClampRetainedCacheRead(*tier.Input, *tier.CacheRead, cacheRead)
+		clamped = clamped || read != *tier.CacheRead
+		tier.CacheRead = &read
+		newTiers = append(newTiers, tier)
+	}
+	for _, tier := range cost.Tiers {
+		threshold := 0
+		if tier.InputTokensAbove != nil {
+			threshold = *tier.InputTokensAbove
+		} else if tier.Tier != nil {
+			threshold = tier.Tier.Size
+		}
+		mergeTier(threshold, tier.Input, tier.Output, tier.CacheRead, tier.CacheWrite)
+	}
+	if len(newTiers) == 0 && cost.ContextOver200k != nil {
+		rates := cost.ContextOver200k
+		mergeTier(200000, rates.Input, rates.Output, rates.CacheRead, rates.CacheWrite)
+	}
+	if len(newTiers) > 0 && !tiersEqual(m.Cost.Tiers, newTiers) {
 		m.Cost.Tiers = newTiers
 		changed = true
 	}
 
-	return changed
+	return changed, clamped
 }
 
 func tiersEqual(a, b []sourceTier) bool {
@@ -755,6 +780,14 @@ func equalFloatPtr(a, b *float64) bool {
 }
 
 func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel, bool) {
+	// Discovery is limited to tool-calling, text-output generation models.
+	if !entry.ToolCall || entry.Modalities == nil || !slices.Equal(entry.Modalities.Output, []string{"text"}) {
+		return sourceModel{}, false
+	}
+	api, known := catalogmeta.ProviderAPI(provider)
+	if !known {
+		return sourceModel{}, false
+	}
 	// Only add model if it has authoritative context limits and output <= context.
 	id := strings.TrimSpace(entry.ID)
 	if id == "" || entry.Limit == nil || entry.Limit.Context <= 0 || entry.Limit.Output <= 0 || entry.Limit.Output > entry.Limit.Context {
@@ -765,22 +798,21 @@ func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel
 	if name == "" {
 		name = id
 	}
-	api := modelsdev.DefaultProviderAPI(provider)
 	reasoning := entry.Reasoning
 	caps := []llm.Capability{llm.CapabilityStreaming}
-	if entry.ToolCall && supportsCapability(api, llm.CapabilityTools) {
+	if entry.ToolCall && catalogmeta.SupportsCapability(api, llm.CapabilityTools) {
 		caps = append(caps, llm.CapabilityTools)
 	}
 	// Responses JSON support is model-specific and must be reviewed before it is
 	// advertised by the built-in catalog.
-	if entry.StructuredOutput && api != llm.APIOpenAIResponses && supportsCapability(api, llm.CapabilityJSON) {
+	if entry.StructuredOutput && api != llm.APIOpenAIResponses && catalogmeta.SupportsCapability(api, llm.CapabilityJSON) {
 		caps = append(caps, llm.CapabilityJSON)
 	}
 	if entry.Modalities != nil {
-		if slices.Contains(entry.Modalities.Input, "image") && supportsCapability(api, llm.CapabilityVision) {
+		if slices.Contains(entry.Modalities.Input, "image") && catalogmeta.SupportsCapability(api, llm.CapabilityVision) {
 			caps = append(caps, llm.CapabilityVision)
 		}
-		if slices.Contains(entry.Modalities.Input, "audio") && supportsCapability(api, llm.CapabilityAudio) {
+		if slices.Contains(entry.Modalities.Input, "audio") && catalogmeta.SupportsCapability(api, llm.CapabilityAudio) {
 			caps = append(caps, llm.CapabilityAudio)
 		}
 	}

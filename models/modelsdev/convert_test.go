@@ -1,6 +1,7 @@
 package modelsdev
 
 import (
+	"slices"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
@@ -17,6 +18,9 @@ func TestDefaultProviderAPI(t *testing.T) {
 		{"openai", llm.APIOpenAIResponses},
 		{"xai", llm.APIOpenAIResponses},
 		{"google", llm.APIGeminiGenerateContent},
+		{"google-vertex", llm.APIGoogleVertex},
+		{"mistral", llm.APIMistralConversations},
+		{"amazon-bedrock", llm.APIBedrockConverseStream},
 		{"openai-codex", llm.APIOpenAICodexResponses},
 		{"openrouter", llm.APIOpenAIChatCompletions},
 		{"deepseek", llm.APIOpenAIChatCompletions},
@@ -28,6 +32,30 @@ func TestDefaultProviderAPI(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("DefaultProviderAPI(%q) = %q, want %q", tt.provider, got, tt.want)
 		}
+	}
+}
+
+func TestConvertModelProtocolCapabilities(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		api      llm.API
+		caps     []llm.Capability
+	}{
+		{"google-vertex", llm.APIGoogleVertex, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityJSON, llm.CapabilityVision, llm.CapabilityAudio}},
+		{"mistral", llm.APIMistralConversations, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision}},
+		{"amazon-bedrock", llm.APIBedrockConverseStream, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision}},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			entry := ModelEntry{ID: "new-model", ToolCall: true, StructuredOutput: true,
+				Modalities: &Modalities{Input: []string{"text", "image", "audio"}}}
+			model, err := ConvertModel(test.provider, entry, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if model.API != test.api || !slices.Equal(model.Capabilities, test.caps) {
+				t.Fatalf("API/capabilities = %s/%v, want %s/%v", model.API, model.Capabilities, test.api, test.caps)
+			}
+		})
 	}
 }
 

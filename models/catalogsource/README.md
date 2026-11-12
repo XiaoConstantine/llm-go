@@ -25,6 +25,8 @@ go generate ./models
 ```
 
 Add `-add-new` to also discover models that are not already in the catalog.
+The Go tool requires `tool_call: true` and `modalities.output: ["text"]` for
+new entries, both when run manually and by the scheduled workflow.
 
 Run `go generate ./models` after editing or syncing the source. The `cataloggen` tests
 compare regenerated output with `catalog_generated.go`, so `go test ./...`
@@ -63,8 +65,8 @@ write** and **Pull requests: Read and write**. Without that secret, GitHub's
 performs validation before publishing the pull request. See
 [GitHub's workflow-trigger documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 
-Each changed run retains the raw `modelsdev.json` snapshot, filtered
-`modelsdev-candidates.json`, timestamp, SHA-256, synchronization report, and
+Each changed run retains the raw `modelsdev.json` snapshot,
+timestamp, SHA-256, synchronization report, and
 pull-request body when available as a workflow artifact for 14 days. The pull
 request links to the run and includes the source hash and validation commands.
 To reproduce synchronization, download and extract that run's artifact, then
@@ -73,7 +75,7 @@ run from the repository root:
 ```sh
 go run ./models/cmd/modelsdevsync \
   -catalog ./models/catalogsource/catalog.json \
-  -file <artifact-directory>/modelsdev-candidates.json \
+  -file <artifact-directory>/modelsdev.json \
   -providers anthropic,openai,google -add-new
 go generate ./models
 go test -count=1 ./models/cmd/modelsdevsync ./models/cmd/cataloggen ./models/modelsdev

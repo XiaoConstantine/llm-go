@@ -41,42 +41,13 @@ jobs:
           date -u '+%Y-%m-%dT%H:%M:%SZ' > "$RUNNER_TEMP/modelsdev-fetched-at.txt"
           sha256sum "$RUNNER_TEMP/modelsdev.json" | cut -d ' ' -f 1 > "$RUNNER_TEMP/modelsdev-sha256.txt"
 
-      - name: Filter new model candidates
-        run: |
-          python3 - <<'PY' | tee "$RUNNER_TEMP/model-catalog-sync.txt"
-          import json
-          import os
-          from pathlib import Path
-
-          temporary = Path(os.environ["RUNNER_TEMP"])
-          catalog = json.loads(Path("models/catalogsource/catalog.json").read_text())
-          dataset = json.loads((temporary / "modelsdev.json").read_text())
-          existing = {(model["provider"], model["id"]) for model in catalog["models"]}
-          for provider in ("anthropic", "openai", "google"):
-              if provider not in dataset:
-                  continue
-              entries = dataset[provider]["models"]
-              retained = {
-                  model_id: model
-                  for model_id, model in entries.items()
-                  if (provider, model_id) in existing
-                  or (
-                      model.get("tool_call") is True
-                      and (model.get("modalities") or {}).get("output") == ["text"]
-                  )
-              }
-              dataset[provider]["models"] = retained
-              print(f"{provider}: retained {len(retained)} records; excluded {len(entries) - len(retained)} new models")
-          (temporary / "modelsdev-candidates.json").write_text(json.dumps(dataset))
-          PY
-
       - name: Sync and regenerate catalog
         run: |
           go run ./models/cmd/modelsdevsync \
-            -file "$RUNNER_TEMP/modelsdev-candidates.json" \
+            -file "$RUNNER_TEMP/modelsdev.json" \
             -catalog models/catalogsource/catalog.json \
             -providers anthropic,openai,google -add-new \
-            | tee -a "$RUNNER_TEMP/model-catalog-sync.txt"
+            | tee "$RUNNER_TEMP/model-catalog-sync.txt"
           go generate ./models
 
       - name: Detect catalog changes
@@ -163,7 +134,6 @@ jobs:
           name: model-catalog-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/modelsdev.json
-            ${{ runner.temp }}/modelsdev-candidates.json
             ${{ runner.temp }}/modelsdev-fetched-at.txt
             ${{ runner.temp }}/modelsdev-sha256.txt
             ${{ runner.temp }}/model-catalog-sync.txt

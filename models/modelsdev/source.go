@@ -55,9 +55,10 @@ func WithProviderAlias(llmProvider, modelsDevProvider string) Option {
 	}
 }
 
-// WithAPIResolver overrides default protocol assignment for models. The resolver
-// may be invoked concurrently by multiple goroutines and must not retain or mutate
-// its ModelEntry argument.
+// WithAPIResolver overrides protocol assignment. Setting a non-nil resolver
+// disables the default baseline unless WithBaseline is also specified. An explicit
+// baseline takes precedence for matching models, regardless of option order.
+// The resolver may be invoked concurrently and must not retain or mutate its argument.
 func WithAPIResolver(fn func(provider string, model ModelEntry) llm.API) Option {
 	return func(s *Source) {
 		if fn != nil {
@@ -66,9 +67,10 @@ func WithAPIResolver(fn func(provider string, model ModelEntry) llm.API) Option 
 	}
 }
 
-// WithCompatibilityResolver overrides default compatibility assignment. The resolver
-// may be invoked concurrently by multiple goroutines and must not retain or mutate
-// its ModelEntry argument.
+// WithCompatibilityResolver overrides compatibility. Setting a non-nil resolver
+// disables the default baseline unless WithBaseline is also specified. An explicit
+// baseline takes precedence for matching models, regardless of option order.
+// The resolver may be invoked concurrently and must not retain or mutate its argument.
 func WithCompatibilityResolver(fn func(provider string, model ModelEntry, api llm.API) *llm.ModelCompatibility) Option {
 	return func(s *Source) {
 		if fn != nil {
@@ -86,20 +88,44 @@ func WithFilter(fn func(provider string, model ModelEntry) bool) Option {
 	}
 }
 
+// WithBaseline preserves curated metadata for matching provider/model IDs.
+// Only known limits and cost from models.dev replace baseline fields; API,
+// compatibility, capabilities, name, and reasoning remain authoritative in the
+// baseline. Absent cost rates retain baseline values, except an omitted cache-read
+// rate is capped at the merged input rate. A non-empty list of surviving upstream
+// tiers defines the set of thresholds, with matching thresholds inheriting baseline
+// rates. Baseline tiers are retained only when upstream omits tiers or all upstream
+// tiers are filtered out. Retained tiers at or above the merged, known context
+// window are dropped. Resolvers apply only to models absent from an explicit
+// baseline. Pass nil to opt out and convert all upstream metadata.
+// Use the same catalog as CatalogManagerConfig.Baseline. Catalog is immutable
+// and may be shared with the source.
+func WithBaseline(baseline *models.Catalog) Option {
+	return func(s *Source) {
+		s.baseline = baseline
+		s.baselineExplicit = true
+	}
+}
+
 type inflightFetch struct {
 	done chan struct{}
 	err  error
 }
 
 // Source implements models.CatalogSource by fetching model definitions from
-// models.dev. It is safe for concurrent use.
+// models.dev. Records that fail model conversion are skipped unless every
+// unfiltered record fails, in which case Fetch returns KindMalformedResponse.
+// Transport and dataset decoding failures also fail the fetch.
+// It is safe for concurrent use.
 type Source struct {
-	httpClient      *http.Client
-	url             string
-	providerAliases map[string]string
-	apiResolver     func(provider string, model ModelEntry) llm.API
-	compatResolver  func(provider string, model ModelEntry, api llm.API) *llm.ModelCompatibility
-	filter          func(provider string, model ModelEntry) bool
+	httpClient       *http.Client
+	url              string
+	providerAliases  map[string]string
+	apiResolver      func(provider string, model ModelEntry) llm.API
+	compatResolver   func(provider string, model ModelEntry, api llm.API) *llm.ModelCompatibility
+	filter           func(provider string, model ModelEntry) bool
+	baseline         *models.Catalog
+	baselineExplicit bool
 
 	mu       sync.Mutex
 	lastETag string
@@ -109,6 +135,16 @@ type Source struct {
 }
 
 // NewSource creates a Source with default provider aliases and settings.
+// It preserves curated fields from models.BuiltinCatalog() by default, updating
+// only known limits and cost rates for matching models. A custom API or compatibility
+// resolver disables that default. WithBaseline explicitly selects a baseline and
+// takes precedence over resolvers for known models, independent of option order.
+// Use WithBaseline(nil) to disable preservation.
+//
+// CatalogStore snapshots contain the curated fields captured at fetch time.
+// After a library or baseline upgrade, offline restore or a 304 can restore older
+// metadata over the new baseline. Clear the store or force a network refresh
+// with a source constructed against the new baseline to recover.
 func NewSource(opts ...Option) *Source {
 	s := &Source{
 		httpClient: http.DefaultClient,
@@ -118,11 +154,18 @@ func NewSource(opts ...Option) *Source {
 			"together":  "togetherai",
 			"moonshot":  "moonshotai",
 		},
-		apiResolver:    func(p string, _ ModelEntry) llm.API { return DefaultProviderAPI(p) },
-		compatResolver: DefaultProviderCompatibility,
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if !s.baselineExplicit && s.apiResolver == nil && s.compatResolver == nil {
+		s.baseline = models.BuiltinCatalog()
+	}
+	if s.apiResolver == nil {
+		s.apiResolver = func(p string, _ ModelEntry) llm.API { return DefaultProviderAPI(p) }
+	}
+	if s.compatResolver == nil {
+		s.compatResolver = DefaultProviderCompatibility
 	}
 	return s
 }
@@ -169,22 +212,67 @@ func (s *Source) Fetch(ctx context.Context, req models.CatalogFetchRequest) (mod
 	}
 
 	modelsList := make([]llm.Model, 0, len(providerEntry.Models))
+	var rejected []string
+	var firstRejectedID string
+	var firstCause error
 	for modelID, rawModel := range providerEntry.Models {
 		if s.filter != nil && !s.filter(provider, rawModel) {
 			continue
 		}
-		api := s.apiResolver(provider, rawModel)
-		compat := s.compatResolver(provider, rawModel, api)
-		converted, err := ConvertModel(provider, rawModel, api, compat)
-		if err != nil {
-			return models.CatalogFetchResponse{}, &llm.Error{
-				Kind:     llm.KindMalformedResponse,
-				Op:       "modelsdev.Fetch",
-				Provider: provider,
-				Err:      fmt.Errorf("model %q: %w", modelID, err),
+		curated, known := s.baseline.Model(provider, rawModel.ID)
+		var api llm.API
+		var compat *llm.ModelCompatibility
+		if known {
+			api, compat = curated.API, curated.Compatibility
+			// Fill absent limits from the baseline before validating the pair.
+			limits := Limit{Context: curated.ContextWindow, Output: curated.MaxOutputTokens}
+			if rawModel.Limit != nil {
+				if rawModel.Limit.Context != 0 {
+					limits.Context = rawModel.Limit.Context
+				}
+				if rawModel.Limit.Output != 0 {
+					limits.Output = rawModel.Limit.Output
+				}
 			}
+			rawModel.Limit = &limits
+		} else {
+			api = s.apiResolver(provider, rawModel)
+			compat = s.compatResolver(provider, rawModel, api)
+		}
+		converted, err := convertModel(provider, rawModel, api, compat, curated.Cost)
+		if err != nil {
+			rejected = append(rejected, modelID)
+			if firstCause == nil || modelID < firstRejectedID {
+				firstRejectedID, firstCause = modelID, err
+			}
+			continue
+		}
+		if known {
+			curated.ContextWindow = converted.ContextWindow
+			curated.MaxOutputTokens = converted.MaxOutputTokens
+			if converted.Cost != nil {
+				curated.Cost = converted.Cost
+			}
+			converted = curated
 		}
 		modelsList = append(modelsList, converted)
+	}
+
+	if len(modelsList) == 0 && len(rejected) > 0 {
+		sort.Strings(rejected)
+		const maxReported = 10
+		ids := make([]string, min(len(rejected), maxReported))
+		for i := range ids {
+			ids[i] = truncateDiagnostic(rejected[i], 128)
+		}
+		summary := fmt.Sprintf("%q", ids)
+		if len(rejected) > maxReported {
+			summary += fmt.Sprintf(" and %d more", len(rejected)-maxReported)
+		}
+		return models.CatalogFetchResponse{}, &llm.Error{
+			Kind: llm.KindMalformedResponse, Op: "modelsdev.Fetch", Provider: provider,
+			Err: fmt.Errorf("no valid models (%d rejected): %s; first cause: %s", len(rejected), summary, truncateDiagnostic(firstCause.Error(), 256)),
+		}
 	}
 
 	sort.Slice(modelsList, func(i, j int) bool {
@@ -196,6 +284,13 @@ func (s *Source) Fetch(ctx context.Context, req models.CatalogFetchRequest) (mod
 		ETag:         etag,
 		LastModified: lastMod,
 	}, nil
+}
+
+func truncateDiagnostic(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return strings.ToValidUTF8(value[:limit], "") + "..."
 }
 
 func (s *Source) resolveProvider(provider string) string {

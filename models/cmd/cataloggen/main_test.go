@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/catalogmeta"
 )
 
 func TestGeneratedCatalogIsCurrent(t *testing.T) {
@@ -41,12 +43,12 @@ func TestGenerateIsDeterministic(t *testing.T) {
 
 func TestJSONCapabilitySupportMatchesProtocols(t *testing.T) {
 	for _, api := range []llm.API{llm.APIOpenAIChatCompletions, llm.APIOpenAIResponses, llm.APIGeminiGenerateContent} {
-		if !supportsCapability(api, llm.CapabilityJSON) {
+		if !catalogmeta.SupportsCapability(api, llm.CapabilityJSON) {
 			t.Errorf("supportsCapability(%q, json) = false", api)
 		}
 	}
 	for _, api := range []llm.API{llm.APIOpenAICodexResponses, llm.APIAnthropicMessages} {
-		if supportsCapability(api, llm.CapabilityJSON) {
+		if catalogmeta.SupportsCapability(api, llm.CapabilityJSON) {
 			t.Errorf("supportsCapability(%q, json) = true", api)
 		}
 	}
@@ -54,12 +56,12 @@ func TestJSONCapabilitySupportMatchesProtocols(t *testing.T) {
 
 func TestAudioCapabilitySupportMatchesProtocols(t *testing.T) {
 	for _, api := range []llm.API{llm.APIOpenAIChatCompletions, llm.APIOpenAICodexResponses, llm.APIGeminiGenerateContent} {
-		if !supportsCapability(api, llm.CapabilityAudio) {
+		if !catalogmeta.SupportsCapability(api, llm.CapabilityAudio) {
 			t.Errorf("supportsCapability(%q, audio) = false", api)
 		}
 	}
 	for _, api := range []llm.API{llm.APIOpenAIResponses, llm.APIAnthropicMessages} {
-		if supportsCapability(api, llm.CapabilityAudio) {
+		if catalogmeta.SupportsCapability(api, llm.CapabilityAudio) {
 			t.Errorf("supportsCapability(%q, audio) = true", api)
 		}
 	}
@@ -98,6 +100,37 @@ func TestLoadRejectsInvalidSources(t *testing.T) {
 			_, _, err := load(path)
 			if err == nil || !strings.Contains(err.Error(), test.contains) {
 				t.Fatalf("load() error = %v, want containing %q", err, test.contains)
+			}
+		})
+	}
+}
+
+func TestLoadCacheReadPriceRelationships(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		baseRead float64
+		tierRead float64
+		wantErr  bool
+	}{
+		{"discounted", 0.1, 0.2, false},
+		{"equal", 1, 2, false},
+		{"base above input", 1.01, 0.2, true},
+		{"tier above input", 0.1, 2.01, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Cheap cache writes are allowed: some providers price storage separately.
+			source := fmt.Sprintf(`{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":0.5,"cache_read":%g,"cache_write":0.01,"tiers":[{"input_tokens_above":50,"input":2,"output":1,"cache_read":%g,"cache_write":0}]}}]}`, test.baseRead, test.tierRead)
+			path := filepath.Join(t.TempDir(), "catalog.json")
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := load(path)
+			if test.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "cache_read must not exceed input") {
+					t.Fatalf("load() error = %v, want cache_read price error", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
