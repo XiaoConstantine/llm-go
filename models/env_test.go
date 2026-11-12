@@ -1,10 +1,16 @@
 package models
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	llm "github.com/XiaoConstantine/llm-go"
 )
 
 func TestFindEnvAPIKeysAndEnvAPIKey(t *testing.T) {
@@ -27,6 +33,41 @@ func TestFindEnvAPIKeysAndEnvAPIKey(t *testing.T) {
 	}
 	if keys := FindEnvAPIKeys("unknown"); keys != nil {
 		t.Fatalf("unknown provider keys = %#v", keys)
+	}
+}
+
+func TestEnvAnthropicAPIKeyDoesNotSelectOAuthToken(t *testing.T) {
+	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "oauth-token")
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+	if got := FindEnvAPIKeys("anthropic"); !reflect.DeepEqual(got, []string{"ANTHROPIC_API_KEY"}) {
+		t.Errorf("FindEnvAPIKeys(anthropic) = %#v, want only ANTHROPIC_API_KEY", got)
+	}
+	if key, ok := EnvAPIKey("anthropic"); !ok || key != "api-key" {
+		t.Errorf("EnvAPIKey(anthropic) = %q, %t, want API key", key, ok)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Api-Key") != "api-key" || request.Header.Get("Authorization") != "" {
+			t.Errorf("Anthropic headers = %#v, want API-key authentication", request.Header)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg","type":"message","role":"assistant","content":[],"model":"model","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":0}}`)
+	}))
+	defer server.Close()
+	key, _ := EnvAPIKey("anthropic")
+	collection, err := New(ProviderConfig{ID: "anthropic", API: AnthropicMessages, APIKey: key, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "anthropic", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	if key, ok := EnvAPIKey("anthropic"); ok || key != "" {
+		t.Errorf("EnvAPIKey(anthropic) = %q, %t, want no API key", key, ok)
 	}
 }
 

@@ -3,6 +3,8 @@ package models
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"maps"
 	"sort"
 	"strings"
@@ -21,7 +23,10 @@ const (
 // StoredCredential contains provider credentials. API-key credentials use
 // APIKey. OAuth credentials require either AccessToken or RefreshToken and may
 // include AccountID and ExpiresAt. Attributes holds provider-specific values.
-// Stores must copy Attributes on input and output.
+// Stores must copy Attributes on input and output. fmt and slog formatting
+// redact the entire value, including account and attribute metadata. Encoding
+// for persistence (such as encoding/json) is unchanged and includes secrets;
+// never log encoded credentials or their individual fields.
 type StoredCredential struct {
 	Type         CredentialType
 	APIKey       string
@@ -30,6 +35,18 @@ type StoredCredential struct {
 	AccountID    string
 	ExpiresAt    time.Time
 	Attributes   map[string]string
+}
+
+// Format implements fmt.Formatter without exposing credential fields, for any
+// verb including %+v and %#v.
+func (c StoredCredential) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, c.LogValue().String())
+}
+
+// LogValue implements slog.LogValuer, including for JSON log handlers, without
+// changing the credential's persistence representation.
+func (StoredCredential) LogValue() slog.Value {
+	return slog.StringValue("StoredCredential{REDACTED}")
 }
 
 // Validate reports whether a stored credential is internally consistent.

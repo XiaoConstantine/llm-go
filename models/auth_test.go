@@ -3,10 +3,14 @@ package models
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -26,6 +30,7 @@ func TestNewCredentialManagerRejectsInvalidConfig(t *testing.T) {
 		{name: "empty provider", store: store, configs: []CredentialRefreshConfig{{Refresh: refresh}}, want: "provider"},
 		{name: "noncanonical provider", store: store, configs: []CredentialRefreshConfig{{Provider: " openai ", Refresh: refresh}}, want: "whitespace"},
 		{name: "negative refresh before", store: store, configs: []CredentialRefreshConfig{{Provider: "openai", RefreshBefore: -1, Refresh: refresh}}, want: "must not be negative"},
+		{name: "negative refresh timeout", store: store, configs: []CredentialRefreshConfig{{Provider: "openai", RefreshTimeout: -1, Refresh: refresh}}, want: "must not be negative"},
 		{name: "nil refresher", store: store, configs: []CredentialRefreshConfig{{Provider: "openai"}}, want: "must not be nil"},
 		{name: "duplicate provider", store: store, configs: []CredentialRefreshConfig{{Provider: "openai", Refresh: refresh}, {Provider: "openai", Refresh: refresh}}, want: "more than once"},
 	}
@@ -354,7 +359,7 @@ func TestCredentialManagerRequiresRefresherForExpiredOAuth(t *testing.T) {
 	}
 }
 
-func TestCredentialManagerHonorsCancellation(t *testing.T) {
+func TestCredentialManagerCommitsRefreshAfterLastCallerCancels(t *testing.T) {
 	store, err := NewMemoryCredentialStore(map[string]StoredCredential{
 		"openai": {Type: CredentialOAuth, RefreshToken: "refresh"},
 	})
@@ -362,18 +367,31 @@ func TestCredentialManagerHonorsCancellation(t *testing.T) {
 		t.Fatalf("NewMemoryCredentialStore() error = %v", err)
 	}
 	entered := make(chan struct{})
-	manager, err := NewCredentialManager(store, CredentialRefreshConfig{
-		Provider: "openai",
-		Refresh: func(ctx context.Context, _ StoredCredential) (StoredCredential, error) {
-			close(entered)
-			<-ctx.Done()
-			return StoredCredential{}, ctx.Err()
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// The endpoint has rotated the token but has not sent its response yet.
+		close(entered)
+		<-release
+		_, _ = io.WriteString(w, `{"access_token":"access","refresh_token":"rotated","expires_in":3600}`)
+	}))
+	t.Cleanup(server.Close)
+	var releaseOnce sync.Once
+	releaseRefresh := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseRefresh)
+	committed := make(chan struct{})
+	observedStore := credentialStoreStub{
+		read: store.Read,
+		modify: func(ctx context.Context, provider string, update func(StoredCredential, bool) (*StoredCredential, error)) error {
+			defer close(committed)
+			return store.Modify(ctx, provider, update)
 		},
-	})
+	}
+	manager, err := NewCredentialManager(observedStore, (CodexOAuth{TokenURL: server.URL, HTTPClient: server.Client()}).RefreshConfig("openai", 0))
 	if err != nil {
 		t.Fatalf("NewCredentialManager() error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := manager.Resolve(ctx, "openai")
@@ -384,9 +402,15 @@ func TestCredentialManagerHonorsCancellation(t *testing.T) {
 	if err := waitError(t, done, "canceled credential resolution"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Resolve() error = %v, want context canceled", err)
 	}
+	releaseRefresh()
+	waitSignal(t, committed, "detached credential commit")
 	stored, found, err := store.Read(context.Background(), "openai")
-	if err != nil || !found || stored.AccessToken != "" || stored.RefreshToken != "refresh" {
+	if err != nil || !found || stored.AccessToken != "access" || stored.RefreshToken != "rotated" {
 		t.Fatalf("stored credential after cancellation = (%#v, %t, %v)", stored, found, err)
+	}
+	credential, found, err := manager.Resolve(context.Background(), "openai")
+	if err != nil || !found || credential.AccessToken != "access" || credential.RefreshToken != "rotated" {
+		t.Fatalf("Resolve() after cancellation = (%#v, %t, %v)", credential, found, err)
 	}
 }
 
@@ -442,7 +466,7 @@ func TestCredentialManagerLeaderCancellationDoesNotCancelWaiter(t *testing.T) {
 	}
 }
 
-func TestCredentialManagerNewCallerReplacesCanceledResolution(t *testing.T) {
+func TestCredentialManagerNewCallerJoinsDetachedRefresh(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	store, err := NewMemoryCredentialStore(map[string]StoredCredential{
 		"openai": {Type: CredentialOAuth, RefreshToken: "refresh"},
@@ -462,7 +486,9 @@ func TestCredentialManagerNewCallerReplacesCanceledResolution(t *testing.T) {
 			if refreshes.Add(1) == 1 {
 				close(firstEntered)
 				<-releaseFirst
-				return StoredCredential{}, ctx.Err()
+				if err := ctx.Err(); err != nil {
+					return StoredCredential{}, err
+				}
 			}
 			return StoredCredential{Type: CredentialOAuth, AccessToken: "access", RefreshToken: "refresh", ExpiresAt: now.Add(time.Hour)}, nil
 		},
@@ -497,9 +523,109 @@ func TestCredentialManagerNewCallerReplacesCanceledResolution(t *testing.T) {
 	if err := waitError(t, secondDone, "replacement credential resolution"); err != nil {
 		t.Fatalf("second Resolve() error = %v", err)
 	}
-	if refreshes.Load() != 2 {
-		t.Fatalf("refresh calls = %d, want 2", refreshes.Load())
+	if refreshes.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshes.Load())
 	}
+}
+
+func TestCredentialManagerDetachedRefreshDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+		success bool
+	}{
+		{name: "default timeout", want: 30 * time.Second},
+		{name: "configured timeout", timeout: 150 * time.Millisecond, want: 150 * time.Millisecond},
+		{name: "success at deadline is committed", timeout: 150 * time.Millisecond, want: 150 * time.Millisecond, success: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				store, err := NewMemoryCredentialStore(map[string]StoredCredential{"codex": {Type: CredentialOAuth, RefreshToken: "old"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				completed := make(chan error, 1)
+				observedStore := credentialStoreStub{
+					read: store.Read,
+					modify: func(ctx context.Context, provider string, update func(StoredCredential, bool) (*StoredCredential, error)) error {
+						err := store.Modify(ctx, provider, update)
+						completed <- err
+						return err
+					},
+				}
+				manager, err := NewCredentialManager(observedStore, CredentialRefreshConfig{
+					Provider: "codex", RefreshTimeout: test.timeout,
+					Refresh: func(ctx context.Context, _ StoredCredential) (StoredCredential, error) {
+						deadline, ok := ctx.Deadline()
+						if !ok || time.Until(deadline) != test.want {
+							t.Errorf("refresh deadline in %v, present %t, want %v", time.Until(deadline), ok, test.want)
+						}
+						<-ctx.Done()
+						if test.success {
+							return StoredCredential{Type: CredentialOAuth, AccessToken: "access", RefreshToken: "rotated"}, nil
+						}
+						return StoredCredential{}, ctx.Err()
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				start := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+				defer cancel()
+				if _, _, err := manager.Resolve(ctx, "codex"); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("Resolve() error = %v, want caller deadline", err)
+				}
+				if elapsed := time.Since(start); elapsed != 50*time.Millisecond {
+					t.Fatalf("caller returned after %v, want 50ms", elapsed)
+				}
+				commitErr := <-completed
+				if test.success && commitErr != nil || !test.success && !errors.Is(commitErr, context.DeadlineExceeded) {
+					t.Fatalf("detached Modify() error = %v, success %t", commitErr, test.success)
+				}
+				if elapsed := time.Since(start); elapsed != test.want {
+					t.Fatalf("refresh completed after %v, want %v", elapsed, test.want)
+				}
+				stored, found, err := store.Read(context.Background(), "codex")
+				wantToken := "old"
+				if test.success {
+					wantToken = "rotated"
+				}
+				if err != nil || !found || stored.RefreshToken != wantToken {
+					t.Fatalf("stored refresh token = %q, found %t, error %v; want %q", stored.RefreshToken, found, err, wantToken)
+				}
+			})
+		})
+	}
+}
+
+func TestCredentialManagerCancelsStoreAccessBeforeRefresh(t *testing.T) {
+	entered, exited := make(chan struct{}), make(chan struct{})
+	manager, err := NewCredentialManager(credentialStoreStub{
+		read: func(ctx context.Context, _ string) (StoredCredential, bool, error) {
+			defer close(exited)
+			close(entered)
+			<-ctx.Done()
+			return StoredCredential{}, false, ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := manager.Resolve(ctx, "codex")
+		done <- err
+	}()
+	waitSignal(t, entered, "store entry")
+	cancel()
+	if err := waitError(t, done, "canceled store resolution"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve() error = %v, want canceled", err)
+	}
+	waitSignal(t, exited, "canceled store exit")
 }
 
 func TestCredentialManagerSanitizesAndValidatesStoreResults(t *testing.T) {

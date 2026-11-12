@@ -111,7 +111,7 @@ func (o AnthropicOAuth) Exchange(ctx context.Context, authorization OAuthAuthori
 }
 
 // Refresh exchanges a current Anthropic OAuth refresh token. The returned
-// credential is caller-owned.
+// credential is caller-owned and preserves current's AccountID and Attributes.
 func (o AnthropicOAuth) Refresh(ctx context.Context, current StoredCredential) (StoredCredential, error) {
 	if ctx == nil {
 		return StoredCredential{}, fmt.Errorf("anthropic OAuth context must not be nil")
@@ -163,7 +163,7 @@ func (o CodexOAuth) Exchange(ctx context.Context, authorization OAuthAuthorizati
 }
 
 // Refresh exchanges a current Codex OAuth refresh token. The returned
-// credential is caller-owned.
+// credential is caller-owned and preserves current's AccountID and Attributes.
 func (o CodexOAuth) Refresh(ctx context.Context, current StoredCredential) (StoredCredential, error) {
 	if ctx == nil {
 		return StoredCredential{}, fmt.Errorf("codex OAuth context must not be nil")
@@ -176,13 +176,17 @@ func (o CodexOAuth) Refresh(ctx context.Context, current StoredCredential) (Stor
 }
 
 // RefreshConfig returns a CredentialManager configuration that retains a copy
-// of o and invokes its Anthropic refresh flow.
+// of o and invokes its Anthropic refresh flow. Zero before means no expiry
+// skew. The manager's default RefreshTimeout applies unless overridden on the
+// returned configuration; calling Refresh directly still uses the caller's ctx.
 func (o AnthropicOAuth) RefreshConfig(provider string, before time.Duration) CredentialRefreshConfig {
 	return CredentialRefreshConfig{Provider: provider, RefreshBefore: before, Refresh: o.Refresh}
 }
 
 // RefreshConfig returns a CredentialManager configuration that retains a copy
-// of o and invokes its Codex refresh flow.
+// of o and invokes its Codex refresh flow. Zero before means no expiry skew.
+// The manager's default RefreshTimeout applies unless overridden on the returned
+// configuration; calling Refresh directly still uses the caller's ctx.
 func (o CodexOAuth) RefreshConfig(provider string, before time.Duration) CredentialRefreshConfig {
 	return CredentialRefreshConfig{Provider: provider, RefreshBefore: before, Refresh: o.Refresh}
 }
@@ -249,6 +253,20 @@ type oauthErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// oauthTokenError retains only the allowlisted OAuth code, never the response
+// body or error_description, which may echo credentials.
+type oauthTokenError struct {
+	status int
+	code   string
+}
+
+func (e *oauthTokenError) Error() string {
+	if e.code != "" {
+		return fmt.Sprintf("OAuth token endpoint returned HTTP %d (%s)", e.status, e.code)
+	}
+	return fmt.Sprintf("OAuth token endpoint returned HTTP %d", e.status)
+}
+
 func oauthJSON(ctx context.Context, client *http.Client, endpoint string, body map[string]string, current StoredCredential, now time.Time) (StoredCredential, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -288,11 +306,11 @@ func executeOAuth(client *http.Client, request *http.Request, current StoredCred
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var endpointError oauthErrorResponse
-		_ = json.Unmarshal(body, &endpointError)
-		if safe := safeOAuthErrorCode(endpointError.Error); safe != "" {
-			return StoredCredential{}, fmt.Errorf("OAuth token endpoint returned HTTP %d (%s)", response.StatusCode, safe)
+		if err := json.Unmarshal(body, &endpointError); err != nil {
+			// A partially decoded error must not poison the refresh-token cache.
+			endpointError.Error = ""
 		}
-		return StoredCredential{}, fmt.Errorf("OAuth token endpoint returned HTTP %d", response.StatusCode)
+		return StoredCredential{}, &oauthTokenError{status: response.StatusCode, code: safeOAuthErrorCode(endpointError.Error)}
 	}
 	var token oauthTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
@@ -312,7 +330,11 @@ func executeOAuth(client *http.Client, request *http.Request, current StoredCred
 		return StoredCredential{}, fmt.Errorf("OAuth response is missing refresh_token")
 	}
 	expiresAfter := time.Duration(token.ExpiresIn) * time.Second
-	credential := StoredCredential{Type: CredentialOAuth, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: now.Add(expiresAfter)}
+	credential := cloneStoredCredential(current)
+	credential.Type = CredentialOAuth
+	credential.AccessToken = token.AccessToken
+	credential.RefreshToken = token.RefreshToken
+	credential.ExpiresAt = now.Add(expiresAfter)
 	if err := credential.Validate(); err != nil {
 		return StoredCredential{}, err
 	}

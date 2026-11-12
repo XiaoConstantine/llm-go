@@ -1,8 +1,12 @@
 package models
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -45,6 +49,51 @@ func TestStoredCredentialValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestStoredCredentialRedactsLogsButNotPersistence(t *testing.T) {
+	credential := StoredCredential{
+		Type: CredentialOAuth, APIKey: "secret-api-key", AccessToken: "secret-access-token", RefreshToken: "secret-refresh-token",
+		AccountID: "private-account", Attributes: map[string]string{"secret-attribute-name": "secret-attribute-value"},
+	}
+	assertRedacted := func(t *testing.T, output string) {
+		t.Helper()
+		for _, secret := range []string{credential.APIKey, credential.AccessToken, credential.RefreshToken, credential.AccountID, "secret-attribute-name", "secret-attribute-value"} {
+			if strings.Contains(output, secret) {
+				t.Errorf("formatted credential exposes %q", secret)
+			}
+		}
+		if !strings.Contains(output, "REDACTED") {
+			t.Errorf("formatted credential has no redaction marker: %s", output)
+		}
+	}
+	for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+		t.Run(format, func(t *testing.T) {
+			assertRedacted(t, fmt.Sprintf(format, credential))
+			assertRedacted(t, fmt.Sprintf(format, &credential))
+		})
+	}
+	for _, handler := range []struct {
+		name string
+		new  func(*bytes.Buffer) slog.Handler
+	}{
+		{"text", func(output *bytes.Buffer) slog.Handler { return slog.NewTextHandler(output, nil) }},
+		{"json", func(output *bytes.Buffer) slog.Handler { return slog.NewJSONHandler(output, nil) }},
+	} {
+		t.Run(handler.name, func(t *testing.T) {
+			var output bytes.Buffer
+			slog.New(handler.new(&output)).Info("credentials", "value", credential, "pointer", &credential)
+			assertRedacted(t, output.String())
+		})
+	}
+	encoded, err := json.Marshal(credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded StoredCredential
+	if err := json.Unmarshal(encoded, &decoded); err != nil || !reflect.DeepEqual(decoded, credential) {
+		t.Fatalf("credential persistence did not round trip: %v", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,6 +226,107 @@ func TestOAuthExpiresInBoundsAndRefreshTokenFallback(t *testing.T) {
 	expiresIn = maxExpiresIn + 1
 	if _, err := oauth.Refresh(context.Background(), current); err == nil || !strings.Contains(err.Error(), "supported range") {
 		t.Fatalf("overflow refresh error = %v", err)
+	}
+}
+
+func TestConcreteOAuthRefreshPreservesMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"rotated","expires_in":3600}`)
+	}))
+	defer server.Close()
+	for _, config := range []CredentialRefreshConfig{
+		(AnthropicOAuth{TokenURL: server.URL, HTTPClient: server.Client()}).RefreshConfig("anthropic", 0),
+		(CodexOAuth{TokenURL: server.URL, HTTPClient: server.Client()}).RefreshConfig("codex", 0),
+	} {
+		t.Run(config.Provider, func(t *testing.T) {
+			current := StoredCredential{Type: CredentialOAuth, RefreshToken: "old-refresh", AccountID: "account", Attributes: map[string]string{"plan": "pro"}}
+			refreshed, err := config.Refresh(context.Background(), current)
+			if err != nil || refreshed.AccountID != "account" || refreshed.Attributes["plan"] != "pro" {
+				t.Fatalf("Refresh() metadata = %#v, %v", refreshed, err)
+			}
+			refreshed.Attributes["plan"] = "changed"
+			if current.Attributes["plan"] != "pro" {
+				t.Fatal("Refresh() aliases input attributes")
+			}
+			store, err := NewMemoryCredentialStore(map[string]StoredCredential{config.Provider: current})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager, err := NewCredentialManager(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, found, err := manager.Resolve(context.Background(), config.Provider)
+			if err != nil || !found || credential.AccountID != "account" || credential.Attributes["plan"] != "pro" || credential.RefreshToken != "rotated" {
+				t.Fatalf("Resolve() = %#v, %t, %v", credential, found, err)
+			}
+			credential.Attributes["plan"] = "caller mutation"
+			stored, found, err := store.Read(context.Background(), config.Provider)
+			if err != nil || !found || stored.AccountID != "account" || stored.Attributes["plan"] != "pro" || stored.RefreshToken != "rotated" {
+				t.Fatalf("Read() = %#v, %t, %v", stored, found, err)
+			}
+		})
+	}
+}
+
+func TestCredentialManagerDoesNotRetryRejectedRefreshToken(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		status       int
+		body         string
+		wantRequests int32
+	}{
+		{name: "invalid grant", status: 400, body: `{"error":"invalid_grant"}`, wantRequests: 1},
+		{name: "unauthorized grant", status: 401, body: `{"error":"invalid_grant"}`, wantRequests: 1},
+		{name: "server failure", status: 500, body: `{"error":"invalid_grant"}`, wantRequests: 26},
+		{name: "transient failure", status: 400, body: `{"error":"temporarily_unavailable"}`, wantRequests: 26},
+		{name: "malformed error", status: 400, body: `{"error":"invalid_grant","error":42}`, wantRequests: 26},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				requests.Add(1)
+				if err := request.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				if request.Form.Get("refresh_token") == "replacement" {
+					_, _ = io.WriteString(w, `{"access_token":"access","refresh_token":"rotated","expires_in":3600}`)
+					return
+				}
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			store, err := NewMemoryCredentialStore(map[string]StoredCredential{"codex": {Type: CredentialOAuth, RefreshToken: "rejected"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager, err := NewCredentialManager(store, (CodexOAuth{TokenURL: server.URL, HTTPClient: server.Client()}).RefreshConfig("codex", 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 26 {
+				if _, _, err := manager.Resolve(context.Background(), "codex"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", test.status)) {
+					t.Fatalf("Resolve() error = %v, want HTTP %d", err, test.status)
+				}
+			}
+			if got := requests.Load(); got != test.wantRequests {
+				t.Errorf("token endpoint requests = %d, want %d", got, test.wantRequests)
+			}
+			if err := store.Modify(context.Background(), "codex", func(current StoredCredential, _ bool) (*StoredCredential, error) {
+				current.RefreshToken = "replacement"
+				return &current, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			credential, found, err := manager.Resolve(context.Background(), "codex")
+			if err != nil || !found || credential.RefreshToken != "rotated" {
+				t.Fatalf("Resolve(replacement) = %#v, %t, %v", credential, found, err)
+			}
+			if got := requests.Load(); got != test.wantRequests+1 {
+				t.Errorf("token endpoint requests after replacement = %d, want %d", got, test.wantRequests+1)
+			}
+		})
 	}
 }
 

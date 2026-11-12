@@ -57,11 +57,16 @@ func TestManagedAPIKeyRotationIsObservedByLongLivedGenerator(t *testing.T) {
 	}
 }
 
-func TestManagedGeminiAPIKeyRotationUpdatesHeaderAndQuery(t *testing.T) {
+func TestManagedGeminiAPIKeyRotationUsesHeaderOnly(t *testing.T) {
 	type observedCredential struct{ headers, queries []string }
-	seen := make(chan observedCredential, 2)
+	seen := make(chan observedCredential, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		seen <- observedCredential{headers: append([]string(nil), request.Header.Values("X-Goog-Api-Key")...), queries: append([]string(nil), request.URL.Query()["key"]...)}
+		if request.URL.Query().Get("alt") == "sse" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`+"\n\n")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 	}))
@@ -78,7 +83,7 @@ func TestManagedGeminiAPIKeyRotationUpdatesHeaderAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	generator, err := collection.Generator(llm.ModelInfo{Provider: "gemini", Model: "model"})
+	generator, err := collection.Generator(llm.ModelInfo{Provider: "gemini", Model: "model", Capabilities: []llm.Capability{llm.CapabilityStreaming}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,9 +100,81 @@ func TestManagedGeminiAPIKeyRotationUpdatesHeaderAndQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := <-seen, <-seen
-	if !slices.Equal(first.headers, []string{"first"}) || !slices.Equal(first.queries, []string{"first"}) ||
-		!slices.Equal(second.headers, []string{"second"}) || !slices.Equal(second.queries, []string{"second"}) {
+	if !slices.Equal(first.headers, []string{"first"}) || len(first.queries) != 0 ||
+		!slices.Equal(second.headers, []string{"second"}) || len(second.queries) != 0 {
 		t.Fatalf("Gemini credentials = %#v, %#v", first, second)
+	}
+	stream, err := generator.Stream(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := llm.Collect(stream, nil); err != nil {
+		t.Fatal(err)
+	}
+	if streamed := <-seen; !slices.Equal(streamed.headers, []string{"second"}) || len(streamed.queries) != 0 {
+		t.Fatalf("streaming Gemini credentials = %#v", streamed)
+	}
+}
+
+func TestManagedGeminiRedirectCredentials(t *testing.T) {
+	for _, explicitQuery := range []bool{false, true} {
+		name := "header only"
+		if explicitQuery {
+			name = "explicit legacy query"
+		}
+		t.Run(name, func(t *testing.T) {
+			const secret = "managed-secret"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.Header.Get("X-Goog-Api-Key") != secret {
+					t.Error("missing managed key header")
+				}
+				if request.URL.Path == "/legacy" {
+					if keys := request.URL.Query()["key"]; !slices.Equal(keys, []string{secret}) || request.URL.Query().Get("route") != "kept" {
+						t.Errorf("legacy query = %q", request.URL.RawQuery)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+					return
+				}
+				location := request.URL.RequestURI()
+				if explicitQuery {
+					location = "/legacy?key=old&key=duplicate&route=kept"
+				}
+				http.Redirect(w, request, location, http.StatusTemporaryRedirect)
+			}))
+			defer server.Close()
+			store, err := NewMemoryCredentialStore(map[string]StoredCredential{"gemini": {Type: CredentialAPIKey, APIKey: secret}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager, err := NewCredentialManager(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := *server.Client()
+			client.CheckRedirect = func(*http.Request, []*http.Request) error {
+				if explicitQuery {
+					return nil
+				}
+				return errors.New("redirect blocked")
+			}
+			collection, err := NewWithCredentialManager(manager, ProviderConfig{ID: "gemini", API: GeminiGenerateContent, BaseURL: server.URL, HTTPClient: &client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			generator, err := collection.Generator(llm.ModelInfo{Provider: "gemini", Model: "model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = generator.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}})
+			if explicitQuery {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "redirect blocked") {
+				t.Fatalf("redirect error = %v, want failure without API key", err)
+			}
+		})
 	}
 }
 

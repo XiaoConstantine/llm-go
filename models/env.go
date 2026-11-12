@@ -7,7 +7,7 @@ import (
 
 var providerAPIKeyEnvironment = map[string][]string{
 	"github-copilot":         {"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
-	"anthropic":              {"ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"},
+	"anthropic":              {"ANTHROPIC_API_KEY"},
 	"openai":                 {"OPENAI_API_KEY"},
 	"azure-openai-responses": {"AZURE_OPENAI_API_KEY"},
 	"deepseek":               {"DEEPSEEK_API_KEY"},
@@ -40,7 +40,9 @@ var providerAPIKeyEnvironment = map[string][]string{
 // FindEnvAPIKeys returns the configured environment-variable names that can
 // supply an API key or OAuth token for provider, in precedence order. It does
 // not report ambient AWS or Google credentials. The returned slice is owned by
-// the caller and is nil when no known variable is configured.
+// the caller and is nil when no known variable is configured. Anthropic OAuth
+// tokens are excluded: ANTHROPIC_OAUTH_TOKEN must be supplied explicitly via
+// ProviderConfig.Credentials.AccessToken or a CredentialManager, not APIKey.
 func FindEnvAPIKeys(provider string) []string {
 	variables := providerAPIKeyEnvironment[provider]
 	configured := make([]string, 0, len(variables))
@@ -58,6 +60,8 @@ func FindEnvAPIKeys(provider string) []string {
 // EnvAPIKey returns the highest-precedence configured API key or OAuth token
 // for provider. Ambient AWS and Google credentials are intentionally reported
 // by HasAmbientCredentials instead of being represented as a sentinel key.
+// Anthropic returns only ANTHROPIC_API_KEY; subscription OAuth requires the
+// separate token configuration described by FindEnvAPIKeys.
 func EnvAPIKey(provider string) (string, bool) {
 	variables := FindEnvAPIKeys(provider)
 	if len(variables) == 0 {

@@ -138,6 +138,9 @@ func NewWithRegistry(registry *FactoryRegistry, configs ...ProviderConfig) (*Col
 }
 
 // NewWithCredentialManager constructs a Collection with the default registry.
+// Managed Gemini API keys use X-Goog-Api-Key. An existing key query parameter is
+// updated for explicitly configured legacy gateways, but never added; such URLs
+// expose credentials to URL logging and should be avoided.
 func NewWithCredentialManager(manager *CredentialManager, configs ...ProviderConfig) (*Collection, error) {
 	return NewWithCredentialManagerAndRegistry(manager, defaultFactoryRegistry(), configs...)
 }
@@ -539,13 +542,12 @@ func (t *managedCredentialTransport) RoundTrip(request *http.Request) (*http.Res
 				}
 			}
 			clone.Header.Set("X-Goog-Api-Key", credential.APIKey)
-			// Keep the legacy query credential synchronized for compatible
-			// gateways that route Gemini requests by key rather than header.
-			urlClone := *request.URL
-			query := urlClone.Query()
-			query.Set("key", credential.APIKey)
-			urlClone.RawQuery = query.Encode()
-			clone.URL = &urlClone
+			// Only preserve query authentication when the outgoing URL already
+			// opts into it. Ordinary SDK requests must not expose keys in URLs.
+			if query := clone.URL.Query(); query.Has("key") {
+				query.Set("key", credential.APIKey)
+				clone.URL.RawQuery = query.Encode()
+			}
 		default:
 			clone.Header.Set("Authorization", "Bearer "+credential.APIKey)
 		}
