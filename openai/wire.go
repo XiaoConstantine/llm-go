@@ -978,15 +978,25 @@ func usageFromWire(usage *responseUsage) (*llm.Usage, error) {
 	if usage == nil {
 		return nil, nil
 	}
-	if usage.PromptTokens == nil || usage.CompletionTokens == nil || usage.TotalTokens == nil {
+	for _, count := range []*int{usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens} {
+		if count != nil && *count < 0 {
+			return nil, fmt.Errorf("negative token usage")
+		}
+	}
+	if usage.PromptTokens == nil || usage.CompletionTokens == nil {
+		if usage.TotalTokens != nil && *usage.TotalTokens != 0 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("incomplete token usage")
 	}
-	if *usage.PromptTokens < 0 || *usage.CompletionTokens < 0 || *usage.TotalTokens < 0 {
-		return nil, fmt.Errorf("negative token usage")
+	if *usage.PromptTokens > int(^uint(0)>>1)-*usage.CompletionTokens {
+		return nil, fmt.Errorf("total token usage overflows int")
 	}
-	if *usage.CompletionTokens > *usage.TotalTokens ||
-		*usage.PromptTokens != *usage.TotalTokens-*usage.CompletionTokens {
-		return nil, fmt.Errorf("inconsistent token usage")
+	// Derive absent totals, but never price a breakdown that contradicts a
+	// nonzero reported total: it may omit a billable category.
+	total := *usage.PromptTokens + *usage.CompletionTokens
+	if usage.TotalTokens != nil && *usage.TotalTokens != 0 && *usage.TotalTokens != total {
+		return nil, nil
 	}
 	cacheRead := 0
 	cacheWrite := 0
@@ -1021,6 +1031,6 @@ func usageFromWire(usage *responseUsage) (*llm.Usage, error) {
 		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: cacheWrite,
 		ReasoningTokens:  reasoning,
-		TotalTokens:      *usage.TotalTokens,
+		TotalTokens:      total,
 	}, nil
 }

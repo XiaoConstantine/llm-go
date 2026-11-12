@@ -271,7 +271,7 @@ const (
 // cache reads and writes; TotalTokens is the sum of input, output, cache-read,
 // and cache-write tokens. ReasoningTokens is a subset of OutputTokens.
 // CacheWrite1hTokens is a subset of CacheWriteTokens. Cost is nil when no
-// pricing metadata was configured.
+// pricing metadata was configured or the reported usage cannot be priced.
 type Usage struct {
 	InputTokens        int
 	OutputTokens       int

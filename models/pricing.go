@@ -2,10 +2,6 @@ package models
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io"
-	"sync"
 
 	llm "github.com/XiaoConstantine/llm-go"
 )
@@ -64,10 +60,7 @@ func (g *pricedGenerator) Generate(ctx context.Context, request llm.Request) (*l
 	if err != nil || response == nil || response.Usage == nil || g.cost == nil {
 		return response, err
 	}
-	usage, err := g.price(*response.Usage)
-	if err != nil {
-		return nil, err
-	}
+	usage := g.price(*response.Usage)
 	response.Usage = &usage
 	return response, nil
 }
@@ -83,18 +76,15 @@ func (g *pricedGenerator) Stream(ctx context.Context, request llm.Request) (llm.
 	return &pricedStream{Stream: stream, generator: g}, nil
 }
 
-func (g *pricedGenerator) price(usage llm.Usage) (llm.Usage, error) {
+func (g *pricedGenerator) price(usage llm.Usage) llm.Usage {
+	// Cost is optional enrichment: an unusable accounting breakdown must not
+	// discard already-generated output or turn a successful stream into an error.
+	usage.Cost = nil
 	cost, err := llm.CalculateCost(*g.cost, usage)
-	if err != nil {
-		return llm.Usage{}, &llm.Error{
-			Kind:     llm.KindMalformedResponse,
-			Op:       "price",
-			Provider: g.info.Provider,
-			Err:      fmt.Errorf("calculate usage cost: %w", err),
-		}
+	if err == nil {
+		usage.Cost = &cost
 	}
-	usage.Cost = &cost
-	return usage, nil
+	return usage
 }
 
 type pricedBackgroundGenerator struct {
@@ -121,58 +111,24 @@ func (g *pricedBackgroundGenerator) priceBackground(result *llm.BackgroundResult
 	if result == nil || result.Response == nil || result.Response.Usage == nil || g.cost == nil {
 		return result, err
 	}
-	usage, priceErr := g.price(*result.Response.Usage)
-	if priceErr != nil {
-		return result, errors.Join(err, priceErr)
-	}
+	usage := g.price(*result.Response.Usage)
 	result.Response.Usage = &usage
 	return result, err
 }
 
 type pricedStream struct {
 	llm.Stream
-	generator    *pricedGenerator
-	mu           sync.Mutex
-	terminalErr  error
-	closeStarted bool
+	generator *pricedGenerator
 }
 
 func (s *pricedStream) Recv() (llm.Chunk, error) {
-	s.mu.Lock()
-	if s.terminalErr != nil {
-		err := s.terminalErr
-		s.mu.Unlock()
-		return llm.Chunk{}, err
-	}
-	s.mu.Unlock()
 	chunk, err := s.Stream.Recv()
 	if err != nil || chunk.Usage == nil {
 		return chunk, err
 	}
-	usage, priceErr := s.generator.price(*chunk.Usage)
-	if priceErr != nil {
-		s.mu.Lock()
-		if s.terminalErr == nil {
-			if s.closeStarted {
-				s.terminalErr = io.EOF
-			} else {
-				s.terminalErr = priceErr
-			}
-		}
-		terminalErr := s.terminalErr
-		s.mu.Unlock()
-		_ = s.Stream.Close()
-		return llm.Chunk{}, terminalErr
-	}
+	usage := s.generator.price(*chunk.Usage)
 	chunk.Usage = &usage
 	return chunk, nil
-}
-
-func (s *pricedStream) Close() error {
-	s.mu.Lock()
-	s.closeStarted = true
-	s.mu.Unlock()
-	return s.Stream.Close()
 }
 
 var (

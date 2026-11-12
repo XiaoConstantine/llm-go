@@ -1088,10 +1088,9 @@ func TestGenerateRejectsMalformedResponse(t *testing.T) {
 		{name: "missing tool ID", body: `{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"type":"function","function":{"name":"tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, want: "has no ID"},
 		{name: "duplicate tool ID", body: `{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"one","type":"function","function":{"name":"a","arguments":"{}"}},{"id":"one","type":"function","function":{"name":"b","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, want: "repeats ID"},
 		{name: "undeclared tool", body: `{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"one","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, want: "undeclared function"},
-		{name: "missing usage field", body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`, want: "incomplete token usage"},
-		{name: "null usage field", body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":null}}`, want: "incomplete token usage"},
+		{name: "missing usage category", body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1}}`, want: "incomplete token usage"},
+		{name: "null usage category", body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":null}}`, want: "incomplete token usage"},
 		{name: "negative usage", body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":-1,"completion_tokens":2,"total_tokens":1}}`, want: "negative token usage"},
-		{name: "inconsistent usage", body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":99}}`, want: "inconsistent token usage"},
 	}
 
 	for _, test := range tests {
@@ -1118,6 +1117,69 @@ func TestGenerateRejectsMalformedResponse(t *testing.T) {
 				t.Fatalf("Generate() error = %q, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestUsageTotalsAreDerived(t *testing.T) {
+	const counts = `"prompt_tokens":11,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"completion_tokens_details":{"reasoning_tokens":4}`
+	const invalidDetails = `"prompt_tokens":10,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":100}`
+	for _, test := range []struct {
+		name        string
+		usage       string
+		wantNoUsage bool
+		wantError   bool
+	}{
+		{name: "missing", usage: `{` + counts + `}`},
+		{name: "null", usage: `{` + counts + `,"total_tokens":null}`},
+		{name: "zero", usage: `{` + counts + `,"total_tokens":0}`},
+		{name: "agreeing", usage: `{` + counts + `,"total_tokens":18}`},
+		{name: "excess", usage: `{` + counts + `,"total_tokens":99}`, wantNoUsage: true},
+		{name: "deficit", usage: `{` + counts + `,"total_tokens":1}`, wantNoUsage: true},
+		{name: "mismatch overrides invalid details", usage: `{` + invalidDetails + `,"total_tokens":115}`, wantNoUsage: true},
+		{name: "agreeing with invalid details", usage: `{` + invalidDetails + `,"total_tokens":15}`, wantError: true},
+		{name: "missing with invalid details", usage: `{` + invalidDetails + `}`, wantError: true},
+		{name: "zero with invalid details", usage: `{` + invalidDetails + `,"total_tokens":0}`, wantError: true},
+	} {
+		for _, mode := range []string{"generate", "stream"} {
+			t.Run(test.name+"/"+mode, func(t *testing.T) {
+				usage := test.usage
+				body := `{"choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":` + usage + `}`
+				var response *llm.Response
+				var err error
+				if mode == "generate" {
+					client, newErr := New(Config{Model: "model", BaseURL: "http://example.com/v1", HTTPClient: &http.Client{Transport: staticResponse{status: http.StatusOK, body: body}}})
+					if newErr != nil {
+						t.Fatal(newErr)
+					}
+					response, err = client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+				} else {
+					body = "data: " + `{"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}]}` + "\n\ndata: " + `{"choices":[],"usage":` + usage + "}\n\ndata: [DONE]\n\n"
+					client := newStaticStreamClient(t, []llm.Capability{llm.CapabilityStreaming}, http.StatusOK, "text/event-stream", body)
+					stream, streamErr := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+					if streamErr != nil {
+						t.Fatal(streamErr)
+					}
+					response, err = llm.CollectStructural(stream)
+				}
+				if test.wantError {
+					requireModelError(t, err, llm.KindMalformedResponse, mode)
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.wantNoUsage {
+					if response.Text() != "answer" || response.FinishReason != llm.FinishReasonStop || response.Usage != nil {
+						t.Fatalf("response = %#v, want content without usage", response)
+					}
+					return
+				}
+				if response.Text() != "answer" || response.FinishReason != llm.FinishReasonStop || response.Usage == nil ||
+					*response.Usage != (llm.Usage{InputTokens: 6, OutputTokens: 7, CacheReadTokens: 3, CacheWriteTokens: 2, ReasoningTokens: 4, TotalTokens: 18}) {
+					t.Fatalf("response = %#v, usage = %#v", response, response.Usage)
+				}
+			})
+		}
 	}
 }
 

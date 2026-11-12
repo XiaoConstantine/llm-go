@@ -80,9 +80,16 @@ func TestStreamToolCallAndInputConversion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := llm.CollectStructural(stream)
+	recorded := &recordingStream{Stream: stream}
+	response, err := llm.CollectStructural(recorded)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for index, chunk := range recorded.chunks {
+		if chunk.ID == "" && chunk.Model == "" && len(chunk.Content) == 0 && len(chunk.ToolCalls) == 0 &&
+			chunk.ReasoningSummary == "" && len(chunk.ProviderData) == 0 && chunk.FinishReason == "" && chunk.Usage == nil && len(chunk.Events) == 0 {
+			t.Fatalf("chunk %d is empty", index)
+		}
 	}
 	if response.FinishReason != llm.FinishReasonToolCall || len(response.Message.ToolCalls) != 1 {
 		t.Fatalf("response = %#v", response)
@@ -93,6 +100,196 @@ func TestStreamToolCallAndInputConversion(t *testing.T) {
 	}
 	if runtime.input == nil || runtime.input.ToolConfig == nil || len(runtime.input.ToolConfig.Tools) != 1 {
 		t.Fatalf("input = %#v", runtime.input)
+	}
+}
+
+func TestFilteredOutputPreservesText(t *testing.T) {
+	for _, reason := range []types.StopReason{types.StopReasonContentFiltered, types.StopReasonGuardrailIntervened} {
+		for _, scenario := range []string{"text", "completed tool", "open text", "open tool"} {
+			for _, mode := range []string{"generate", "stream"} {
+				t.Run(string(reason)+"/"+scenario+"/"+mode, func(t *testing.T) {
+					events := []types.ConverseStreamOutput{
+						&types.ConverseStreamOutputMemberMessageStart{Value: types.MessageStartEvent{Role: types.ConversationRoleAssistant}},
+						deltaEvent(0, &types.ContentBlockDeltaMemberText{Value: "partial"}),
+					}
+					if scenario != "open text" {
+						events = append(events, stopEvent(0))
+					}
+					if scenario == "completed tool" || scenario == "open tool" {
+						arguments := `{"q":"x"}`
+						if scenario == "open tool" {
+							arguments = `{"q":`
+						}
+						events = append(events,
+							&types.ConverseStreamOutputMemberContentBlockStart{Value: types.ContentBlockStartEvent{ContentBlockIndex: aws.Int32(1),
+								Start: &types.ContentBlockStartMemberToolUse{Value: types.ToolUseBlockStart{ToolUseId: aws.String("call-1"), Name: aws.String("read")}}}},
+							deltaEvent(1, &types.ContentBlockDeltaMemberToolUse{Value: types.ToolUseBlockDelta{Input: aws.String(arguments)}}))
+						if scenario == "completed tool" {
+							events = append(events, stopEvent(1))
+						}
+					}
+					events = append(events,
+						&types.ConverseStreamOutputMemberMessageStop{Value: types.MessageStopEvent{StopReason: reason}},
+						&types.ConverseStreamOutputMemberMetadata{Value: types.ConverseStreamMetadataEvent{Usage: &types.TokenUsage{
+							InputTokens: aws.Int32(4), OutputTokens: aws.Int32(3), TotalTokens: aws.Int32(7)}}})
+					client := mustClient(t, Config{Model: "model", Runtime: &fakeRuntime{events: events}, Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}})
+					request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}, Tools: []llm.Tool{{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+					var response *llm.Response
+					var err error
+					if mode == "generate" {
+						response, err = client.Generate(context.Background(), request)
+					} else {
+						stream, streamErr := client.Stream(context.Background(), request)
+						if streamErr != nil {
+							t.Fatal(streamErr)
+						}
+						recorded := &recordingStream{Stream: stream}
+						response, err = llm.Collect(recorded, request.Tools)
+						textEnds, toolEnds := 0, 0
+						for _, chunk := range recorded.chunks {
+							if len(chunk.ToolCalls) != 0 {
+								t.Fatal("filtered stream emitted executable tool calls")
+							}
+							for _, event := range chunk.Events {
+								if event.Kind == llm.StreamEventTextEnd {
+									textEnds++
+								}
+								if event.Kind == llm.StreamEventToolCallEnd {
+									toolEnds++
+								}
+								if event.ToolCall != nil {
+									t.Fatal("filtered stream emitted executable tool event")
+								}
+							}
+						}
+						if textEnds != 1 || (scenario == "completed tool" || scenario == "open tool") && toolEnds != 1 {
+							t.Fatalf("text ends = %d, tool ends = %d", textEnds, toolEnds)
+						}
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if response.Text() != "partial" || len(response.Message.ToolCalls) != 0 || response.FinishReason != llm.FinishReasonContentFilter || response.Usage == nil || response.Usage.TotalTokens != 7 {
+						t.Fatalf("response = %#v", response)
+					}
+				})
+			}
+		}
+	}
+}
+
+type recordingStream struct {
+	llm.Stream
+	chunks []llm.Chunk
+}
+
+func (s *recordingStream) Recv() (llm.Chunk, error) {
+	chunk, err := s.Stream.Recv()
+	if err == nil {
+		s.chunks = append(s.chunks, chunk)
+	}
+	return chunk, err
+}
+
+func TestEmptyToolArgumentsRequireToolUse(t *testing.T) {
+	for _, reason := range []types.StopReason{types.StopReasonToolUse, types.StopReasonMaxTokens} {
+		for _, mode := range []string{"generate", "stream"} {
+			t.Run(string(reason)+"/"+mode, func(t *testing.T) {
+				runtime := &fakeRuntime{events: []types.ConverseStreamOutput{
+					&types.ConverseStreamOutputMemberMessageStart{Value: types.MessageStartEvent{Role: types.ConversationRoleAssistant}},
+					&types.ConverseStreamOutputMemberContentBlockStart{Value: types.ContentBlockStartEvent{ContentBlockIndex: aws.Int32(0),
+						Start: &types.ContentBlockStartMemberToolUse{Value: types.ToolUseBlockStart{ToolUseId: aws.String("call-1"), Name: aws.String("read")}}}},
+					stopEvent(0),
+					&types.ConverseStreamOutputMemberMessageStop{Value: types.MessageStopEvent{StopReason: reason}},
+				}}
+				client := mustClient(t, Config{Model: "model", Runtime: runtime, Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}})
+				request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "read"}}}},
+					Tools: []llm.Tool{{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+				var response *llm.Response
+				var err error
+				if mode == "generate" {
+					response, err = client.Generate(context.Background(), request)
+				} else {
+					stream, streamErr := client.Stream(context.Background(), request)
+					if streamErr != nil {
+						t.Fatal(streamErr)
+					}
+					recorded := &recordingStream{Stream: stream}
+					response, err = llm.Collect(recorded, request.Tools)
+					ends := 0
+					for _, chunk := range recorded.chunks {
+						if reason == types.StopReasonMaxTokens && len(chunk.ToolCalls) != 0 {
+							t.Fatal("truncated call became executable")
+						}
+						for _, event := range chunk.Events {
+							if event.Kind == llm.StreamEventToolCallEnd {
+								ends++
+								if reason == types.StopReasonMaxTokens && event.ToolCall != nil {
+									t.Fatal("truncated tool end became executable")
+								}
+							}
+						}
+					}
+					if ends != 1 {
+						t.Fatalf("tool ends = %d", ends)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reason == types.StopReasonMaxTokens {
+					if response.FinishReason != llm.FinishReasonLength || len(response.Message.ToolCalls) != 0 {
+						t.Fatalf("response = %#v", response)
+					}
+				} else if response.FinishReason != llm.FinishReasonToolCall || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != "{}" {
+					t.Fatalf("response = %#v", response)
+				}
+			})
+		}
+	}
+}
+
+func TestEmptyToolArguments(t *testing.T) {
+	for _, arguments := range []string{"", "{}", `{"q":`} {
+		for _, mode := range []string{"generate", "stream"} {
+			t.Run(arguments+"/"+mode, func(t *testing.T) {
+				runtime := &fakeRuntime{events: []types.ConverseStreamOutput{
+					&types.ConverseStreamOutputMemberMessageStart{Value: types.MessageStartEvent{Role: types.ConversationRoleAssistant}},
+					&types.ConverseStreamOutputMemberContentBlockStart{Value: types.ContentBlockStartEvent{ContentBlockIndex: aws.Int32(0),
+						Start: &types.ContentBlockStartMemberToolUse{Value: types.ToolUseBlockStart{ToolUseId: aws.String("call-1"), Name: aws.String("read")}}}},
+					deltaEvent(0, &types.ContentBlockDeltaMemberToolUse{Value: types.ToolUseBlockDelta{Input: aws.String(arguments)}}),
+					stopEvent(0),
+					&types.ConverseStreamOutputMemberMessageStop{Value: types.MessageStopEvent{StopReason: types.StopReasonToolUse}},
+				}}
+				client := mustClient(t, Config{Model: "model", Runtime: runtime, Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}})
+				request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "read"}}}},
+					Tools: []llm.Tool{{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+				var response *llm.Response
+				var err error
+				if mode == "generate" {
+					response, err = client.Generate(context.Background(), request)
+				} else {
+					stream, streamErr := client.Stream(context.Background(), request)
+					if streamErr != nil {
+						t.Fatal(streamErr)
+					}
+					response, err = llm.CollectStructural(stream)
+				}
+				if arguments == `{"q":` {
+					var modelErr *llm.Error
+					if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindMalformedResponse {
+						t.Fatalf("error = %v, want malformed response", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.FinishReason != llm.FinishReasonToolCall || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != "{}" {
+					t.Fatalf("response = %#v", response)
+				}
+			})
+		}
 	}
 }
 

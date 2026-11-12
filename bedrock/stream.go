@@ -42,7 +42,7 @@ type blockState struct {
 	stopped        bool
 	contentIndices []int
 	reasoningIndex int
-	toolIndex      int
+	call           *llm.ToolCall
 }
 
 type decoder struct {
@@ -56,7 +56,7 @@ type decoder struct {
 	stopped      bool
 	finish       llm.FinishReason
 	usage        *llm.Usage
-	toolCount    int
+	usageSeen    bool
 	contentCount int
 	reasoning    []reasoningData
 	buffered     int
@@ -145,7 +145,7 @@ func (d *decoder) consume(event types.ConverseStreamOutput) (*llm.Chunk, error) 
 			return nil, malformed(d.op, "content block %d has unsupported start", index)
 		}
 		block := &blockState{kind: blockTool, output: d.nextOutput, id: *start.Value.ToolUseId, name: *start.Value.Name,
-			reasoningIndex: -1, toolIndex: -1}
+			reasoningIndex: -1}
 		d.nextOutput++
 		d.blocks[index] = block
 		return &llm.Chunk{Events: []llm.StreamEvent{{Kind: llm.StreamEventToolCallStart, Index: block.output, ToolCallID: block.id, ToolName: block.name}}}, nil
@@ -170,7 +170,7 @@ func (d *decoder) consume(event types.ConverseStreamOutput) (*llm.Chunk, error) 
 		d.stopped, d.finish = true, finish
 		return nil, nil
 	case *types.ConverseStreamOutputMemberMetadata:
-		if d.usage != nil {
+		if d.usageSeen {
 			return nil, malformed(d.op, "event stream contains repeated usage metadata")
 		}
 		usage, err := usageFromSDK(value.Value.Usage)
@@ -178,6 +178,7 @@ func (d *decoder) consume(event types.ConverseStreamOutput) (*llm.Chunk, error) 
 			return nil, malformed(d.op, "usage: %v", err)
 		}
 		d.usage = usage
+		d.usageSeen = value.Value.Usage != nil
 		return nil, nil
 	default:
 		return nil, malformed(d.op, "event stream contains unsupported event %T", event)
@@ -194,7 +195,7 @@ func (d *decoder) delta(event types.ContentBlockDeltaEvent) (*llm.Chunk, error) 
 	switch value := event.Delta.(type) {
 	case *types.ContentBlockDeltaMemberText:
 		if block == nil {
-			block = &blockState{kind: blockText, output: d.nextOutput, reasoningIndex: -1, toolIndex: -1}
+			block = &blockState{kind: blockText, output: d.nextOutput, reasoningIndex: -1}
 			d.nextOutput++
 			d.blocks[index] = block
 			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextStart, Index: block.output})
@@ -222,7 +223,7 @@ func (d *decoder) delta(event types.ContentBlockDeltaEvent) (*llm.Chunk, error) 
 			Delta: *value.Value.Input, ToolCallID: block.id, ToolName: block.name}}
 	case *types.ContentBlockDeltaMemberReasoningContent:
 		if block == nil {
-			block = &blockState{kind: blockReasoning, output: d.nextOutput, reasoningIndex: -1, toolIndex: -1}
+			block = &blockState{kind: blockReasoning, output: d.nextOutput, reasoningIndex: -1}
 			d.nextOutput++
 			d.blocks[index] = block
 			chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventReasoningStart, Index: block.output})
@@ -268,7 +269,10 @@ func (d *decoder) stopBlock(event types.ContentBlockStopEvent) (*llm.Chunk, erro
 		chunk.Events = []llm.StreamEvent{{Kind: llm.StreamEventReasoningEnd, Index: block.output, Content: block.text.String()}}
 	case blockTool:
 		arguments := json.RawMessage(block.arguments.String())
-		if len(arguments) == 0 || !jsontext.Value(arguments).IsValid() {
+		if len(arguments) == 0 {
+			arguments = json.RawMessage(`{}`)
+		}
+		if !jsontext.Value(arguments).IsValid() {
 			return nil, malformed(d.op, "tool call %d arguments are incomplete JSON", block.output)
 		}
 		if block.id == "" || block.name == "" {
@@ -281,12 +285,10 @@ func (d *decoder) stopBlock(event types.ContentBlockStopEvent) (*llm.Chunk, erro
 			return nil, malformed(d.op, "tool call %d repeats ID %q", block.output, block.id)
 		}
 		d.seenIDs[block.id] = struct{}{}
-		block.toolIndex = d.toolCount
-		d.toolCount++
-		call := llm.ToolCall{ID: block.id, Name: block.name, Arguments: append(json.RawMessage(nil), arguments...)}
-		chunk.ToolCalls = []llm.ToolCall{call}
-		chunk.Events = []llm.StreamEvent{{Kind: llm.StreamEventToolCallEnd, Index: block.output,
-			ToolCallID: block.id, ToolName: block.name, ToolCall: &call}}
+		// The message can still be filtered, and an empty argument buffer can
+		// mean truncation. Do not commit an executable call before messageStop.
+		block.call = &llm.ToolCall{ID: block.id, Name: block.name, Arguments: append(json.RawMessage(nil), arguments...)}
+		return nil, nil
 	}
 	return chunk, nil
 }
@@ -303,13 +305,11 @@ func (d *decoder) final() (llm.Chunk, error) {
 	if !d.started || !d.stopped {
 		return llm.Chunk{}, malformed(d.op, "event stream ended before message start and stop")
 	}
+	filtered := d.finish == llm.FinishReasonContentFilter
 	for index, block := range d.blocks {
-		if !block.stopped {
+		if !block.stopped && (!filtered || block.kind != blockText && block.kind != blockTool) {
 			return llm.Chunk{}, malformed(d.op, "event stream ended before content block %d stopped", index)
 		}
-	}
-	if d.finish == llm.FinishReasonToolCall && d.toolCount == 0 || d.finish != llm.FinishReasonToolCall && d.toolCount != 0 {
-		return llm.Chunk{}, malformed(d.op, "finish reason is inconsistent with streamed tool calls")
 	}
 	blocks := make([]*blockState, 0, len(d.blocks))
 	for _, block := range d.blocks {
@@ -317,24 +317,42 @@ func (d *decoder) final() (llm.Chunk, error) {
 	}
 	slices.SortFunc(blocks, func(left, right *blockState) int { return left.output - right.output })
 	var order []orderData
+	chunk := llm.Chunk{Model: d.model, FinishReason: d.finish, Usage: d.usage}
 	for _, block := range blocks {
 		switch block.kind {
 		case blockText:
+			if !block.stopped {
+				chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventTextEnd, Index: block.output, Content: block.text.String()})
+			}
 			for _, index := range block.contentIndices {
 				order = append(order, orderData{Kind: "content", Index: index})
 			}
 		case blockReasoning:
 			order = append(order, orderData{Kind: "reasoning", Index: block.reasoningIndex})
 		case blockTool:
-			order = append(order, orderData{Kind: "tool_call", Index: block.toolIndex})
+			event := llm.StreamEvent{Kind: llm.StreamEventToolCallEnd, Index: block.output, ToolCallID: block.id, ToolName: block.name}
+			if d.finish == llm.FinishReasonToolCall {
+				order = append(order, orderData{Kind: "tool_call", Index: len(chunk.ToolCalls)})
+				chunk.ToolCalls = append(chunk.ToolCalls, *block.call)
+				call := *block.call
+				call.Arguments = append(json.RawMessage(nil), call.Arguments...)
+				event.ToolCall = &call
+			} else if !filtered && (d.finish != llm.FinishReasonLength || block.arguments.Len() != 0) {
+				return llm.Chunk{}, malformed(d.op, "finish reason is inconsistent with streamed tool calls")
+			}
+			chunk.Events = append(chunk.Events, event)
 		}
+	}
+	if d.finish == llm.FinishReasonToolCall && len(chunk.ToolCalls) == 0 {
+		return llm.Chunk{}, malformed(d.op, "finish reason is inconsistent with streamed tool calls")
 	}
 	providerData, err := marshalMessageData(d.model, d.reasoning, order)
 	if err != nil {
 		return llm.Chunk{}, malformed(d.op, "encode reasoning replay: %v", err)
 	}
-	return llm.Chunk{Model: d.model, FinishReason: d.finish, Usage: d.usage, ProviderData: providerData,
-		Events: []llm.StreamEvent{{Kind: llm.StreamEventDone, FinishReason: d.finish}}}, nil
+	chunk.ProviderData = providerData
+	chunk.Events = append(chunk.Events, llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: d.finish})
+	return chunk, nil
 }
 
 func stopReason(op string, reason types.StopReason) (llm.FinishReason, error) {
@@ -345,6 +363,8 @@ func stopReason(op string, reason types.StopReason) (llm.FinishReason, error) {
 		return llm.FinishReasonLength, nil
 	case types.StopReasonToolUse:
 		return llm.FinishReasonToolCall, nil
+	case types.StopReasonContentFiltered, types.StopReasonGuardrailIntervened:
+		return llm.FinishReasonContentFilter, nil
 	default:
 		return "", &llm.Error{Kind: llm.KindProvider, Op: op, Provider: defaultProvider, Err: fmt.Errorf("bedrock stopped with reason %q", reason)}
 	}
@@ -361,12 +381,17 @@ func usageFromSDK(usage *types.TokenUsage) (*llm.Usage, error) {
 		}
 	}
 	result := &llm.Usage{InputTokens: intValue(usage.InputTokens), OutputTokens: intValue(usage.OutputTokens),
-		CacheReadTokens: intValue(usage.CacheReadInputTokens), CacheWriteTokens: intValue(usage.CacheWriteInputTokens), TotalTokens: intValue(usage.TotalTokens)}
-	if result.TotalTokens == 0 {
-		result.TotalTokens = result.InputTokens + result.OutputTokens + result.CacheReadTokens + result.CacheWriteTokens
+		CacheReadTokens: intValue(usage.CacheReadInputTokens), CacheWriteTokens: intValue(usage.CacheWriteInputTokens)}
+	// Converse inputTokens excludes cache reads and writes. An unexplained
+	// nonzero total makes the breakdown unsuitable for accounting.
+	for _, count := range []int{result.InputTokens, result.OutputTokens, result.CacheReadTokens, result.CacheWriteTokens} {
+		if count > int(^uint(0)>>1)-result.TotalTokens {
+			return nil, errors.New("total token count overflows int")
+		}
+		result.TotalTokens += count
 	}
-	if result.TotalTokens < result.InputTokens+result.OutputTokens+result.CacheReadTokens+result.CacheWriteTokens {
-		return nil, errors.New("total token count is smaller than its components")
+	if total := intValue(usage.TotalTokens); total != 0 && total != result.TotalTokens {
+		return nil, nil
 	}
 	return result, nil
 }

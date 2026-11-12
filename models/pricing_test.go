@@ -2,12 +2,22 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"sync"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/bedrock"
+	"github.com/XiaoConstantine/llm-go/mistral"
+	"github.com/XiaoConstantine/llm-go/openai"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
 
 func TestPricedGeneratorPricesGenerateAndStreamUsage(t *testing.T) {
@@ -57,46 +67,209 @@ func TestPricedGeneratorPricesGenerateAndStreamUsage(t *testing.T) {
 	}
 }
 
-func TestPricedStreamPricingErrorAndCloseFirstTerminalWins(t *testing.T) {
-	generator := &pricedGenerator{info: llm.ModelInfo{Provider: "provider"}, cost: &llm.ModelCost{Input: 1}}
-	invalid := llm.Chunk{Usage: &llm.Usage{InputTokens: 1, TotalTokens: 2}}
-
-	t.Run("pricing error first", func(t *testing.T) {
-		underlying := &pricingStreamStub{chunks: []llm.Chunk{invalid}}
-		stream := &pricedStream{Stream: underlying, generator: generator}
-		_, first := stream.Recv()
-		if first == nil || first == io.EOF {
-			t.Fatalf("first Recv() error = %v", first)
-		}
-		if err := stream.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-		_, second := stream.Recv()
-		if second != first {
-			t.Fatalf("second Recv() error = %v, want identical %v", second, first)
-		}
-	})
-
-	t.Run("close first", func(t *testing.T) {
-		underlying := newBlockingPricingStream(invalid)
-		stream := &pricedStream{Stream: underlying, generator: generator}
-		result := make(chan error, 1)
-		go func() {
-			_, err := stream.Recv()
-			result <- err
-		}()
-		<-underlying.entered
-		if err := stream.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-		if err := <-result; err != io.EOF {
-			t.Fatalf("concurrent Recv() error = %v, want EOF", err)
-		}
-		if _, err := stream.Recv(); err != io.EOF {
-			t.Fatalf("later Recv() error = %v, want EOF", err)
-		}
-	})
+func TestUnpriceableOutputIsPreserved(t *testing.T) {
+	usage := llm.Usage{InputTokens: 2_000_000, OutputTokens: 3_000_000, TotalTokens: 5_000_000}
+	base := &pricingGeneratorStub{
+		response: &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.Part{{Text: "answer"}}}, FinishReason: llm.FinishReasonStop, Usage: &usage},
+		chunks: []llm.Chunk{
+			{Content: []llm.Part{{Text: "answer"}}, Usage: &usage},
+			{FinishReason: llm.FinishReasonStop},
+		},
+	}
+	// The table is valid, but multiplying its finite rate by this usage overflows.
+	generator := withPricing(base, llm.ModelInfo{Cost: &llm.ModelCost{Input: math.MaxFloat64, Output: 2}})
+	for _, mode := range []string{"generate", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			var response *llm.Response
+			var err error
+			if mode == "generate" {
+				response, err = generator.Generate(context.Background(), llm.Request{})
+			} else {
+				stream, streamErr := generator.Stream(context.Background(), llm.Request{})
+				if streamErr != nil {
+					t.Fatal(streamErr)
+				}
+				response, err = llm.Collect(stream, nil)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Text() != "answer" || response.FinishReason != llm.FinishReasonStop || response.Usage == nil || *response.Usage != usage {
+				t.Fatalf("response = %#v, usage = %#v", response, response.Usage)
+			}
+		})
+	}
 }
+
+func TestPricingPreservesCollectorValidation(t *testing.T) {
+	usage := llm.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 99}
+	base := &pricingGeneratorStub{
+		response: &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.Part{{Text: "answer"}}}, FinishReason: llm.FinishReasonStop, Usage: &usage},
+		chunks: []llm.Chunk{
+			{Content: []llm.Part{{Text: "answer"}}},
+			{FinishReason: llm.FinishReasonStop, Usage: &usage},
+		},
+	}
+	generator := withPricing(base, llm.ModelInfo{Cost: &llm.ModelCost{Input: 1, Output: 2}})
+	response, err := generator.Generate(context.Background(), llm.Request{})
+	if err != nil || response == nil || response.Text() != "answer" || response.Usage == nil || *response.Usage != usage {
+		t.Fatalf("Generate() = (%#v, %v), want original usage with nil cost", response, err)
+	}
+	stream, err := generator.Stream(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = llm.Collect(stream, nil)
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindMalformedResponse || modelErr.Op != "collect" || response.Text() != "answer" {
+		t.Fatalf("Collect() = (%#v, %v), want collector rejection with prior content", response, err)
+	}
+}
+
+func TestPricedAdaptersHandleUsageTotals(t *testing.T) {
+	for _, provider := range []string{"bedrock", "mistral", "openai"} {
+		for _, test := range []struct {
+			name        string
+			total       *int32
+			onlyTotal   bool
+			wantNoUsage bool
+		}{
+			{name: "missing"},
+			{name: "null"},
+			{name: "zero", total: aws.Int32(0)},
+			{name: "equal", total: aws.Int32(18)},
+			{name: "below", total: aws.Int32(1), wantNoUsage: true},
+			{name: "above", total: aws.Int32(99), wantNoUsage: true},
+			{name: "only total", total: aws.Int32(50), onlyTotal: true, wantNoUsage: true},
+			{name: "negative", total: aws.Int32(-1)},
+		} {
+			t.Run(provider+"/"+test.name, func(t *testing.T) {
+				caps := []llm.Capability{llm.CapabilityStreaming}
+				var adapter llm.Generator
+				var err error
+				wantUsage := llm.Usage{InputTokens: 6, OutputTokens: 7, CacheReadTokens: 3, CacheWriteTokens: 2, TotalTokens: 18}
+				wantCost := 0.000044
+				if provider == "bedrock" {
+					usage := &types.TokenUsage{InputTokens: aws.Int32(6), OutputTokens: aws.Int32(7), CacheReadInputTokens: aws.Int32(3), CacheWriteInputTokens: aws.Int32(2)}
+					if test.onlyTotal {
+						usage = &types.TokenUsage{}
+					}
+					usage.TotalTokens = test.total
+					adapter, err = bedrock.New(bedrock.Config{Model: "model", Capabilities: caps, Runtime: pricingBedrockRuntime{usage: usage}})
+				} else {
+					if provider == "mistral" {
+						wantUsage = llm.Usage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}
+						wantCost = 0.000043
+					}
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						var request struct{ Stream bool }
+						if decodeErr := json.NewDecoder(r.Body).Decode(&request); decodeErr != nil {
+							t.Errorf("decode request: %v", decodeErr)
+							return
+						}
+						usage := `{"prompt_tokens":11,"completion_tokens":7`
+						if test.onlyTotal {
+							usage = `{`
+						}
+						if test.total != nil {
+							if !test.onlyTotal {
+								usage += `,`
+							}
+							usage += fmt.Sprintf(`"total_tokens":%d`, *test.total)
+						} else if test.name == "null" {
+							usage += `,"total_tokens":null`
+						}
+						if provider == "openai" && !test.onlyTotal {
+							usage += `,"prompt_tokens_details":{"cached_tokens":3,"cache_write_tokens":2}`
+						}
+						usage += `}`
+						if request.Stream {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = fmt.Fprintf(w, "data: "+`{"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}]}`+"\n\ndata: "+`{"choices":[],"usage":%s}`+"\n\ndata: [DONE]\n\n", usage)
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = fmt.Fprintf(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":%s}`, usage)
+						}
+					}))
+					defer server.Close()
+					if provider == "mistral" {
+						adapter, err = mistral.New(mistral.Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(), Capabilities: caps})
+					} else {
+						adapter, err = openai.New(openai.Config{Model: "model", BaseURL: server.URL, HTTPClient: server.Client(), Capabilities: caps})
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				info := adapter.Info()
+				info.Cost = &llm.ModelCost{Input: 2, Output: 3, CacheRead: 1, CacheWrite: 4}
+				generator := withPricing(adapter, info)
+				request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hello"}}}}}
+				for _, mode := range []string{"generate", "stream"} {
+					t.Run(mode, func(t *testing.T) {
+						var response *llm.Response
+						if mode == "generate" {
+							response, err = generator.Generate(context.Background(), request)
+						} else {
+							stream, streamErr := generator.Stream(context.Background(), request)
+							if streamErr != nil {
+								t.Fatal(streamErr)
+							}
+							response, err = llm.Collect(stream, nil)
+						}
+						if test.total != nil && *test.total < 0 {
+							var modelErr *llm.Error
+							if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindMalformedResponse {
+								t.Fatalf("error = %v, want malformed response", err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if response.Text() != "answer" || response.FinishReason != llm.FinishReasonStop {
+							t.Fatalf("response = %#v", response)
+						}
+						if test.wantNoUsage {
+							if response.Usage != nil {
+								t.Fatalf("usage = %#v, want nil for inconsistent accounting", response.Usage)
+							}
+							return
+						}
+						if response.Usage == nil || response.Usage.Cost == nil {
+							t.Fatalf("usage = %#v, want priced usage", response.Usage)
+						}
+						usage := *response.Usage
+						cost := usage.Cost.Total
+						usage.Cost = nil
+						if usage != wantUsage || math.Abs(cost-wantCost) > 1e-15 {
+							t.Fatalf("usage = %#v, cost = %g; want %#v, %g", usage, cost, wantUsage, wantCost)
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+type pricingBedrockRuntime struct{ usage *types.TokenUsage }
+
+func (r pricingBedrockRuntime) ConverseStream(context.Context, *bedrockruntime.ConverseStreamInput) (bedrock.EventStream, error) {
+	events := make(pricingBedrockEvents, 5)
+	events <- &types.ConverseStreamOutputMemberMessageStart{Value: types.MessageStartEvent{Role: types.ConversationRoleAssistant}}
+	events <- &types.ConverseStreamOutputMemberContentBlockDelta{Value: types.ContentBlockDeltaEvent{ContentBlockIndex: aws.Int32(0), Delta: &types.ContentBlockDeltaMemberText{Value: "answer"}}}
+	events <- &types.ConverseStreamOutputMemberContentBlockStop{Value: types.ContentBlockStopEvent{ContentBlockIndex: aws.Int32(0)}}
+	events <- &types.ConverseStreamOutputMemberMessageStop{Value: types.MessageStopEvent{StopReason: types.StopReasonEndTurn}}
+	events <- &types.ConverseStreamOutputMemberMetadata{Value: types.ConverseStreamMetadataEvent{Usage: r.usage}}
+	close(events)
+	return events, nil
+}
+
+type pricingBedrockEvents chan types.ConverseStreamOutput
+
+func (s pricingBedrockEvents) Events() <-chan types.ConverseStreamOutput { return s }
+func (pricingBedrockEvents) Err() error                                  { return nil }
+func (pricingBedrockEvents) Close() error                                { return nil }
 
 func TestPricedGeneratorInfoOwnsPricing(t *testing.T) {
 	cost := llm.ModelCost{Input: 1, Tiers: []llm.ModelCostTier{{InputTokensAbove: 100, Input: 2}}}
@@ -143,8 +316,13 @@ func TestPricedGeneratorPreservesBackgroundCapability(t *testing.T) {
 	base.result = &llm.BackgroundResult{Status: llm.BackgroundCompleted,
 		Response: &llm.Response{Usage: &llm.Usage{InputTokens: 2, TotalTokens: 1}}}
 	result, err = background.FetchBackground(context.Background(), llm.BackgroundHandle{})
-	if result == nil || err == nil {
-		t.Fatalf("FetchBackground() = (%#v, %v), want observed result and pricing error", result, err)
+	if result == nil || err != nil || result.Response.Usage.Cost != nil || result.Response.Usage.TotalTokens != 1 {
+		t.Fatalf("FetchBackground() = (%#v, %v), want observed result without cost", result, err)
+	}
+	base.err = providerErr
+	result, err = background.FetchBackground(context.Background(), llm.BackgroundHandle{})
+	if result == nil || err != providerErr || result.Response.Usage.Cost != nil {
+		t.Fatalf("FetchBackground() = (%#v, %v), want original provider error", result, err)
 	}
 }
 
@@ -217,26 +395,3 @@ func (s *pricingStreamStub) Recv() (llm.Chunk, error) {
 	return chunk, nil
 }
 func (*pricingStreamStub) Close() error { return nil }
-
-type blockingPricingStream struct {
-	chunk     llm.Chunk
-	entered   chan struct{}
-	release   chan struct{}
-	enterOnce sync.Once
-	closeOnce sync.Once
-}
-
-func newBlockingPricingStream(chunk llm.Chunk) *blockingPricingStream {
-	return &blockingPricingStream{chunk: chunk, entered: make(chan struct{}), release: make(chan struct{})}
-}
-
-func (s *blockingPricingStream) Recv() (llm.Chunk, error) {
-	s.enterOnce.Do(func() { close(s.entered) })
-	<-s.release
-	return s.chunk, nil
-}
-
-func (s *blockingPricingStream) Close() error {
-	s.closeOnce.Do(func() { close(s.release) })
-	return nil
-}

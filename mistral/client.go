@@ -1,5 +1,10 @@
 // Package mistral implements Mistral's Conversations-compatible streaming chat
 // API with llm-go's neutral model contracts.
+// Missing tool call IDs are synthesized without colliding with history or
+// provider-supplied IDs. Empty argument strings and missing arguments keys are
+// represented as {}. Missing, null, or zero usage totals are derived from prompt
+// and completion counts. A nonzero total that disagrees with those categories
+// leaves Usage nil without discarding the response content.
 package mistral
 
 import (

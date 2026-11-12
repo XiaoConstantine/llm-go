@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1166,6 +1167,38 @@ func TestStreamBoundsBufferedOutput(t *testing.T) {
 				t.Fatalf("consume() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestStreamPromptAnnotations(t *testing.T) {
+	for _, field := range []string{"prompt_filter_results", "prompt_annotations"} {
+		for _, annotations := range []string{`[{"prompt_index":0}]`, `{"prompt_index":0}`, `"annotation"`, `null`} {
+			for _, withLeading := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/leading=%t", field, annotations, withLeading), func(t *testing.T) {
+					body := ""
+					if withLeading {
+						body = `data: {"id":"","model":"","choices":[],"usage":null,"` + field + `":` + annotations + "}\n\n"
+					}
+					body += `data: {"id":"chat","model":"model","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}],"` + field + `":` + annotations + "}\n\ndata: [DONE]\n\n"
+					client := newStaticStreamClient(t, []llm.Capability{llm.CapabilityStreaming}, http.StatusOK, "text/event-stream", body)
+					stream, err := client.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					response, err := llm.CollectStructural(stream)
+					if withLeading && annotations == `null` {
+						requireModelError(t, err, llm.KindMalformedResponse, "stream")
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if response.Text() != "answer" || response.ID != "chat" || response.FinishReason != llm.FinishReasonStop || response.Usage != nil {
+						t.Fatalf("response = %#v", response)
+					}
+				})
+			}
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -123,6 +124,198 @@ func TestStreamFragmentedToolCallWithoutRepeatedID(t *testing.T) {
 	call := response.Message.ToolCalls[0]
 	if call.ID != "abc123XYZ" || call.Name != "read" || string(call.Arguments) != `{"path":"file"}` {
 		t.Fatalf("call = %#v", call)
+	}
+}
+
+func TestStreamDiscardedUsageDoesNotEmitEmptyChunks(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		metadata   string
+		usageFirst bool
+		repeated   bool
+	}{
+		{name: "discarded usage"},
+		{name: "response ID", metadata: `,"id":"resp"`},
+		{name: "model", metadata: `,"model":"reported-model"`},
+		{name: "start event", usageFirst: true},
+		{name: "repeated usage", repeated: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			usage := `{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":99}` + test.metadata + `}`
+			text := `{"choices":[{"index":0,"delta":{"content":"answer"}}]}`
+			events := []string{text, usage}
+			if test.usageFirst {
+				events = []string{usage, text}
+			}
+			if test.repeated {
+				events = append(events, usage)
+			}
+			events = append(events, `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, "[DONE]")
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				writeSSE(writer, events...)
+			}))
+			defer server.Close()
+			client := mustClient(t, Config{Model: "model", APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client(),
+				Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+			stream, err := client.Stream(context.Background(), textRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			var content strings.Builder
+			var finish llm.FinishReason
+			starts, metadataChunks := 0, 0
+			for {
+				chunk, recvErr := stream.Recv()
+				if recvErr != nil {
+					if test.repeated {
+						var modelErr *llm.Error
+						if !errors.As(recvErr, &modelErr) || modelErr.Kind != llm.KindMalformedResponse || !strings.Contains(recvErr.Error(), "repeated usage") {
+							t.Fatalf("Recv() = %v, want repeated usage error", recvErr)
+						}
+					} else if !errors.Is(recvErr, io.EOF) {
+						t.Fatal(recvErr)
+					}
+					break
+				}
+				if chunk.ID == "" && chunk.Model == "" && len(chunk.Content) == 0 && len(chunk.ToolCalls) == 0 &&
+					chunk.ReasoningSummary == "" && len(chunk.ProviderData) == 0 && chunk.FinishReason == "" && chunk.Usage == nil && len(chunk.Events) == 0 {
+					t.Fatal("stream emitted an empty chunk")
+				}
+				if chunk.Usage != nil {
+					t.Fatalf("usage = %#v, want nil", chunk.Usage)
+				}
+				if (chunk.ID == "resp" || chunk.Model == "reported-model") && len(chunk.Content) == 0 && len(chunk.Events) == 0 && chunk.FinishReason == "" {
+					metadataChunks++
+				}
+				for _, part := range chunk.Content {
+					content.WriteString(part.Text)
+				}
+				for _, event := range chunk.Events {
+					if event.Kind == llm.StreamEventStart {
+						starts++
+					}
+				}
+				if chunk.FinishReason != "" {
+					finish = chunk.FinishReason
+				}
+			}
+			if content.String() != "answer" || starts != 1 || !test.repeated && finish != llm.FinishReasonStop {
+				t.Fatalf("text = %q, starts = %d, finish = %q", content.String(), starts, finish)
+			}
+			if test.metadata != "" && metadataChunks != 1 {
+				t.Fatalf("metadata-only chunks = %d, want 1", metadataChunks)
+			}
+		})
+	}
+}
+
+func TestIDlessToolCallsAcrossTurns(t *testing.T) {
+	for _, test := range []struct {
+		mode       string
+		providerID bool
+	}{
+		{"generate", false}, {"stream", false},
+		{"generate", true}, {"stream", true},
+	} {
+		t.Run(fmt.Sprintf("%s/providerID=%t", test.mode, test.providerID), func(t *testing.T) {
+			calls := `{"index":0,"function":{"name":"read","arguments":"{}"}}`
+			wantCalls := 1
+			if test.providerID {
+				calls += `,{"index":1,"id":"toolcall0","function":{"name":"read","arguments":"{}"}}`
+				wantCalls++
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				writeSSE(writer, `{"choices":[{"index":0,"delta":{"tool_calls":[`+calls+`]},"finish_reason":"tool_calls"}]}`, "[DONE]")
+			}))
+			defer server.Close()
+			client := mustClient(t, Config{Model: "model", APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client(),
+				Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}})
+			request := textRequest()
+			request.Tools = []llm.Tool{{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+			seen := make(map[string]bool)
+			for turn := range 3 {
+				// Only retain the generated ID in history; the explicit ID in the
+				// same response also must not collide with the synthesized one.
+				var response *llm.Response
+				var err error
+				if test.mode == "generate" {
+					response, err = client.Generate(context.Background(), request)
+				} else {
+					stream, streamErr := client.Stream(context.Background(), request)
+					if streamErr != nil {
+						t.Fatal(streamErr)
+					}
+					response, err = llm.CollectStructural(stream)
+				}
+				if err != nil {
+					t.Fatalf("turn %d: %v", turn, err)
+				}
+				if len(response.Message.ToolCalls) != wantCalls {
+					t.Fatalf("calls = %#v", response.Message.ToolCalls)
+				}
+				call := response.Message.ToolCalls[0]
+				if seen[call.ID] || test.providerID && call.ID == "toolcall0" || !regexp.MustCompile(`^[A-Za-z0-9]{9}$`).MatchString(call.ID) {
+					t.Fatalf("turn %d: invalid or repeated ID %q", turn, call.ID)
+				}
+				seen[call.ID] = true
+				request.Messages = append(request.Messages,
+					llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}},
+					llm.Message{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{CallID: call.ID, Name: call.Name, Content: []llm.Part{{Text: "ok"}}}}})
+			}
+		})
+	}
+}
+
+func TestEmptyToolArguments(t *testing.T) {
+	for _, test := range []struct {
+		name, arguments string
+		wantError       bool
+	}{
+		{"missing", "", false},
+		{"empty", `,"arguments":""`, false},
+		{"object", `,"arguments":"{}"`, false},
+		{"truncated", `,"arguments":"{\"q\":"`, true},
+	} {
+		for _, mode := range []string{"generate", "stream"} {
+			t.Run(test.name+"/"+mode, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					writer.Header().Set("Content-Type", "text/event-stream")
+					writeSSE(writer, `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"abc123XYZ","function":{"name":"read"`+test.arguments+`}}]},"finish_reason":"tool_calls"}]}`, "[DONE]")
+				}))
+				defer server.Close()
+				client := mustClient(t, Config{Model: "model", APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client(),
+					Capabilities: []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools}})
+				request := textRequest()
+				request.Tools = []llm.Tool{{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+				var response *llm.Response
+				var err error
+				if mode == "generate" {
+					response, err = client.Generate(context.Background(), request)
+				} else {
+					stream, streamErr := client.Stream(context.Background(), request)
+					if streamErr != nil {
+						t.Fatal(streamErr)
+					}
+					response, err = llm.CollectStructural(stream)
+				}
+				if test.wantError {
+					var modelErr *llm.Error
+					if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindMalformedResponse {
+						t.Fatalf("error = %v, want malformed response", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.FinishReason != llm.FinishReasonToolCall || len(response.Message.ToolCalls) != 1 || string(response.Message.ToolCalls[0].Arguments) != "{}" {
+					t.Fatalf("response = %#v", response)
+				}
+			})
+		}
 	}
 }
 

@@ -273,16 +273,21 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) error {
 	if err != nil {
 		return malformedStream(d.op, "decode usage: %v", err)
 	}
-	if len(event.Choices) == 0 {
-		if usage == nil {
-			return malformedStream(d.op, "event contains neither a choice nor usage")
-		}
+	if event.Usage != nil {
 		if d.usageSeen {
 			return malformedStream(d.op, "event stream contains repeated usage")
 		}
 		d.usageSeen = true
+	}
+	if len(event.Choices) == 0 {
+		if event.Usage == nil {
+			return malformedStream(d.op, "event contains neither a choice nor usage")
+		}
 		chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(d.finished), Usage: usage}
 		d.start(&chunk)
+		if chunk.Usage == nil && chunk.ID == "" && chunk.Model == "" && len(chunk.Events) == 0 {
+			return nil
+		}
 		if !emit(chunk) {
 			return errEmitStopped
 		}
@@ -304,7 +309,7 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) error {
 	if choice.Delta.Role != nil && *choice.Delta.Role != string(llm.RoleAssistant) {
 		return malformedStream(d.op, "event delta role is %q, want assistant", *choice.Delta.Role)
 	}
-	chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(false)}
+	chunk := llm.Chunk{ID: d.id, Model: d.modelForChunk(false), Usage: usage}
 	d.start(&chunk)
 	items, err := contentItems(choice.Delta.Content)
 	if err != nil {
@@ -329,15 +334,9 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) error {
 		}
 	}
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
-		if err := d.finish(&chunk, *choice.FinishReason, usage); err != nil {
+		if err := d.finish(&chunk, *choice.FinishReason); err != nil {
 			return err
 		}
-	} else if usage != nil {
-		if d.usageSeen {
-			return malformedStream(d.op, "event stream contains repeated usage")
-		}
-		d.usageSeen = true
-		chunk.Usage = usage
 	}
 	if len(chunk.Content) != 0 || len(chunk.ToolCalls) != 0 || len(chunk.Events) != 0 || chunk.FinishReason != "" || chunk.Usage != nil || len(chunk.ProviderData) != 0 {
 		if !emit(chunk) {
@@ -514,7 +513,7 @@ func argumentFragment(raw json.RawMessage) (string, error) {
 	return string(trimmed), nil
 }
 
-func (d *streamDecoder) finish(chunk *llm.Chunk, providerReason string, usage *llm.Usage) error {
+func (d *streamDecoder) finish(chunk *llm.Chunk, providerReason string) error {
 	d.finishCurrent(chunk)
 	finish, err := finishReason(d.op, providerReason)
 	if err != nil {
@@ -528,13 +527,6 @@ func (d *streamDecoder) finish(chunk *llm.Chunk, providerReason string, usage *l
 	chunk.FinishReason = finish
 	chunk.ID = d.id
 	chunk.Model = d.modelForChunk(true)
-	if usage != nil {
-		if d.usageSeen {
-			return malformedStream(d.op, "event stream contains repeated usage")
-		}
-		d.usageSeen = true
-		chunk.Usage = usage
-	}
 	providerData, err := marshalMessageData(d.configuredModel, d.thinking)
 	if err != nil {
 		return malformedStream(d.op, "encode thinking replay: %v", err)
@@ -568,6 +560,17 @@ func (d *streamDecoder) completeToolCalls(finish llm.FinishReason) ([]llm.ToolCa
 	for index := range d.toolCalls {
 		maxIndex = max(maxIndex, index)
 	}
+	// Reserve historical and provider-supplied IDs before synthesizing any IDs.
+	// A fresh normalizer for each call would reuse toolcall0 on every turn.
+	normalizer := newToolCallIDNormalizer()
+	for id := range d.seenIDs {
+		normalizer.reverse[id] = id
+	}
+	for _, builder := range d.toolCalls {
+		if id := builder.id.String(); id != "" && id != "null" {
+			normalizer.reverse[id] = id
+		}
+	}
 	calls := make([]llm.ToolCall, maxIndex+1)
 	for index := range calls {
 		builder := d.toolCalls[index]
@@ -576,7 +579,7 @@ func (d *streamDecoder) completeToolCalls(finish llm.FinishReason) ([]llm.ToolCa
 		}
 		id := builder.id.String()
 		if id == "" || id == "null" {
-			id = newToolCallIDNormalizer().normalize(fmt.Sprintf("toolcall:%d", index))
+			id = normalizer.normalize(fmt.Sprintf("toolcall:%d", index))
 		}
 		if _, duplicate := d.seenIDs[id]; duplicate {
 			return nil, malformedStream(d.op, "tool call %d repeats ID %q", index, id)
@@ -593,7 +596,10 @@ func (d *streamDecoder) completeToolCalls(finish llm.FinishReason) ([]llm.ToolCa
 			return nil, malformedStream(d.op, "tool call %d names undeclared function %q", index, name)
 		}
 		arguments := json.RawMessage(builder.arguments.String())
-		if len(arguments) == 0 || !jsontext.Value(arguments).IsValid() {
+		if len(arguments) == 0 {
+			arguments = json.RawMessage(`{}`)
+		}
+		if !jsontext.Value(arguments).IsValid() {
 			return nil, malformedStream(d.op, "tool call %d arguments are not complete JSON", index)
 		}
 		calls[index] = llm.ToolCall{ID: id, Name: name, Arguments: append(json.RawMessage(nil), arguments...)}
@@ -627,12 +633,17 @@ func usageFromWire(wire *streamUsage) (*llm.Usage, error) {
 	if wire.CompletionTokens != nil {
 		output = *wire.CompletionTokens
 	}
-	total := input + output
-	if wire.TotalTokens != nil {
-		total = *wire.TotalTokens
-	}
-	if input < 0 || output < 0 || total < 0 || total < input+output {
+	if input < 0 || output < 0 || wire.TotalTokens != nil && *wire.TotalTokens < 0 {
 		return nil, errors.New("token counts are inconsistent")
+	}
+	if input > int(^uint(0)>>1)-output {
+		return nil, errors.New("total token count overflows int")
+	}
+	// A nonzero contradictory total may account for tokens that the exposed
+	// categories omit. Preserve output without publishing or pricing that usage.
+	total := input + output
+	if wire.TotalTokens != nil && *wire.TotalTokens != 0 && *wire.TotalTokens != total {
+		return nil, nil
 	}
 	return &llm.Usage{InputTokens: input, OutputTokens: output, TotalTokens: total}, nil
 }

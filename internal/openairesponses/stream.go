@@ -217,6 +217,7 @@ type streamState struct {
 	jsonContent   strings.Builder
 	jsonMode      bool
 	refusalSeen   bool
+	unreplayable  bool
 	stopped       bool
 	terminal      bool
 }
@@ -294,6 +295,13 @@ func (s *streamState) consume(event openairesponses.ResponseStreamEventUnion, em
 			if !emit(llm.Chunk{Events: events}) {
 				s.stopped = true
 			}
+		} else if identity, pending := s.pendingItems[index]; pending && identity.Type == "function_call" && !wasPending {
+			// A done-only incomplete call still needs a start before finish emits
+			// its non-executable end event.
+			events := append(s.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventToolCallStart, Index: index, ToolCallID: identity.CallID, ToolName: identity.Name})
+			if !emit(llm.Chunk{Events: events}) {
+				s.stopped = true
+			}
 		}
 	case "error":
 		return s.codec.eventError(s.op, raw)
@@ -331,6 +339,9 @@ func (s *streamState) partKey(event openairesponses.ResponseStreamEventUnion, ex
 	identity, exists := s.pendingItems[index]
 	if !exists || identity.Type != expectedType || identity.ID != event.ItemID {
 		return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event does not match pending output item %d", kind, index)
+	}
+	if _, done := s.outputItems[index]; done {
+		return responsePartKey{}, s.codec.malformedResponse(s.op, "%s event arrived after output item %d was done", kind, index)
 	}
 	var rawSubindex int64
 	if !summary {
@@ -451,6 +462,9 @@ func (s *streamState) consumeToolArgumentDelta(event openairesponses.ResponseStr
 	if !exists || identity.Type != "function_call" || identity.ID != event.ItemID {
 		return s.codec.malformedResponse(s.op, "function argument delta does not match pending call at output index %d", index)
 	}
+	if _, done := s.outputItems[index]; done {
+		return s.codec.malformedResponse(s.op, "function argument delta arrived after output item %d was done", index)
+	}
 	builder := s.toolArguments[index]
 	if builder == nil || s.toolArgsDone[index] {
 		return s.codec.malformedResponse(s.op, "function argument delta has no open call at output index %d", index)
@@ -482,6 +496,9 @@ func (s *streamState) consumeToolArgumentsDone(event openairesponses.ResponseStr
 	if !exists || identity.Type != "function_call" || identity.ID != event.ItemID || builder == nil || event.JSON.Name.Valid() && identity.Name != event.Name {
 		return s.codec.malformedResponse(s.op, "function argument completion does not match pending call at output index %d", index)
 	}
+	if _, done := s.outputItems[index]; done {
+		return s.codec.malformedResponse(s.op, "function argument completion arrived after output item %d was done", index)
+	}
 	if s.toolArgsDone[index] {
 		return s.codec.malformedResponse(s.op, "function argument completion was repeated at output index %d", index)
 	}
@@ -509,10 +526,25 @@ func (s *streamState) consumeOutputItem(event openairesponses.ResponseStreamEven
 	if err != nil {
 		return s.codec.malformedResponse(s.op, "decode output item %d identity: %v", index, err)
 	}
+	validatedType := identity.Type == "message" || identity.Type == "function_call" || identity.Type == "reasoning"
+	if event.Item.JSON.Status.Valid() && validatedType {
+		// The terminal response has not arrived yet. Allow incomplete statuses
+		// here, but retain the pending item so finish rejects a completed response
+		// and omits replay data and executable calls for an incomplete response.
+		if err := validateOutputItemStatus(openairesponses.ResponseStatusIncomplete, event.Item.Status); err != nil {
+			return s.codec.malformedResponse(s.op, "output item %d status: %v", index, err)
+		}
+	}
+	incomplete := event.Item.Status == "in_progress" || event.Item.Status == "incomplete"
+	s.unreplayable = s.unreplayable || incomplete
 	if pending, exists := s.pendingItems[index]; exists {
 		if !pending.matches(identity) {
 			return s.codec.malformedResponse(s.op, "output item %d changed identity before completion", index)
 		}
+	}
+	if incomplete && validatedType {
+		s.pendingItems[index] = identity
+	} else {
 		delete(s.pendingItems, index)
 	}
 	if previous, exists := s.outputItems[index]; exists {
@@ -540,7 +572,7 @@ func (s *streamState) consumeOutputItem(event openairesponses.ResponseStreamEven
 			s.refusalSeen = s.refusalSeen || validRefusalContent(content)
 		}
 	}
-	if identity.Type != "function_call" {
+	if identity.Type != "function_call" || incomplete {
 		return nil
 	}
 	if _, exists := s.toolCalls[index]; exists {
@@ -735,6 +767,10 @@ func (s *streamState) finish(response openairesponses.Response, reason llm.Finis
 		if err := s.backfillReasoning(response.Output); err != nil {
 			return s.codec.malformedResponse(s.op, "merge terminal response output: %v", err)
 		}
+	}
+	// Like FullResponse, opaque hosted-tool statuses affect replayability but
+	// do not impose the lifecycle rules of validated output item types.
+	if !hasPendingItems && !s.unreplayable {
 		var err error
 		providerData, err = s.codec.marshalProviderData(s.defaultModel, s.outputItems)
 		if err != nil {

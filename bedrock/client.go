@@ -1,4 +1,10 @@
 // Package bedrock implements Amazon Bedrock's ConverseStream API.
+// Filter and guardrail stops preserve text and usage with FinishReasonContentFilter,
+// close interrupted text and tool events, and omit executable tool calls.
+// Tool calls are committed only after a tool_use stop; empty arguments then
+// become {}. Missing, null, or zero usage totals are derived from input, output,
+// cache-read, and cache-write counts. A nonzero total that disagrees with those
+// categories leaves Usage nil without discarding the response content.
 package bedrock
 
 import (

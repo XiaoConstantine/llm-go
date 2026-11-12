@@ -20,4 +20,10 @@
 // and replaceable. Applications own browser, callback, and prompt UI. The
 // concrete provider packages remain available for protocol-specific
 // configuration that this package does not expose.
+//
+// Pricing is optional enrichment: for a priced model, non-nil Usage with nil
+// Cost means cost calculation was skipped. Invalid pricing tables are rejected
+// when configured. The pricing wrapper does not repair custom-generator usage:
+// Generate preserves inconsistent usage with nil Cost, while Stream followed by
+// llm.Collect still rejects that usage under the collector's strict contract.
 package models

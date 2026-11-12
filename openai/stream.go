@@ -37,6 +37,9 @@ type streamResponse struct {
 	Choices *[]streamChoice `json:"choices"`
 	Usage   *responseUsage  `json:"usage"`
 	Error   *APIError       `json:"error"`
+	// Azure may send prompt annotations before the first choice.
+	PromptFilterResults json.RawMessage `json:"prompt_filter_results"`
+	PromptAnnotations   json.RawMessage `json:"prompt_annotations"`
 }
 
 type streamChoice struct {
@@ -415,7 +418,11 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 	}
 	choices := *event.Choices
 	if len(choices) == 0 {
-		if usage == nil {
+		if event.Usage == nil {
+			if len(event.PromptFilterResults) != 0 && !bytes.Equal(bytes.TrimSpace(event.PromptFilterResults), []byte("null")) ||
+				len(event.PromptAnnotations) != 0 && !bytes.Equal(bytes.TrimSpace(event.PromptAnnotations), []byte("null")) {
+				return false, nil
+			}
 			return false, malformedStream("event contains neither a choice nor usage")
 		}
 		if !d.finished && d.supportsFinishReason {
@@ -538,7 +545,7 @@ func (d *streamDecoder) consume(data string, emit internalstream.Emit) (bool, er
 			return false, err
 		}
 	}
-	if usage != nil {
+	if event.Usage != nil {
 		if !hasFinish && d.supportsFinishReason {
 			return false, malformedStream("usage arrived before the finish reason")
 		}
