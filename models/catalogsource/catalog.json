@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 21,
+  "revision": 22,
   "models": [
     {
       "provider": "amazon-bedrock",
@@ -2000,6 +2000,32 @@
     },
     {
       "provider": "anthropic",
+      "id": "claude-fable-5-2",
+      "name": "Claude Fable 5.2",
+      "api": "anthropic-messages",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 8,
+        "output": 40,
+        "cache_read": 0.2,
+        "cache_write": 10
+      },
+      "compatibility": {
+        "anthropic": {
+          "adaptive_thinking": true,
+          "strict_tools": true
+        }
+      }
+    },
+    {
+      "provider": "anthropic",
       "id": "claude-haiku-4-5",
       "name": "Claude Haiku 4.5 (latest)",
       "api": "anthropic-messages",
@@ -2733,13 +2759,22 @@
         "vision",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 1048576,
       "max_output_tokens": 65536,
       "cost": {
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -2754,13 +2789,22 @@
         "vision",
         "json"
       ],
-      "context_window": 131072,
+      "context_window": 1048576,
       "max_output_tokens": 65536,
       "cost": {
         "input": 2,
         "output": 12,
         "cache_read": 0.2,
-        "cache_write": 0
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 200000,
+            "input": 4,
+            "output": 18,
+            "cache_read": 0.4,
+            "cache_write": 0
+          }
+        ]
       }
     },
     {
@@ -3136,6 +3180,28 @@
       "provider": "google",
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon",
+      "api": "gemini-generate-content",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision",
+        "audio"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 32768,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.1,
+        "cache_write": 0
+      }
+    },
+    {
+      "provider": "google",
+      "id": "gemini-4-carbon",
+      "name": "Gemini 4 Carbon",
       "api": "gemini-generate-content",
       "reasoning": true,
       "capabilities": [
