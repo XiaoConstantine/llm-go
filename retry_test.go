@@ -237,7 +237,9 @@ func TestRetryStreamProviderTerminalRacingCloseWins(t *testing.T) {
 	go func() { closeDone <- stream.Close() }()
 	<-underlying.closeStarted
 	close(underlying.releaseClose)
-	<-closeDone
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if err := <-recvDone; !errors.Is(err, providerErr) {
 		t.Fatalf("Recv() = %v", err)
 	}
