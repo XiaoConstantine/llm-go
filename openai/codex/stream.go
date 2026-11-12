@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
+	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
 	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaioption "github.com/openai/openai-go/v3/option"
@@ -232,70 +233,16 @@ func apiErrorEmpty(err *APIError) bool {
 }
 
 func classifyResponse(status int, apiErr *APIError) llm.ErrorKind {
-	switch status {
-	case http.StatusUnauthorized:
-		return llm.KindAuthentication
-	case http.StatusForbidden:
-		return llm.KindPermission
-	case http.StatusTooManyRequests:
-		return llm.KindRateLimit
-	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
-		if isContextLimitError(apiErr) {
-			return llm.KindContextLimit
-		}
-		return llm.KindInvalidRequest
-	case http.StatusNotFound, http.StatusMethodNotAllowed:
-		return llm.KindInvalidRequest
-	default:
-		return llm.KindProvider
-	}
-}
-
-func isContextLimitError(apiErr *APIError) bool {
 	if apiErr == nil {
-		return false
+		return openaicommon.ClassifyStatus(status, "", "", "")
 	}
-	detail := strings.ToLower(apiErr.Type + " " + apiErr.Code + " " + apiErr.Message)
-	return strings.Contains(detail, "context_length_exceeded") ||
-		strings.Contains(detail, "maximum context length") ||
-		strings.Contains(detail, "context window")
+	return openaicommon.ClassifyStatus(status, apiErr.Type, apiErr.Code, apiErr.Message)
 }
 
 func retryableHint(value string) *bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "true":
-		value := true
-		return &value
-	case "false":
-		value := false
-		return &value
-	default:
-		return nil
-	}
+	return adapterutil.RetryableHint(value)
 }
 
 func retryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		const maxSeconds = int64(^uint64(0)>>1) / int64(time.Second)
-		if seconds > maxSeconds {
-			return time.Duration(^uint64(0) >> 1)
-		}
-		return time.Duration(seconds) * time.Second
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay <= 0 {
-		return 0
-	}
-	return delay
+	return adapterutil.RetryAfter(value)
 }

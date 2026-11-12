@@ -15,12 +15,13 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
+	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
 	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
@@ -74,6 +75,10 @@ type Options struct {
 
 // Client is an immutable OpenAI Responses client. It is safe for concurrent
 // use when its HTTP client is safe for concurrent use.
+// HTTP authentication and throttling statuses take precedence over context-limit
+// text. In-band errors match legacy substrings across type and code together:
+// context limit, authentication, permission, rate limit, then invalid request.
+// Unknown errors remain KindProvider.
 type Client struct {
 	provider                string
 	model                   string
@@ -631,37 +636,11 @@ func checkRequest(provider, op string, request llm.Request) error {
 }
 
 func checkToolHistory(provider, op string, messages []llm.Message) error {
-	pending := 0
-	for i, message := range messages {
-		if pending != 0 && message.Role != llm.RoleTool {
-			return requestError(provider, op, "messages[%d] must contain tool results for %d pending calls", i, pending)
-		}
-		switch message.Role {
-		case llm.RoleAssistant:
-			pending = len(message.ToolCalls)
-		case llm.RoleTool:
-			pending -= len(message.ToolResults)
-		}
-	}
-	if pending != 0 {
-		return requestError(provider, op, "messages end with %d pending tool calls", pending)
-	}
-	return nil
+	return openaicommon.CheckToolHistory(provider, op, messages)
 }
 
 func validFunctionName(name string) bool {
-	if len(name) == 0 || len(name) > 64 {
-		return false
-	}
-	for i := range len(name) {
-		character := name[i]
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
-			character >= '0' && character <= '9' || character == '_' || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return openaicommon.ValidFunctionName(name)
 }
 
 func supportsReasoning(model string) bool {
@@ -732,61 +711,15 @@ func (c *Client) classifySDKError(op string, err error) error {
 }
 
 func classifyStatus(status int, errorType, code, message string) llm.ErrorKind {
-	detail := strings.ToLower(errorType + " " + code + " " + message)
-	if strings.Contains(detail, "context_length_exceeded") || strings.Contains(detail, "maximum context length") || strings.Contains(detail, "context window") {
-		return llm.KindContextLimit
-	}
-	switch status {
-	case http.StatusUnauthorized:
-		return llm.KindAuthentication
-	case http.StatusForbidden:
-		return llm.KindPermission
-	case http.StatusTooManyRequests:
-		return llm.KindRateLimit
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
-		return llm.KindInvalidRequest
-	default:
-		return llm.KindProvider
-	}
+	return openaicommon.ClassifyStatus(status, errorType, code, message)
 }
 
 func retryableHint(value string) *bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "true":
-		value := true
-		return &value
-	case "false":
-		value := false
-		return &value
-	default:
-		return nil
-	}
+	return adapterutil.RetryableHint(value)
 }
 
 func retryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		const maxSeconds = int64(^uint64(0)>>1) / int64(time.Second)
-		if seconds > maxSeconds {
-			return time.Duration(^uint64(0) >> 1)
-		}
-		return time.Duration(seconds) * time.Second
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay <= 0 {
-		return 0
-	}
-	return delay
+	return adapterutil.RetryAfter(value)
 }
 
 func configError(provider, format string, args ...any) *llm.Error {

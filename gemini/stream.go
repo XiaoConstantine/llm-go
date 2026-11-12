@@ -27,13 +27,14 @@ func (c *Client) produceStream(
 		err = relabelProviderError(err, c.provider)
 	}()
 
+	ctx, metadata := withErrorMetadata(ctx)
 	accumulator := newStreamAccumulatorFor(c.provider, c.model, request)
 	for response, streamErr := range c.sdkClient.Models.GenerateContentStream(ctx, c.model, contents, generationConfig) {
 		if contextErr := contextErr(ctx); contextErr != nil {
 			return contextErr
 		}
 		if streamErr != nil {
-			return sdkError("stream", streamErr)
+			return metadata.sdkError("stream", streamErr)
 		}
 		chunk, err := accumulator.consume(response)
 		if err != nil {

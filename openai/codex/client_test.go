@@ -19,6 +19,15 @@ import (
 	llm "github.com/XiaoConstantine/llm-go"
 )
 
+const providerDataVersion = 1
+
+type providerDataEnvelope struct {
+	API     string           `json:"api"`
+	Version int              `json:"version"`
+	Model   string           `json:"model"`
+	Output  []jsontext.Value `json:"output"`
+}
+
 func TestNewValidatesConfig(t *testing.T) {
 	tests := []struct {
 		name   string

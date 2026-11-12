@@ -13,6 +13,9 @@ import (
 	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
+	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
+	internalresponses "github.com/XiaoConstantine/llm-go/internal/openairesponses"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"github.com/gorilla/websocket"
@@ -115,6 +118,9 @@ type Config struct {
 // configuration is immutable; WebSocket modes maintain an internal session
 // connection cache. The credential resolver and HTTP client must also be safe
 // for concurrent use.
+// In-band errors match legacy substrings across type and code together:
+// context limit, authentication, permission, rate limit, then invalid request.
+// Unknown errors remain KindProvider.
 type Client struct {
 	provider                string
 	model                   string
@@ -582,75 +588,19 @@ func checkRequest(op string, request llm.Request) error {
 }
 
 func checkToolHistory(op string, messages []llm.Message) error {
-	pending := 0
-	for i, message := range messages {
-		if pending != 0 && message.Role != llm.RoleTool {
-			return requestError(op, "messages[%d] must contain tool results for %d pending calls", i, pending)
-		}
-		switch message.Role {
-		case llm.RoleAssistant:
-			pending = len(message.ToolCalls)
-		case llm.RoleTool:
-			pending -= len(message.ToolResults)
-		}
-	}
-	if pending != 0 {
-		return requestError(op, "messages end with %d pending tool calls", pending)
-	}
-	return nil
+	return openaicommon.CheckToolHistory(defaultProvider, op, messages)
 }
 
 func validFunctionName(name string) bool {
-	if len(name) == 0 || len(name) > 64 {
-		return false
-	}
-	for i := range len(name) {
-		character := name[i]
-		if (character >= 'a' && character <= 'z') ||
-			(character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') || character == '_' || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return openaicommon.ValidFunctionName(name)
 }
 
 func mergeChunk(response *llm.Response, chunk llm.Chunk) {
-	if chunk.ID != "" {
-		response.ID = chunk.ID
-	}
-	if chunk.Model != "" {
-		response.Model = chunk.Model
-	}
-	response.Message.Content = append(response.Message.Content, chunk.Content...)
-	response.Message.ToolCalls = append(response.Message.ToolCalls, chunk.ToolCalls...)
-	response.ReasoningSummary += chunk.ReasoningSummary
-	if len(chunk.ProviderData) != 0 {
-		response.Message.ProviderData = append(response.Message.ProviderData[:0], chunk.ProviderData...)
-	}
-	if chunk.FinishReason != "" {
-		response.FinishReason = chunk.FinishReason
-	}
-	if chunk.Usage != nil {
-		usage := *chunk.Usage
-		response.Usage = &usage
-	}
+	internalresponses.MergeChunk(response, chunk)
 }
 
 func contextErr(ctx context.Context) error {
-	err := ctx.Err()
-	if err == nil {
-		return nil
-	}
-	cause := context.Cause(ctx)
-	if cause == nil || errors.Is(cause, err) {
-		if cause != nil {
-			return cause
-		}
-		return err
-	}
-	return errors.Join(err, cause)
+	return adapterutil.ContextError(ctx)
 }
 
 func relabelProviderError(err error, provider string) error {

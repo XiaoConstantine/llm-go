@@ -14,18 +14,10 @@ import (
 )
 
 const (
-	accountClaim        = "https://api.openai.com/auth"
-	providerDataAPI     = "openai-codex-responses"
-	providerDataVersion = 1
-	maxAudioInputBytes  = 50 << 20
+	accountClaim       = "https://api.openai.com/auth"
+	providerDataAPI    = "openai-codex-responses"
+	maxAudioInputBytes = 50 << 20
 )
-
-type providerDataEnvelope struct {
-	API     string           `json:"api"`
-	Version int              `json:"version"`
-	Model   string           `json:"model"`
-	Output  []jsontext.Value `json:"output"`
-}
 
 // AccountIDFromToken extracts the ChatGPT account identifier from an OpenAI ID
 // or access JWT without verifying its signature. The server verifies the token

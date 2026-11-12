@@ -13,18 +13,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"mime"
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	jsonv2 "encoding/json/v2"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 )
@@ -59,6 +58,9 @@ type Config struct {
 
 // Client is an immutable Mistral client. It is safe for concurrent use when
 // its configured HTTP client is safe for concurrent use.
+// content_filter maps to FinishReasonContentFilter, retaining text and usage.
+// Unknown finish reasons return KindUnsupported rather than a successful stop.
+// Context-limit message matching applies only to HTTP 400, 413, and 422.
 type Client struct {
 	provider     string
 	model        string
@@ -334,7 +336,9 @@ func responseError(op string, response *http.Response, body []byte, tooLarge boo
 	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
 		kind = llm.KindInvalidRequest
 	}
-	if strings.Contains(detail, "context length") || strings.Contains(detail, "too large for model") || strings.Contains(detail, "too many tokens") {
+	if (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusRequestEntityTooLarge ||
+		response.StatusCode == http.StatusUnprocessableEntity) && (strings.Contains(detail, "context length") ||
+		strings.Contains(detail, "too large for model") || strings.Contains(detail, "too many tokens")) {
 		kind = llm.KindContextLimit
 	}
 	return &llm.Error{Kind: kind, Op: op, Provider: defaultProvider, HTTPStatus: response.StatusCode,
@@ -354,63 +358,15 @@ func readLimited(reader io.Reader, limit int64) ([]byte, bool, error) {
 }
 
 func retryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds > 0 {
-			if seconds > math.MaxInt64/int64(time.Second) {
-				return time.Duration(math.MaxInt64)
-			}
-			return time.Duration(seconds) * time.Second
-		}
-		return 0
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay > 0 {
-		return delay
-	}
-	return 0
+	return adapterutil.RetryAfter(value)
 }
 
 func contextErr(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		cause := context.Cause(ctx)
-		if cause != nil && !errors.Is(cause, err) {
-			return errors.Join(err, cause)
-		}
-		if cause != nil {
-			return cause
-		}
-		return err
-	}
-	return nil
+	return adapterutil.ContextError(ctx)
 }
 
 func relabelProviderError(err error, provider string) error {
-	if err == nil || provider == defaultProvider {
-		return err
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		causes := joined.Unwrap()
-		relabeled := make([]error, len(causes))
-		for index, cause := range causes {
-			relabeled[index] = relabelProviderError(cause, provider)
-		}
-		return errors.Join(relabeled...)
-	}
-	providerErr, ok := err.(*llm.Error)
-	if !ok || providerErr.Provider != defaultProvider {
-		return err
-	}
-	clone := *providerErr
-	clone.Provider = provider
-	return &clone
+	return adapterutil.RelabelProviderError(err, defaultProvider, provider)
 }
 
 func configError(format string, args ...any) error {

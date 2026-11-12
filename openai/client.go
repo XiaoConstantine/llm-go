@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -18,6 +16,8 @@ import (
 	jsonv2 "encoding/json/v2"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
+	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	openaisdk "github.com/openai/openai-go/v3"
@@ -72,6 +72,8 @@ type Options struct {
 
 // Client is an immutable OpenAI-compatible client. It is safe for concurrent
 // use when its configured HTTP client is safe for concurrent use.
+// In-band authentication_error codes and types classify as KindAuthentication;
+// unknown codes without a more specific signal remain KindProvider.
 type Client struct {
 	provider                string
 	model                   string
@@ -527,100 +529,25 @@ func decodeAPIError(body []byte) *APIError {
 }
 
 func classifyResponse(status int, apiErr *APIError) llm.ErrorKind {
-	switch status {
-	case http.StatusUnauthorized:
-		return llm.KindAuthentication
-	case http.StatusForbidden:
-		return llm.KindPermission
-	case http.StatusTooManyRequests:
-		return llm.KindRateLimit
-	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
-		if isContextLimitError(apiErr) {
-			return llm.KindContextLimit
-		}
-		return llm.KindInvalidRequest
-	case http.StatusNotFound, http.StatusMethodNotAllowed:
-		return llm.KindInvalidRequest
-	default:
-		return llm.KindProvider
+	if apiErr == nil {
+		return openaicommon.ClassifyStatus(status, "", "", "")
 	}
+	return openaicommon.ClassifyStatus(status, apiErr.Type, apiErr.Code, apiErr.Message)
 }
 
 func classifyAPIError(apiErr *APIError) llm.ErrorKind {
 	if apiErr == nil {
 		return llm.KindProvider
 	}
-	if isContextLimitError(apiErr) {
-		return llm.KindContextLimit
-	}
-
-	switch strings.ToLower(strings.TrimSpace(apiErr.Code)) {
-	case "invalid_api_key":
-		return llm.KindAuthentication
-	case "insufficient_permissions":
-		return llm.KindPermission
-	case "rate_limit_exceeded", "insufficient_quota":
-		return llm.KindRateLimit
-	}
-	switch strings.ToLower(strings.TrimSpace(apiErr.Type)) {
-	case "authentication_error":
-		return llm.KindAuthentication
-	case "permission_error":
-		return llm.KindPermission
-	case "rate_limit_error":
-		return llm.KindRateLimit
-	case "invalid_request_error":
-		return llm.KindInvalidRequest
-	}
-	return llm.KindProvider
-}
-
-func isContextLimitError(apiErr *APIError) bool {
-	if apiErr == nil {
-		return false
-	}
-	detail := strings.ToLower(apiErr.Type + " " + apiErr.Code + " " + apiErr.Message)
-	return strings.Contains(detail, "context_length_exceeded") ||
-		strings.Contains(detail, "maximum context length") ||
-		strings.Contains(detail, "context window")
+	return openaicommon.ClassifyError(apiErr.Type, apiErr.Code, apiErr.Message)
 }
 
 func retryableHint(value string) *bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "true":
-		value := true
-		return &value
-	case "false":
-		value := false
-		return &value
-	default:
-		return nil
-	}
+	return adapterutil.RetryableHint(value)
 }
 
 func retryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds > 0 {
-			if seconds > math.MaxInt64/int64(time.Second) {
-				return time.Duration(math.MaxInt64)
-			}
-			return time.Duration(seconds) * time.Second
-		}
-		return 0
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay <= 0 {
-		return 0
-	}
-	return delay
+	return adapterutil.RetryAfter(value)
 }
 
 func (c *Client) checkCompatibility(op string, request llm.Request) error {
@@ -783,54 +710,15 @@ func checkRequest(op string, request llm.Request) error {
 }
 
 func checkToolHistory(op string, messages []llm.Message) error {
-	pending := 0
-	for i, message := range messages {
-		if pending != 0 && message.Role != llm.RoleTool {
-			return requestError(op, "messages[%d] must contain tool results for %d pending calls", i, pending)
-		}
-		switch message.Role {
-		case llm.RoleAssistant:
-			pending = len(message.ToolCalls)
-		case llm.RoleTool:
-			pending -= len(message.ToolResults)
-		}
-	}
-	if pending != 0 {
-		return requestError(op, "messages end with %d pending tool calls", pending)
-	}
-	return nil
+	return openaicommon.CheckToolHistory(defaultProvider, op, messages)
 }
 
 func validFunctionName(name string) bool {
-	if len(name) == 0 || len(name) > 64 {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		character := name[i]
-		if (character >= 'a' && character <= 'z') ||
-			(character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') ||
-			character == '_' || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return openaicommon.ValidFunctionName(name)
 }
 
 func contextErr(ctx context.Context) error {
-	err := ctx.Err()
-	if err == nil {
-		return nil
-	}
-	cause := context.Cause(ctx)
-	if cause == nil || errors.Is(cause, err) {
-		if cause != nil {
-			return cause
-		}
-		return err
-	}
-	return errors.Join(err, cause)
+	return adapterutil.ContextError(ctx)
 }
 
 // relabelProviderError keeps the OpenAI wire implementation independent of a
@@ -838,29 +726,7 @@ func contextErr(ctx context.Context) error {
 // client boundary. Provider data remains tagged "openai" because it describes
 // the wire format, not the service that carried it.
 func relabelProviderError(err error, provider string) error {
-	if err == nil || provider == defaultProvider {
-		return err
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		causes := joined.Unwrap()
-		relabeled := make([]error, len(causes))
-		changed := false
-		for i, cause := range causes {
-			relabeled[i] = relabelProviderError(cause, provider)
-			changed = changed || relabeled[i] != cause
-		}
-		if changed {
-			return errors.Join(relabeled...)
-		}
-		return err
-	}
-	providerErr, ok := err.(*llm.Error)
-	if !ok || providerErr.Provider != defaultProvider {
-		return err
-	}
-	clone := *providerErr
-	clone.Provider = provider
-	return &clone
+	return adapterutil.RelabelProviderError(err, defaultProvider, provider)
 }
 
 func configError(format string, args ...any) error {

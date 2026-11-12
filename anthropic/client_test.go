@@ -732,11 +732,15 @@ func TestGenerateClassifiesKnownUnimplementedStopReasons(t *testing.T) {
 }
 
 func TestGenerateClassifiesHTTPError(t *testing.T) {
+	retryable, notRetryable := true, false
 	for _, test := range []struct {
-		name   string
-		status int
-		body   string
-		kind   llm.ErrorKind
+		name      string
+		status    int
+		body      string
+		kind      llm.ErrorKind
+		errorType string
+		retryHint string
+		retryable *bool
 	}{
 		{name: "authentication", status: http.StatusUnauthorized, kind: llm.KindAuthentication},
 		{name: "billing", status: http.StatusPaymentRequired, kind: llm.KindPermission},
@@ -747,6 +751,8 @@ func TestGenerateClassifiesHTTPError(t *testing.T) {
 		{name: "too large", status: http.StatusRequestEntityTooLarge, kind: llm.KindInvalidRequest},
 		{name: "conflict", status: http.StatusConflict, kind: llm.KindProvider},
 		{name: "overloaded", status: 529, kind: llm.KindProvider},
+		{name: "temporary overload", status: 529, errorType: "overloaded_error", kind: llm.KindProvider, retryable: &retryable},
+		{name: "explicit no retry", status: 529, errorType: "overloaded_error", retryHint: "false", kind: llm.KindProvider, retryable: &notRetryable},
 		{name: "server", status: http.StatusInternalServerError, kind: llm.KindProvider},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -754,8 +760,15 @@ func TestGenerateClassifiesHTTPError(t *testing.T) {
 			if message == "" {
 				message = "provider failed"
 			}
-			body := fmt.Sprintf(`{"type":"error","error":{"type":"api_error","message":%s},"request_id":"req_body"}`, strconv.Quote(message))
+			errorType := test.errorType
+			if errorType == "" {
+				errorType = "api_error"
+			}
+			body := fmt.Sprintf(`{"type":"error","error":{"type":%q,"message":%s},"request_id":"req_body"}`, errorType, strconv.Quote(message))
 			headers := http.Header{"Retry-After": {"2"}, "Request-Id": {"req_header"}}
+			if test.retryHint != "" {
+				headers.Set("X-Should-Retry", test.retryHint)
+			}
 			client := newStaticClient(t, test.status, body, headers)
 			response, err := client.Generate(context.Background(), textRequest("hello"))
 			if response != nil {
@@ -765,8 +778,12 @@ func TestGenerateClassifiesHTTPError(t *testing.T) {
 			if modelErr.HTTPStatus != test.status || modelErr.RetryAfter != 2*time.Second {
 				t.Fatalf("model error = %#v", modelErr)
 			}
+			if (modelErr.Retryable == nil) != (test.retryable == nil) ||
+				modelErr.Retryable != nil && test.retryable != nil && *modelErr.Retryable != *test.retryable {
+				t.Fatalf("retryable hint = %v, want %v", modelErr.Retryable, test.retryable)
+			}
 			var apiErr *APIError
-			if !errors.As(err, &apiErr) || apiErr.Type != "api_error" || apiErr.Message != message || apiErr.RequestID != "req_body" {
+			if !errors.As(err, &apiErr) || apiErr.Type != errorType || apiErr.Message != message || apiErr.RequestID != "req_body" {
 				t.Fatalf("API error = %#v", apiErr)
 			}
 		})

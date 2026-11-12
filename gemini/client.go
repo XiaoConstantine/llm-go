@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"google.golang.org/genai"
@@ -53,6 +54,10 @@ type Config struct {
 
 // Client is an immutable Gemini Developer API client. It is safe for
 // concurrent use when its configured HTTP client is safe for concurrent use.
+// API_KEY_INVALID error details classify as authentication failures even with
+// HTTP 400. Errors retain the larger positive Retry-After or RetryInfo delay.
+// RetryInfo must be a valid protobuf duration; values exceeding time.Duration
+// saturate rather than overflow.
 type Client struct {
 	provider      string
 	model         string
@@ -161,6 +166,7 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	}
 
 	httpClient := requestmeta.WrapClient(config.HTTPClient)
+	httpClient.Transport = errorMetadataTransport{base: httpClient.Transport}
 	headers := config.Headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -258,12 +264,13 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err != nil {
 		return nil, err
 	}
+	ctx, metadata := withErrorMetadata(ctx)
 	response, err := c.generateContentSDK(ctx, contents, generationConfig)
 	if contextErr := contextErr(ctx); contextErr != nil {
 		return nil, contextErr
 	}
 	if err != nil {
-		return nil, sdkError("generate", err)
+		return nil, metadata.sdkError("generate", err)
 	}
 	converted, err := responseFromSDKFor(c.provider, c.model, request, response)
 	if err != nil {
@@ -394,6 +401,7 @@ func sdkError(op string, err error) error {
 			Op:         op,
 			Provider:   defaultProvider,
 			HTTPStatus: apiErr.Code,
+			RetryAfter: retryInfoDelay(apiErr),
 			Err:        err,
 		}
 	}
@@ -404,6 +412,7 @@ func sdkError(op string, err error) error {
 			Op:         op,
 			Provider:   defaultProvider,
 			HTTPStatus: apiErrPointer.Code,
+			RetryAfter: retryInfoDelay(*apiErrPointer),
 			Err:        err,
 		}
 	}
@@ -440,6 +449,9 @@ func (err *sdkPanicError) Unwrap() error {
 }
 
 func classifyAPIError(apiErr genai.APIError) llm.ErrorKind {
+	if apiErr.Code == http.StatusBadRequest && invalidAPIKey(apiErr) {
+		return llm.KindAuthentication
+	}
 	switch apiErr.Code {
 	case http.StatusUnauthorized:
 		return llm.KindAuthentication
@@ -483,44 +495,11 @@ func isContextLimitError(apiErr genai.APIError) bool {
 }
 
 func contextErr(ctx context.Context) error {
-	err := ctx.Err()
-	if err == nil {
-		return nil
-	}
-	cause := context.Cause(ctx)
-	if cause == nil || errors.Is(cause, err) {
-		if cause != nil {
-			return cause
-		}
-		return err
-	}
-	return errors.Join(err, cause)
+	return adapterutil.ContextError(ctx)
 }
 
 func relabelProviderError(err error, provider string) error {
-	if err == nil || provider == defaultProvider {
-		return err
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		causes := joined.Unwrap()
-		relabeled := make([]error, len(causes))
-		changed := false
-		for i, cause := range causes {
-			relabeled[i] = relabelProviderError(cause, provider)
-			changed = changed || relabeled[i] != cause
-		}
-		if changed {
-			return errors.Join(relabeled...)
-		}
-		return err
-	}
-	providerErr, ok := err.(*llm.Error)
-	if !ok || providerErr.Provider != defaultProvider {
-		return err
-	}
-	clone := *providerErr
-	clone.Provider = provider
-	return &clone
+	return adapterutil.RelabelProviderError(err, defaultProvider, provider)
 }
 
 func configError(format string, args ...any) error {

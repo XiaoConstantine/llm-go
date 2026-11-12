@@ -5,15 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"encoding/json/jsontext"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -430,7 +429,9 @@ func sdkError(op string, err error) error {
 		case strings.Contains(code, "validation"):
 			kind = llm.KindInvalidRequest
 		}
-		if strings.Contains(detail, "context") && (strings.Contains(detail, "length") || strings.Contains(detail, "token")) {
+		if kind != llm.KindAuthentication && kind != llm.KindPermission && kind != llm.KindRateLimit &&
+			(strings.Contains(detail, "input is too long for requested model") || strings.Contains(detail, "prompt is too long") ||
+				strings.Contains(detail, "context") && (strings.Contains(detail, "length") || strings.Contains(detail, "token"))) {
 			kind = llm.KindContextLimit
 		}
 	}
@@ -438,13 +439,5 @@ func sdkError(op string, err error) error {
 }
 
 func parseRetryAfter(value string) time.Duration {
-	if seconds, err := strconv.ParseUint(strings.TrimSpace(value), 10, 31); err == nil {
-		return time.Duration(seconds) * time.Second
-	}
-	if when, err := http.ParseTime(value); err == nil {
-		if delay := time.Until(when); delay > 0 {
-			return delay
-		}
-	}
-	return 0
+	return adapterutil.RetryAfter(value)
 }

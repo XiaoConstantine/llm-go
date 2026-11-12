@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -78,6 +79,10 @@ type Config struct {
 }
 
 // Client is an immutable Bedrock client.
+// Provider messages indicating oversized model input classify as KindContextLimit.
+// The explicit "input is too long for requested model" and "prompt is too long"
+// messages match regardless of provider error code, not just ValidationException;
+// authentication, permission, and throttling errors still take precedence.
 type Client struct {
 	provider     string
 	model        string
@@ -334,13 +339,7 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 }
 
 func contextErr(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, err) {
-			return errors.Join(err, cause)
-		}
-		return err
-	}
-	return nil
+	return adapterutil.ContextError(ctx)
 }
 
 func configError(format string, args ...any) error {

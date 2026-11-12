@@ -406,6 +406,77 @@ func TestValidationOccursBeforeIO(t *testing.T) {
 	}
 }
 
+func TestContentFilterPreservesTextAndUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w,
+			`{"id":"resp","choices":[{"index":0,"delta":{"content":"Complete answer"},"finish_reason":null}]}`,
+			`{"id":"resp","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":1000,"completion_tokens":500,"total_tokens":1500}}`,
+			"[DONE]")
+	}))
+	defer server.Close()
+	client := mustClient(t, Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+		Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			var response *llm.Response
+			var err error
+			if streaming {
+				stream, streamErr := client.Stream(context.Background(), textRequest())
+				if streamErr != nil {
+					t.Fatal(streamErr)
+				}
+				response, err = llm.CollectStructural(stream) // Always closes the stream.
+			} else {
+				response, err = client.Generate(context.Background(), textRequest())
+			}
+			if err != nil {
+				t.Fatalf("response = %#v, error = %v", response, err)
+			}
+			if response.Text() != "Complete answer" || response.FinishReason != llm.FinishReasonContentFilter ||
+				response.Usage == nil || response.Usage.InputTokens != 1000 || response.Usage.OutputTokens != 500 || response.Usage.TotalTokens != 1500 {
+				t.Fatalf("response = %#v", response)
+			}
+		})
+	}
+}
+
+func TestUnknownFinishReasonsAreUnsupported(t *testing.T) {
+	for _, reason := range []string{"future_reason", "unknown_stop"} {
+		t.Run(reason, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSE(w, fmt.Sprintf(`{"id":"resp","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":%q}]}`, reason))
+			}))
+			defer server.Close()
+			client := mustClient(t, Config{Model: "model", APIKey: "key", BaseURL: server.URL, HTTPClient: server.Client(),
+				Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+			response, err := client.Generate(context.Background(), textRequest())
+			var modelErr *llm.Error
+			if response != nil || !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported {
+				t.Fatalf("Generate = %#v, %v; want unsupported", response, err)
+			}
+			stream, err := client.Stream(context.Background(), textRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			for {
+				chunk, err := stream.Recv()
+				if err != nil {
+					if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported {
+						t.Fatalf("Recv = %v; want unsupported", err)
+					}
+					break
+				}
+				if chunk.FinishReason != "" {
+					t.Fatalf("unknown finish reason produced success: %#v", chunk)
+				}
+			}
+		})
+	}
+}
+
 func TestMalformedStreamIsClassified(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

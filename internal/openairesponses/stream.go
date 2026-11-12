@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
+	"github.com/XiaoConstantine/llm-go/internal/openaicommon"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	openairesponses "github.com/openai/openai-go/v3/responses"
@@ -148,32 +150,7 @@ func classifyAPIError(apiErr *APIError) llm.ErrorKind {
 	if apiErr == nil {
 		return llm.KindProvider
 	}
-	if isContextLimitError(apiErr) {
-		return llm.KindContextLimit
-	}
-	detail := strings.ToLower(apiErr.Type + " " + apiErr.Code)
-	switch {
-	case strings.Contains(detail, "auth"), strings.Contains(detail, "invalid_api_key"):
-		return llm.KindAuthentication
-	case strings.Contains(detail, "permission"), strings.Contains(detail, "forbidden"):
-		return llm.KindPermission
-	case strings.Contains(detail, "rate_limit"), strings.Contains(detail, "usage_limit"), strings.Contains(detail, "quota"):
-		return llm.KindRateLimit
-	case strings.Contains(detail, "invalid_request"):
-		return llm.KindInvalidRequest
-	default:
-		return llm.KindProvider
-	}
-}
-
-func isContextLimitError(apiErr *APIError) bool {
-	if apiErr == nil {
-		return false
-	}
-	detail := strings.ToLower(apiErr.Type + " " + apiErr.Code + " " + apiErr.Message)
-	return strings.Contains(detail, "context_length_exceeded") ||
-		strings.Contains(detail, "maximum context length") ||
-		strings.Contains(detail, "context window")
+	return openaicommon.ClassifyResponsesError(apiErr.Type, apiErr.Code, apiErr.Message)
 }
 
 func declaredToolNames(params openairesponses.ResponseNewParams) map[string]struct{} {
@@ -1026,18 +1003,7 @@ func (c Codec) transportError(op string, err error) *llm.Error {
 
 // ContextError preserves both cancellation identity and a distinct cause.
 func ContextError(ctx context.Context) error {
-	err := ctx.Err()
-	if err == nil {
-		return nil
-	}
-	cause := context.Cause(ctx)
-	if cause == nil || errors.Is(cause, err) {
-		if cause != nil {
-			return cause
-		}
-		return err
-	}
-	return errors.Join(err, cause)
+	return adapterutil.ContextError(ctx)
 }
 
 // MergeChunk assembles a streamed chunk into response.

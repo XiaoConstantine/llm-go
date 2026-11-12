@@ -718,13 +718,64 @@ func TestStreamClassifiesEventErrorKinds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Stream() error = %v", err)
 			}
+			defer func() { _ = stream.Close() }()
 			_, terminal := receiveAll(stream)
-			requireModelError(t, terminal, test.kind, "stream")
+			modelErr := requireModelError(t, terminal, test.kind, "stream")
+			if test.errorType == "overloaded_error" {
+				if modelErr.Retryable == nil || !*modelErr.Retryable {
+					t.Fatalf("overload must carry a retry hint: %#v", modelErr)
+				}
+			} else if modelErr.Retryable != nil {
+				t.Fatalf("non-overload %q must not carry a retry hint: %#v", test.errorType, modelErr)
+			}
 			var apiErr *APIError
 			if !errors.As(terminal, &apiErr) || apiErr.Type != test.errorType {
 				t.Fatalf("Recv() error = %v, API error = %#v", terminal, apiErr)
 			}
-			_ = stream.Close()
+		})
+	}
+}
+
+func TestOverloadRetriesOnlyBeforeFirstChunk(t *testing.T) {
+	for _, started := range []bool{false, true} {
+		t.Run(fmt.Sprintf("started=%t", started), func(t *testing.T) {
+			var attempts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				attempts.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				if started {
+					_, _ = io.WriteString(w, streamEvent("message_start", validStreamStart))
+					_, _ = io.WriteString(w, streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"partial"}}`))
+				}
+				_, _ = io.WriteString(w, streamEvent("error", `{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`))
+			}))
+			defer server.Close()
+			client, err := New(Config{Model: "model", BaseURL: server.URL, HTTPClient: server.Client(), Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			retrying, err := llm.WithRetry(client, llm.RetryPolicy{MaxAttempts: 2, InitialBackoff: time.Nanosecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := retrying.Stream(context.Background(), textRequest("hello"))
+			if stream != nil {
+				defer func() { _ = stream.Close() }()
+			}
+			if err == nil {
+				_, err = receiveAll(stream)
+			}
+			modelErr := requireModelError(t, err, llm.KindProvider, "stream")
+			if modelErr.HTTPStatus != 0 || modelErr.Retryable == nil || !*modelErr.Retryable {
+				t.Fatalf("overload metadata = %#v", modelErr)
+			}
+			want := int32(2)
+			if started {
+				want = 1
+			}
+			if attempts.Load() != want {
+				t.Fatalf("attempts = %d, want %d", attempts.Load(), want)
+			}
 		})
 	}
 }

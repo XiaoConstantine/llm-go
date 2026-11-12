@@ -615,10 +615,14 @@ func finishReason(op, reason string) (llm.FinishReason, error) {
 		return llm.FinishReasonLength, nil
 	case "tool_calls":
 		return llm.FinishReasonToolCall, nil
+	case "content_filter":
+		return llm.FinishReasonContentFilter, nil
 	case "error":
 		return "", &llm.Error{Kind: llm.KindProvider, Op: op, Provider: defaultProvider, Err: errors.New("mistral generation stopped with an error")}
 	default:
-		return llm.FinishReasonStop, nil
+		// Mistral's finish reason is an open enum; unknown extensions are not a
+		// successful stop.
+		return "", unsupported(op, fmt.Sprintf("finish reason %q is not supported", reason))
 	}
 }
 

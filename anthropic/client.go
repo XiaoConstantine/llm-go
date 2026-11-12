@@ -5,17 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	jsonv2 "encoding/json/v2"
 
 	llm "github.com/XiaoConstantine/llm-go"
+	"github.com/XiaoConstantine/llm-go/internal/adapterutil"
 	"github.com/XiaoConstantine/llm-go/internal/requestmeta"
 	internalstream "github.com/XiaoConstantine/llm-go/internal/stream"
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
@@ -628,13 +627,17 @@ func responseError(op string, response *http.Response, body []byte, tooLarge boo
 	if apiErr.RequestID == "" {
 		apiErr.RequestID = response.Header.Get("Request-Id")
 	}
+	retryable := retryableHint(response.Header.Get("X-Should-Retry"))
+	if retryable == nil && response.StatusCode == 529 {
+		retryable = retryableAPIError(apiErr)
+	}
 	return &llm.Error{
 		Kind:       classifyResponse(response.StatusCode, apiErr),
 		Op:         op,
 		Provider:   "anthropic",
 		HTTPStatus: response.StatusCode,
 		RetryAfter: retryAfter(response.Header.Get("Retry-After")),
-		Retryable:  retryableHint(response.Header.Get("X-Should-Retry")),
+		Retryable:  retryable,
 		Err:        apiErr,
 	}
 }
@@ -702,85 +705,32 @@ func isContextLimitError(apiErr *APIError) bool {
 }
 
 func retryableHint(value string) *bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "true":
-		value := true
-		return &value
-	case "false":
-		value := false
-		return &value
-	default:
-		return nil
+	return adapterutil.RetryableHint(value)
+}
+
+// Anthropic documents overloaded_error as temporary overload, including when
+// delivered inside an HTTP 200 event stream. Do not invent an HTTP status for it.
+func retryableAPIError(apiErr *APIError) *bool {
+	if apiErr != nil && apiErr.Type == "overloaded_error" {
+		retryable := true
+		return &retryable
 	}
+	return nil
 }
 
 func retryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds > 0 {
-			if seconds > math.MaxInt64/int64(time.Second) {
-				return time.Duration(math.MaxInt64)
-			}
-			return time.Duration(seconds) * time.Second
-		}
-		return 0
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay <= 0 {
-		return 0
-	}
-	return delay
+	return adapterutil.RetryAfter(value)
 }
 
 func contextErr(ctx context.Context) error {
-	err := ctx.Err()
-	if err == nil {
-		return nil
-	}
-	cause := context.Cause(ctx)
-	if cause == nil || errors.Is(cause, err) {
-		if cause != nil {
-			return cause
-		}
-		return err
-	}
-	return errors.Join(err, cause)
+	return adapterutil.ContextError(ctx)
 }
 
 // relabelProviderError keeps the Anthropic wire implementation independent of
 // a compatible service's identity while presenting that identity at the public
 // client boundary.
 func relabelProviderError(err error, provider string) error {
-	if err == nil || provider == defaultProvider {
-		return err
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		causes := joined.Unwrap()
-		relabeled := make([]error, len(causes))
-		changed := false
-		for i, cause := range causes {
-			relabeled[i] = relabelProviderError(cause, provider)
-			changed = changed || relabeled[i] != cause
-		}
-		if changed {
-			return errors.Join(relabeled...)
-		}
-		return err
-	}
-	providerErr, ok := err.(*llm.Error)
-	if !ok || providerErr.Provider != defaultProvider {
-		return err
-	}
-	clone := *providerErr
-	clone.Provider = provider
-	return &clone
+	return adapterutil.RelabelProviderError(err, defaultProvider, provider)
 }
 
 func configError(format string, args ...any) error {

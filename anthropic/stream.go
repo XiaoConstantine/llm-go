@@ -917,10 +917,11 @@ func decodeStreamError(data, requestID string) error {
 		event.Error.RequestID = requestID
 	}
 	return &llm.Error{
-		Kind:     classifyAPIError(event.Error),
-		Op:       "stream",
-		Provider: "anthropic",
-		Err:      event.Error,
+		Kind:      classifyAPIError(event.Error),
+		Op:        "stream",
+		Provider:  "anthropic",
+		Retryable: retryableAPIError(event.Error),
+		Err:       event.Error,
 	}
 }
 
