@@ -195,6 +195,11 @@ func TestRequestValidateRejectsInvalidRequests(t *testing.T) {
 	}{
 		{name: "empty messages", request: Request{}, want: "messages must not be empty"},
 		{
+			name:    "parallel tool calls without tools",
+			request: Request{Messages: validGenerationRequest().Messages, ParallelToolCalls: new(true)},
+			want:    "parallel tool calls require at least one tool",
+		},
+		{
 			name:    "invalid role",
 			request: Request{Messages: []Message{{Role: Role("critic")}}},
 			want:    `role "critic" is invalid`,

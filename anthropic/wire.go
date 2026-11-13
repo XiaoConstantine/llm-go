@@ -64,8 +64,9 @@ type outputConfig struct {
 }
 
 type toolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitzero"`
 }
 
 type inputContentBlock struct {
@@ -264,6 +265,14 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 		}
 	}
 	applyAnthropicToolChoice(&wrequest, request.ToolChoice)
+	if request.ParallelToolCalls != nil && !*request.ParallelToolCalls && request.ToolChoice.Mode != llm.ToolChoiceNone {
+		// Parallel tool use is the Messages default, so only disabling it is
+		// sent. The "none" choice has no such field and calls no tools.
+		if wrequest.ToolChoice == nil {
+			wrequest.ToolChoice = &toolChoice{Type: "auto"}
+		}
+		wrequest.ToolChoice.DisableParallelToolUse = true
+	}
 	if err := applyAnthropicThinking(op, &wrequest, request, compatibility); err != nil {
 		return messageRequest{}, nil, err
 	}

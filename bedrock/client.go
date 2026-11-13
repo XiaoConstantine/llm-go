@@ -345,6 +345,9 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if request.PresencePenalty != nil || request.FrequencyPenalty != nil {
 		return unsupported(op, "Bedrock ConverseStream does not support portable presence or frequency penalties")
 	}
+	if request.ParallelToolCalls != nil {
+		return unsupported(op, "Bedrock ConverseStream does not support a portable parallel tool call control")
+	}
 	return nil
 }
 

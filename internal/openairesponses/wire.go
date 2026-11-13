@@ -178,6 +178,9 @@ func (c Codec) Request(op, model string, request llm.Request, options RequestOpt
 		ParallelToolCalls: param.NewOpt(true),
 		Tools:             tools,
 	}
+	if request.ParallelToolCalls != nil {
+		params.ParallelToolCalls = param.NewOpt(*request.ParallelToolCalls)
+	}
 	if len(instructions) != 0 {
 		params.Instructions = param.NewOpt(strings.Join(instructions, "\n\n"))
 	}

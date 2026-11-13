@@ -40,3 +40,34 @@ func TestToolChoiceCacheAndImageToolResultWire(t *testing.T) {
 		}
 	}
 }
+
+func TestParallelToolCallsWire(t *testing.T) {
+	client, err := New(Config{Model: "model", APIKey: "key", Capabilities: []llm.Capability{llm.CapabilityTools}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nil keeps the explicit true this adapter has always sent.
+	for _, test := range []struct {
+		parallel *bool
+		want     string
+	}{
+		{nil, `"parallel_tool_calls":true`}, {new(true), `"parallel_tool_calls":true`}, {new(false), `"parallel_tool_calls":false`},
+	} {
+		request := llm.Request{
+			Messages:          []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "go"}}}},
+			Tools:             []llm.Tool{{Name: "inspect", InputSchema: []byte(`{"type":"object"}`)}},
+			ParallelToolCalls: test.parallel,
+		}
+		params, err := client.prepare(context.Background(), "generate", request, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := jsonv2.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), test.want) {
+			t.Errorf("wire = %s, want %s", body, test.want)
+		}
+	}
+}

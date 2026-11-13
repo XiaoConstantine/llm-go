@@ -52,6 +52,46 @@ func TestRequestToWireMapsImagesThinkingToolChoiceAndCache(t *testing.T) {
 	}
 }
 
+func TestRequestToWireMapsParallelToolCalls(t *testing.T) {
+	named := llm.ToolChoice{Mode: llm.ToolChoiceNamed, Name: "inspect"}
+	for _, test := range []struct {
+		name     string
+		parallel *bool
+		choice   llm.ToolChoice
+		want     string
+	}{
+		{name: "default", want: ""},
+		{name: "enabled", parallel: new(true), want: ""},
+		{name: "enabled named", parallel: new(true), choice: named, want: `{"type":"tool","name":"inspect"}`},
+		{name: "disabled auto", parallel: new(false), want: `{"type":"auto","disable_parallel_tool_use":true}`},
+		{name: "disabled required", parallel: new(false), choice: llm.ToolChoice{Mode: llm.ToolChoiceRequired}, want: `{"type":"any","disable_parallel_tool_use":true}`},
+		{name: "disabled named", parallel: new(false), choice: named, want: `{"type":"tool","name":"inspect","disable_parallel_tool_use":true}`},
+		{name: "disabled none", parallel: new(false), choice: llm.ToolChoice{Mode: llm.ToolChoiceNone}, want: `{"type":"none"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := textRequest("hello")
+			request.Tools = []llm.Tool{{Name: "inspect", InputSchema: []byte(`{"type":"object"}`)}}
+			request.ToolChoice = test.choice
+			request.ParallelToolCalls = test.parallel
+			wire, _, err := requestToWireWithCompatibility("generate", "claude", 4096, request, llm.AnthropicCompatibility{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ""
+			if wire.ToolChoice != nil {
+				body, err := jsonv2.Marshal(wire.ToolChoice)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = string(body)
+			}
+			if got != test.want {
+				t.Fatalf("tool_choice = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAnthropicThinkingResponseReplay(t *testing.T) {
 	response, err := responseFromWire("claude", llm.Request{}, nil, messageResponse{
 		ID: "msg", Type: "message", Role: "assistant", Model: "claude", StopReason: new("end_turn"),

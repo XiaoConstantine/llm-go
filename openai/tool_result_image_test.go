@@ -117,3 +117,33 @@ func TestChatToolChoiceCacheAndImageToolFallbackWire(t *testing.T) {
 		}
 	}
 }
+
+func TestChatParallelToolCallsWire(t *testing.T) {
+	for _, test := range []struct {
+		parallel *bool
+		want     string
+	}{
+		{nil, ""}, {new(true), `"parallel_tool_calls":true`}, {new(false), `"parallel_tool_calls":false`},
+	} {
+		request := llm.Request{
+			Messages:          []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "go"}}}},
+			Tools:             []llm.Tool{{Name: "inspect", InputSchema: []byte(`{"type":"object"}`)}},
+			ParallelToolCalls: test.parallel,
+		}
+		wire, err := newChatRequestFor("generate", "model", request, llm.OpenAIChatCompatibility{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := jsonv2.Marshal(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if test.want == "" {
+			if strings.Contains(string(body), "parallel_tool_calls") {
+				t.Errorf("wire = %s, want no parallel_tool_calls", body)
+			}
+		} else if !strings.Contains(string(body), test.want) {
+			t.Errorf("wire = %s, want %s", body, test.want)
+		}
+	}
+}

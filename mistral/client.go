@@ -233,6 +233,9 @@ func checkRequest(op string, request llm.Request) error {
 	if request.TopP != nil || request.PresencePenalty != nil || request.FrequencyPenalty != nil || len(request.Stop) != 0 {
 		return unsupported(op, "top-p, penalties, and stop sequences are not supported by this adapter")
 	}
+	if request.ParallelToolCalls != nil {
+		return unsupported(op, "a parallel tool call control is not supported by this adapter")
+	}
 	for messageIndex, message := range request.Messages {
 		for partIndex, part := range message.Content {
 			if part.Kind == llm.PartImage && message.Role != llm.RoleUser {

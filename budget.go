@@ -123,6 +123,10 @@ func cloneRequest(request Request) Request {
 		clone.Tools[index].InputSchema = append([]byte(nil), tool.InputSchema...)
 	}
 	clone.Stop = append([]string(nil), request.Stop...)
+	if request.ParallelToolCalls != nil {
+		value := *request.ParallelToolCalls
+		clone.ParallelToolCalls = &value
+	}
 	if request.Temperature != nil {
 		value := *request.Temperature
 		clone.Temperature = &value

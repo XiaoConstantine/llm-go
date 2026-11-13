@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,6 +160,45 @@ func TestAdapterConformance(t *testing.T) {
 						}
 						if calls.Load() != 0 {
 							t.Fatalf("preflight made %d HTTP requests", calls.Load())
+						}
+					})
+					t.Run("parallel tool calls", func(t *testing.T) {
+						// Adapters either send the control or reject it before I/O;
+						// none may drop it silently.
+						wire := map[string]string{
+							"anthropic": `"disable_parallel_tool_use":true`,
+							"openai":    `"parallel_tool_calls":false`,
+							"responses": `"parallel_tool_calls":false`,
+							"azure":     `"parallel_tool_calls":false`,
+							"codex":     `"parallel_tool_calls":false`,
+						}[adapter.name]
+						var calls atomic.Int32
+						var body atomic.Pointer[string]
+						server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							calls.Add(1)
+							data, _ := io.ReadAll(r.Body)
+							text := string(data)
+							body.Store(&text)
+							w.WriteHeader(http.StatusInternalServerError)
+						}))
+						defer server.Close()
+						client, err := adapter.new(server, []llm.Capability{llm.CapabilityStreaming, llm.CapabilityTools})
+						if err != nil {
+							t.Fatal(err)
+						}
+						sequential := request
+						sequential.Tools = []llm.Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)}}
+						sequential.ParallelToolCalls = new(false)
+						err = conformanceCall(t, client, context.Background(), sequential, streaming)
+						var modelErr *llm.Error
+						if wire == "" {
+							if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || calls.Load() != 0 {
+								t.Fatalf("error = %v after %d HTTP requests, want unsupported before I/O", err, calls.Load())
+							}
+							return
+						}
+						if sent := body.Load(); sent == nil || !strings.Contains(*sent, wire) {
+							t.Fatalf("request body = %v (error %v), want %s", sent, err, wire)
 						}
 					})
 					t.Run("in-flight cancellation", func(t *testing.T) {

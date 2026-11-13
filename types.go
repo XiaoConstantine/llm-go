@@ -208,11 +208,16 @@ const (
 // provider to use its default. An empty Tools or Stop list means none.
 // Implementations must treat Request as read-only.
 type Request struct {
-	Messages        []Message
-	Tools           []Tool
-	ToolChoice      ToolChoice
-	ResponseFormat  ResponseFormat
-	ReasoningEffort ReasoningEffort
+	Messages   []Message
+	Tools      []Tool
+	ToolChoice ToolChoice
+	// ParallelToolCalls controls whether the model may request more than one
+	// tool call in a single response. Nil leaves the provider default. It
+	// requires declared tools and has no effect when ToolChoice disables tool
+	// use. Adapters whose protocol cannot express it reject a non-nil value.
+	ParallelToolCalls *bool
+	ResponseFormat    ResponseFormat
+	ReasoningEffort   ReasoningEffort
 	// ReasoningBudgetTokens requests an explicit provider reasoning-token
 	// budget. Zero leaves budgeting to the provider or ReasoningEffort.
 	ReasoningBudgetTokens int

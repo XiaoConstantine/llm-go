@@ -31,6 +31,9 @@ func (r Request) validate() error {
 	if err := validateToolChoice(r.ToolChoice, r.Tools); err != nil {
 		return err
 	}
+	if r.ParallelToolCalls != nil && len(r.Tools) == 0 {
+		return fmt.Errorf("parallel tool calls require at least one tool")
+	}
 	if err := validateCacheControls(r); err != nil {
 		return err
 	}

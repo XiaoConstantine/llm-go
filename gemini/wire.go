@@ -51,6 +51,9 @@ func checkRequest(op string, request llm.Request) error {
 	if request.CacheRetention != llm.CacheRetentionDefault || request.CacheKey != "" || request.SessionID != "" {
 		return unsupported(op, "Gemini GenerateContent does not support portable prompt-cache or session controls")
 	}
+	if request.ParallelToolCalls != nil {
+		return unsupported(op, "Gemini GenerateContent does not support a parallel tool call control")
+	}
 	numericValues := []struct {
 		name  string
 		value *float64

@@ -48,6 +48,9 @@ calls work in generation and streaming, including partial argument events where
 the protocol exposes them. Strict tools and reasoning replay are model- and
 protocol-dependent. Cache retention markers are emitted only where supported;
 unsupported cache keys and session-affinity mappings fail before provider I/O.
+`Request.ParallelToolCalls` is sent by the OpenAI Chat, OpenAI Responses (also
+Azure and Codex), and Anthropic adapters; the other adapters reject a non-nil
+value before provider I/O.
 OpenAI Responses also supports durable background jobs through
 `llm.BackgroundGenerator`.
 

@@ -9,6 +9,8 @@ func TestBudgetRequestBoundariesAndOwnership(t *testing.T) {
 	request := validGenerationRequest()
 	request.MaxOutputTokens = 500
 	request.Messages[0].Content[0].Text = "owned"
+	request.Tools = []Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)}}
+	request.ParallelToolCalls = new(false)
 	estimator := TokenEstimatorFunc(func(context.Context, Request) (int, error) { return 700, nil })
 	budgeted, budget, err := BudgetRequest(context.Background(), ModelInfo{ContextWindow: 1000, MaxOutputTokens: 400}, request, estimator, 100)
 	if err != nil {
@@ -18,7 +20,8 @@ func TestBudgetRequestBoundariesAndOwnership(t *testing.T) {
 		t.Fatalf("budget = %#v, request = %#v", budget, budgeted)
 	}
 	budgeted.Messages[0].Content[0].Text = "changed"
-	if request.Messages[0].Content[0].Text != "owned" {
+	*budgeted.ParallelToolCalls = true
+	if request.Messages[0].Content[0].Text != "owned" || *request.ParallelToolCalls {
 		t.Fatal("BudgetRequest aliased input")
 	}
 	unknownLimit, _, err := BudgetRequest(context.Background(), ModelInfo{ContextWindow: 1000}, Request{Messages: request.Messages}, estimator, 100)

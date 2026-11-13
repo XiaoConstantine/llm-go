@@ -33,6 +33,7 @@ type chatRequest struct {
 	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
 	Stop                 []string            `json:"stop,omitempty"`
 	ToolChoice           any                 `json:"tool_choice,omitempty"`
+	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
 	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
 }
@@ -362,6 +363,7 @@ func newChatRequestFor(op, model string, request llm.Request, compatibility llm.
 		wrequest.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
 	wrequest.ToolChoice = openAIChatToolChoice(request.ToolChoice)
+	wrequest.ParallelToolCalls = request.ParallelToolCalls
 	if request.CacheRetention != llm.CacheRetentionNone {
 		cacheKey := request.CacheKey
 		if cacheKey == "" {
