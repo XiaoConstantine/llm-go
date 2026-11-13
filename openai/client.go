@@ -592,6 +592,9 @@ func (c *Client) requestHeaders(sessionID string) http.Header {
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if _, err := requestOptions(op, request); err != nil {
+		return err
+	}
 	if request.HasCacheBreakpoints() {
 		return unsupported(op, "explicit cache breakpoint placement is not supported by the Chat Completions adapter")
 	}

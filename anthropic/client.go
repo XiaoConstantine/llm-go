@@ -442,6 +442,9 @@ func (c *Client) checkCompatibility(op string, request llm.Request) error {
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if _, err := requestOptions(op, request); err != nil {
+		return err
+	}
 	usesTools := requestUsesTools(request)
 	hasImage := false
 	hasAudio := false

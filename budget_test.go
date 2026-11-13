@@ -11,6 +11,7 @@ func TestBudgetRequestBoundariesAndOwnership(t *testing.T) {
 	request.Messages[0].Content[0].Text = "owned"
 	request.Tools = []Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object"}`)}}
 	request.ParallelToolCalls = new(false)
+	request.ProviderOptions = &budgetOptions{values: []string{"owned"}}
 	estimator := TokenEstimatorFunc(func(context.Context, Request) (int, error) { return 700, nil })
 	budgeted, budget, err := BudgetRequest(context.Background(), ModelInfo{ContextWindow: 1000, MaxOutputTokens: 400}, request, estimator, 100)
 	if err != nil {
@@ -21,7 +22,9 @@ func TestBudgetRequestBoundariesAndOwnership(t *testing.T) {
 	}
 	budgeted.Messages[0].Content[0].Text = "changed"
 	*budgeted.ParallelToolCalls = true
-	if request.Messages[0].Content[0].Text != "owned" || *request.ParallelToolCalls {
+	budgeted.ProviderOptions.(*budgetOptions).values[0] = "changed"
+	if request.Messages[0].Content[0].Text != "owned" || *request.ParallelToolCalls ||
+		request.ProviderOptions.(*budgetOptions).values[0] != "owned" {
 		t.Fatal("BudgetRequest aliased input")
 	}
 	unknownLimit, _, err := BudgetRequest(context.Background(), ModelInfo{ContextWindow: 1000}, Request{Messages: request.Messages}, estimator, 100)
@@ -51,4 +54,10 @@ func TestBudgetRequestBoundariesAndOwnership(t *testing.T) {
 			}
 		})
 	}
+}
+
+type budgetOptions struct{ values []string }
+
+func (o *budgetOptions) CloneProviderOptions() ProviderOptions {
+	return &budgetOptions{values: append([]string(nil), o.values...)}
 }

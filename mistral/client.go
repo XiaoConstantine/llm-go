@@ -195,6 +195,9 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, re
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.ProviderOptions != nil {
+		return unsupported(op, "provider options are not supported by the Mistral adapter")
+	}
 	if documents, misplaced := adapterutil.FileParts(request); documents || misplaced {
 		return unsupported(op, "document content is not supported by the Mistral adapter")
 	}

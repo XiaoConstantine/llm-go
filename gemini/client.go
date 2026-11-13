@@ -375,6 +375,9 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.ProviderOptions != nil {
+		return unsupported(op, "provider options are not supported by the Gemini adapter")
+	}
 	if documents, misplaced := adapterutil.FileParts(request); documents || misplaced {
 		return unsupported(op, "document content is not supported by the Gemini adapter")
 	}

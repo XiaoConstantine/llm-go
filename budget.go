@@ -127,6 +127,9 @@ func cloneRequest(request Request) Request {
 		value := *request.ParallelToolCalls
 		clone.ParallelToolCalls = &value
 	}
+	if request.ProviderOptions != nil {
+		clone.ProviderOptions = request.ProviderOptions.CloneProviderOptions()
+	}
 	if request.Temperature != nil {
 		value := *request.Temperature
 		clone.Temperature = &value

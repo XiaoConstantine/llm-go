@@ -29,6 +29,7 @@ type messageRequest struct {
 	ToolChoice    *toolChoice      `json:"tool_choice,omitempty"`
 	Thinking      *thinkingConfig  `json:"thinking,omitempty"`
 	OutputConfig  *outputConfig    `json:"output_config,omitempty"`
+	ServiceTier   string           `json:"service_tier,omitempty"`
 	Stream        bool             `json:"stream,omitzero"`
 }
 
@@ -239,6 +240,13 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 		Temperature:   request.Temperature,
 		TopP:          request.TopP,
 		StopSequences: append([]string(nil), request.Stop...),
+	}
+	options, err := requestOptions(op, request)
+	if err != nil {
+		return messageRequest{}, nil, err
+	}
+	if options != nil {
+		wrequest.ServiceTier = options.ServiceTier
 	}
 	cache := anthropicCacheControl(request.CacheRetention)
 	if subscriptionOAuth {

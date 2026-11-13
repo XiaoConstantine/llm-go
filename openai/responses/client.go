@@ -572,6 +572,9 @@ func (c *Client) codec() internalresponses.Codec {
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.ProviderOptions != nil {
+		return unsupported(c.provider, op, "provider options are not supported by the Responses adapter")
+	}
 	if request.HasCacheBreakpoints() && c.compatibility.ExplicitPromptCacheMode != llm.CompatibilityEnabled {
 		return unsupported(c.provider, op, "configured model does not support explicit prompt-cache breakpoints")
 	}

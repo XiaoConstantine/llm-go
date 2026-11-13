@@ -306,6 +306,9 @@ func (c *Client) prepare(ctx context.Context, op string, request llm.Request, st
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if request.ProviderOptions != nil {
+		return unsupported(op, "provider options are not supported by the Bedrock adapter")
+	}
 	if request.HasCacheBreakpoints() {
 		return unsupported(op, "explicit cache breakpoint placement is not supported by the Bedrock adapter")
 	}

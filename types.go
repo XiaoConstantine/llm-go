@@ -242,6 +242,23 @@ type Request struct {
 	PresencePenalty  *float64
 	FrequencyPenalty *float64
 	Stop             []string
+	// ProviderOptions carries settings that only one protocol adapter
+	// understands, as that adapter's options type. Nil means none. An adapter
+	// rejects options of any other adapter's type before provider I/O, so a
+	// request with options is bound to the protocol they belong to.
+	ProviderOptions ProviderOptions `json:"-"`
+}
+
+// ProviderOptions is implemented by the options types of protocol adapters,
+// such as *anthropic.RequestOptions. The root package never inspects the value:
+// Request.Validate does not validate it, and the owning adapter checks it
+// together with its capability checks.
+//
+// Implementations are pointer types. CloneProviderOptions returns a deep copy
+// that shares no mutable storage with the receiver and must accept a nil
+// receiver, which adapters treat the same as no options.
+type ProviderOptions interface {
+	CloneProviderOptions() ProviderOptions
 }
 
 // HasCacheBreakpoints reports whether any message or tool-result content marks

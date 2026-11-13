@@ -24,6 +24,11 @@ import (
 	"github.com/XiaoConstantine/llm-go/vertex"
 )
 
+// conformanceOptions is a provider options type that no adapter owns.
+type conformanceOptions struct{}
+
+func (o *conformanceOptions) CloneProviderOptions() llm.ProviderOptions { return o }
+
 type adapterFailure struct {
 	name, body, retryHeader string
 	status                  int
@@ -254,6 +259,61 @@ func TestAdapterConformance(t *testing.T) {
 								}
 								if sent := body.Load(); sent == nil || !strings.Contains(*sent, wire) || !strings.Contains(*sent, "JVBERi0x") {
 									t.Fatalf("request body = %v (error %v), want %s with the document bytes", sent, err, wire)
+								}
+							})
+						}
+					})
+					t.Run("provider options", func(t *testing.T) {
+						// An adapter sends its own options and rejects any other
+						// adapter's options before I/O; none may drop them silently.
+						type optionsCase struct {
+							name    string
+							options llm.ProviderOptions
+							wire    string // expected in the body; empty means rejected
+							absent  string // must not be in the body
+						}
+						cases := []optionsCase{{name: "another adapter's options", options: &conformanceOptions{}}}
+						switch adapter.name {
+						case "anthropic":
+							cases[0].options = &openai.RequestOptions{ServiceTier: "flex"}
+							cases = append(cases,
+								optionsCase{name: "own options", options: &anthropic.RequestOptions{ServiceTier: "standard_only"}, wire: `"service_tier":"standard_only"`},
+								optionsCase{name: "nil own options", options: (*anthropic.RequestOptions)(nil), wire: `"messages"`, absent: "service_tier"})
+						case "openai":
+							cases[0].options = &anthropic.RequestOptions{ServiceTier: "auto"}
+							cases = append(cases,
+								optionsCase{name: "own options", options: &openai.RequestOptions{ServiceTier: "flex"}, wire: `"service_tier":"flex"`},
+								optionsCase{name: "nil own options", options: (*openai.RequestOptions)(nil), wire: `"messages"`, absent: "service_tier"})
+						}
+						for _, test := range cases {
+							t.Run(test.name, func(t *testing.T) {
+								var calls atomic.Int32
+								var body atomic.Pointer[string]
+								server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+									calls.Add(1)
+									data, _ := io.ReadAll(r.Body)
+									text := string(data)
+									body.Store(&text)
+									w.WriteHeader(http.StatusInternalServerError)
+								}))
+								defer server.Close()
+								client, err := adapter.new(server, []llm.Capability{llm.CapabilityStreaming})
+								if err != nil {
+									t.Fatal(err)
+								}
+								withOptions := request
+								withOptions.ProviderOptions = test.options
+								err = conformanceCall(t, client, context.Background(), withOptions, streaming)
+								if test.wire == "" {
+									var modelErr *llm.Error
+									if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || calls.Load() != 0 {
+										t.Fatalf("error = %v after %d HTTP requests, want unsupported before I/O", err, calls.Load())
+									}
+									return
+								}
+								sent := body.Load()
+								if sent == nil || !strings.Contains(*sent, test.wire) || (test.absent != "" && strings.Contains(*sent, test.absent)) {
+									t.Fatalf("request body = %v (error %v), want %s", sent, err, test.wire)
 								}
 							})
 						}

@@ -57,6 +57,11 @@ OpenAI Responses and Azure (PDF) adapters; the other adapters reject file parts
 before provider I/O. File parts carry bytes only, never provider file IDs. The
 built-in catalog does not declare the capability yet, so configure it on the
 adapter.
+Settings that only one protocol has go in `Request.ProviderOptions` as that
+adapter's options type: `*anthropic.RequestOptions` and `*openai.RequestOptions`
+(Chat Completions) currently carry `ServiceTier`. Every adapter rejects another
+adapter's options before provider I/O, and the adapters without an options type
+reject any.
 OpenAI Responses also supports durable background jobs through
 `llm.BackgroundGenerator`.
 

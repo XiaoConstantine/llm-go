@@ -36,6 +36,7 @@ type chatRequest struct {
 	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
 	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          string              `json:"service_tier,omitempty"`
 }
 
 type reasoningOptions struct {
@@ -355,6 +356,13 @@ func newChatRequestFor(op, model string, request llm.Request, compatibility llm.
 		FrequencyPenalty: request.FrequencyPenalty,
 		PresencePenalty:  request.PresencePenalty,
 		Stop:             append([]string(nil), request.Stop...),
+	}
+	options, err := requestOptions(op, request)
+	if err != nil {
+		return chatRequest{}, err
+	}
+	if options != nil {
+		wrequest.ServiceTier = options.ServiceTier
 	}
 	applyReasoningOptions(&wrequest, request.ReasoningEffort, compatibility)
 	if request.MaxOutputTokens != 0 {
