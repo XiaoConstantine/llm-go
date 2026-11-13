@@ -737,14 +737,19 @@ func TestStreamClassifiesEventErrorKinds(t *testing.T) {
 }
 
 func TestOverloadRetriesOnlyBeforeFirstChunk(t *testing.T) {
-	for _, started := range []bool{false, true} {
-		t.Run(fmt.Sprintf("started=%t", started), func(t *testing.T) {
+	// message_start alone reports usage but commits no chunk, so the attempt
+	// stays retryable until the first output arrives.
+	for _, sent := range []string{"nothing", "message_start", "output"} {
+		t.Run(sent, func(t *testing.T) {
+			started := sent == "output"
 			var attempts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				attempts.Add(1)
 				w.Header().Set("Content-Type", "text/event-stream")
-				if started {
+				if sent != "nothing" {
 					_, _ = io.WriteString(w, streamEvent("message_start", validStreamStart))
+				}
+				if started {
 					_, _ = io.WriteString(w, streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"partial"}}`))
 				}
 				_, _ = io.WriteString(w, streamEvent("error", `{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`))
@@ -775,6 +780,63 @@ func TestOverloadRetriesOnlyBeforeFirstChunk(t *testing.T) {
 			}
 			if attempts.Load() != want {
 				t.Fatalf("attempts = %d, want %d", attempts.Load(), want)
+			}
+		})
+	}
+}
+
+func TestStreamReportsStartUsageWithFirstOutput(t *testing.T) {
+	const start = `{"type":"message_start","message":{"id":"msg_stream","type":"message","role":"assistant","content":[],"model":"claude-served","stop_reason":null,"usage":{"input_tokens":8,"output_tokens":1,"cache_creation_input_tokens":3,"cache_read_input_tokens":2}}}`
+	textStart := streamEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"partial"}}`)
+	textDelta := streamEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" more"}}`)
+	startUsage := llm.Usage{InputTokens: 8, OutputTokens: 1, CacheReadTokens: 2, CacheWriteTokens: 3, TotalTokens: 14}
+	for _, test := range []struct {
+		name     string
+		tail     string
+		wantEOF  bool
+		wantLast *llm.Usage
+	}{
+		{name: "provider error", tail: streamEvent("error", `{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`)},
+		{name: "truncated"},
+		{
+			name: "completed",
+			tail: streamEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+				streamEvent("message_delta", streamFinishEvent("end_turn", 5)) +
+				streamEvent("message_stop", `{"type":"message_stop"}`),
+			wantEOF:  true,
+			wantLast: &llm.Usage{InputTokens: 8, OutputTokens: 5, CacheReadTokens: 2, CacheWriteTokens: 3, TotalTokens: 18},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := streamEvent("message_start", start) + textStart + textDelta + test.tail
+			stream, err := newStaticStreamClient(t, http.StatusOK, "text/event-stream", body).Stream(context.Background(), textRequest("hello"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := stream.Close(); err != nil {
+					t.Errorf("close stream: %v", err)
+				}
+			}()
+			chunks, terminal := receiveAll(stream)
+			if errors.Is(terminal, io.EOF) != test.wantEOF {
+				t.Fatalf("terminal error = %v, want EOF %t", terminal, test.wantEOF)
+			}
+			if len(chunks) < 2 {
+				t.Fatalf("chunks = %+v", chunks)
+			}
+			if chunks[0].Usage == nil || *chunks[0].Usage != startUsage {
+				t.Fatalf("first chunk usage = %+v, want %+v", chunks[0].Usage, startUsage)
+			}
+			if chunks[0].FinishReason != "" || len(chunks[0].Content) != 1 {
+				t.Fatalf("first chunk = %+v", chunks[0])
+			}
+			if chunks[1].Usage != nil {
+				t.Fatalf("second chunk repeats usage %+v", chunks[1].Usage)
+			}
+			last := chunks[len(chunks)-1].Usage
+			if test.wantLast != nil && (last == nil || *last != *test.wantLast) {
+				t.Fatalf("final usage = %+v, want %+v", last, test.wantLast)
 			}
 		})
 	}

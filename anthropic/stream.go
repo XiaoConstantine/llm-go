@@ -290,6 +290,7 @@ type streamDecoder struct {
 	thinking                    []anthropicThinking
 	toolArgumentBytes           int
 	pendingEvents               []llm.StreamEvent
+	usagePending                bool
 	allowEmptyThinkingSignature bool
 }
 
@@ -402,6 +403,7 @@ func (decoder *streamDecoder) consume(eventName, data string, emit internalstrea
 		return false, malformedStream("event name %q does not match type %q", eventName, envelope.Type)
 	}
 
+	emit = decoder.emitWithStartUsage(emit)
 	switch eventName {
 	case "ping":
 		return false, nil
@@ -468,7 +470,26 @@ func (decoder *streamDecoder) consumeMessageStart(data string) error {
 	decoder.id = message.ID
 	decoder.model = message.Model
 	decoder.pendingEvents = append(decoder.pendingEvents, llm.StreamEvent{Kind: llm.StreamEventStart})
+	decoder.usagePending = true
 	return nil
+}
+
+// emitWithStartUsage attaches the usage reported by message_start to the first
+// chunk that carries output. The usage is not emitted as a chunk of its own, so
+// a stream that fails before producing output commits nothing and remains
+// retryable.
+func (decoder *streamDecoder) emitWithStartUsage(emit internalstream.Emit) internalstream.Emit {
+	return func(chunk llm.Chunk) bool {
+		if decoder.usagePending {
+			decoder.usagePending = false
+			if chunk.Usage == nil {
+				if usage, err := decoder.usage.value(); err == nil {
+					chunk.Usage = usage
+				}
+			}
+		}
+		return emit(chunk)
+	}
 }
 
 func (decoder *streamDecoder) consumeContentStart(data string, emit internalstream.Emit) error {

@@ -8,4 +8,10 @@
 // Temporary overloaded_error failures carry an explicit retryable hint, also
 // when received as SSE error events without an HTTP failure status. Retries
 // remain opt-in through llm.WithRetry and stop once a stream delivers a chunk.
+//
+// Streams report the input and cache usage from message_start on the first
+// chunk that carries output, so a stream that fails or is canceled after
+// producing output still reports what the request consumed. The final chunk
+// carries the complete cumulative usage. The early usage is never a chunk of
+// its own, so it does not end retry eligibility.
 package anthropic
