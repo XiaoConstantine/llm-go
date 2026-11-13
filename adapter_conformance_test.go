@@ -201,6 +201,63 @@ func TestAdapterConformance(t *testing.T) {
 							t.Fatalf("request body = %v (error %v), want %s", sent, err, wire)
 						}
 					})
+					t.Run("document parts", func(t *testing.T) {
+						// Adapters either send the document or reject it before I/O;
+						// none may drop it silently.
+						wire := map[string]string{
+							"anthropic": `"type":"document"`,
+							"openai":    `"type":"file"`,
+							"responses": `"type":"input_file"`,
+							"azure":     `"type":"input_file"`,
+						}[adapter.name]
+						document := llm.Part{Kind: llm.PartFile, Data: []byte("%PDF-1"), MediaType: "application/pdf"}
+						inUser := request
+						inUser.Messages = []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{document, {Kind: llm.PartText, Text: "summarize"}}}}
+						inSystem := request
+						inSystem.Messages = []llm.Message{{Role: llm.RoleSystem, Content: []llm.Part{document}}, {Role: llm.RoleUser, Content: []llm.Part{{Kind: llm.PartText, Text: "summarize"}}}}
+						declared := []llm.Capability{llm.CapabilityStreaming, llm.CapabilityDocuments}
+						for _, test := range []struct {
+							name         string
+							capabilities []llm.Capability
+							request      llm.Request
+							sent         bool
+						}{
+							{"user message", declared, inUser, wire != ""},
+							{"undeclared capability", []llm.Capability{llm.CapabilityStreaming}, inUser, false},
+							{"system message", declared, inSystem, false},
+						} {
+							t.Run(test.name, func(t *testing.T) {
+								var calls atomic.Int32
+								var body atomic.Pointer[string]
+								server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+									calls.Add(1)
+									data, _ := io.ReadAll(r.Body)
+									text := string(data)
+									body.Store(&text)
+									w.WriteHeader(http.StatusInternalServerError)
+								}))
+								defer server.Close()
+								client, err := adapter.new(server, test.capabilities)
+								if err != nil {
+									if wire == "" {
+										return // The adapter cannot declare the capability at all.
+									}
+									t.Fatal(err)
+								}
+								err = conformanceCall(t, client, context.Background(), test.request, streaming)
+								if !test.sent {
+									var modelErr *llm.Error
+									if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || calls.Load() != 0 {
+										t.Fatalf("error = %v after %d HTTP requests, want unsupported before I/O", err, calls.Load())
+									}
+									return
+								}
+								if sent := body.Load(); sent == nil || !strings.Contains(*sent, wire) || !strings.Contains(*sent, "JVBERi0x") {
+									t.Fatalf("request body = %v (error %v), want %s with the document bytes", sent, err, wire)
+								}
+							})
+						}
+					})
 					t.Run("in-flight cancellation", func(t *testing.T) {
 						ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
 						defer stop()

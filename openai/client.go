@@ -215,7 +215,7 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 	for _, capability := range configured {
 		switch capability {
 		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools,
-			llm.CapabilityJSON, llm.CapabilityVision, llm.CapabilityAudio:
+			llm.CapabilityJSON, llm.CapabilityVision, llm.CapabilityAudio, llm.CapabilityDocuments:
 		default:
 			return nil, configError("capability %q is not implemented", capability)
 		}
@@ -633,6 +633,13 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	}
 	if hasAudio && !c.hasCapability(llm.CapabilityAudio) {
 		return unsupported(op, "configured model does not declare audio capability")
+	}
+	documents, misplaced := adapterutil.FileParts(request)
+	if misplaced {
+		return unsupported(op, "document content is supported only in user messages")
+	}
+	if documents && !c.hasCapability(llm.CapabilityDocuments) {
+		return unsupported(op, "configured model does not declare documents capability")
 	}
 	if hasToolImage && c.compatibility.ToolResultImageFallback != llm.CompatibilityEnabled {
 		return unsupported(op, "image tool results require the explicit synthetic-user compatibility fallback")

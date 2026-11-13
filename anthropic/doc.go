@@ -4,6 +4,9 @@
 // cache controls, non-streaming client tool use, and typed text/thinking/tool
 // streaming. Anthropic Messages has no audio input content block, so
 // CapabilityAudio is unsupported. JSON response mode is not implemented.
+// File parts in user messages become document blocks: PDF as base64 and
+// plain text as UTF-8 text, with Part.Filename as the title. Other document
+// media types are unsupported.
 //
 // Temporary overloaded_error failures carry an explicit retryable hint, also
 // when received as SSE error events without an HTTP failure status. Retries

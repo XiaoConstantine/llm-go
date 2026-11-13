@@ -278,7 +278,7 @@ func validatePart(part Part) error {
 		if !utf8.ValidString(part.Text) {
 			return fmt.Errorf("text must be valid UTF-8")
 		}
-	case PartImage, PartAudio:
+	case PartImage, PartAudio, PartFile:
 		if part.Text != "" {
 			return fmt.Errorf("binary part must not contain text")
 		}
@@ -293,6 +293,14 @@ func validatePart(part Part) error {
 		}
 	default:
 		return fmt.Errorf("kind %d is invalid", part.Kind)
+	}
+	if part.Filename != "" {
+		if part.Kind != PartFile {
+			return fmt.Errorf("filename is valid only on a file part")
+		}
+		if !utf8.ValidString(part.Filename) {
+			return fmt.Errorf("filename must be valid UTF-8")
+		}
 	}
 	return nil
 }

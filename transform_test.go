@@ -60,6 +60,42 @@ func TestTransformHistoryUnknownOrPartialIdentityDropsProviderData(t *testing.T)
 	}
 }
 
+func TestTransformHistoryKeepsDocumentsOnlyInUserMessagesOfCapableTargets(t *testing.T) {
+	document := Part{Kind: PartFile, Data: []byte("%PDF-1"), MediaType: "application/pdf", Filename: "report.pdf"}
+	history := []Message{
+		{Role: RoleUser, Content: []Part{document}},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call", Name: "fetch", Arguments: []byte(`{}`)}}},
+		{Role: RoleTool, ToolResults: []ToolResult{{CallID: "call", Name: "fetch", Content: []Part{document}}}},
+	}
+	source := ModelInfo{Provider: "a", Model: "one", API: "api-a", Capabilities: []Capability{CapabilityGeneration, CapabilityTools, CapabilityDocuments}}
+	capable := ModelInfo{Provider: "b", Model: "two", API: "api-b", Capabilities: []Capability{CapabilityGeneration, CapabilityTools, CapabilityDocuments}}
+	output, warnings, err := TransformHistory(source, capable, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := output[0].Content[0]
+	if kept.Kind != PartFile || kept.Filename != "report.pdf" || string(kept.Data) != "%PDF-1" {
+		t.Fatalf("user document = %#v", kept)
+	}
+	if len(warnings) != 1 || warnings[0].Code != TransformReplacedDocument || output[2].ToolResults[0].Content[0].Kind != PartText {
+		t.Fatalf("tool result = %#v, warnings %#v", output[2], warnings)
+	}
+	kept.Data[0] = 'x'
+	if history[0].Content[0].Data[0] != '%' {
+		t.Fatal("input history shares document bytes with the output")
+	}
+
+	incapable := capable
+	incapable.Capabilities = []Capability{CapabilityGeneration, CapabilityTools}
+	output, warnings, err = TransformHistory(source, incapable, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 2 || warnings[0].Code != TransformReplacedDocument || output[0].Content[0].Kind != PartText || output[0].Content[0].Filename != "" {
+		t.Fatalf("output = %#v, warnings %#v", output, warnings)
+	}
+}
+
 func TestTransformHistoryChatToolResultImageCompatibility(t *testing.T) {
 	history := []Message{
 		{Role: RoleUser},

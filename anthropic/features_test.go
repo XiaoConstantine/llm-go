@@ -469,3 +469,51 @@ func TestAnthropicOAuthIdentityWire(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRequestToWireMapsDocuments(t *testing.T) {
+	document := func(part llm.Part) llm.Request {
+		part.Kind = llm.PartFile
+		return llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{part}}}}
+	}
+	for _, test := range []struct {
+		name string
+		part llm.Part
+		want string
+	}{
+		{"PDF", llm.Part{Data: []byte("%PDF-1"), MediaType: "Application/PDF", Filename: "report.pdf"},
+			`{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0x"},"title":"report.pdf"}`},
+		{"plain text", llm.Part{Data: []byte("notes"), MediaType: "text/plain; charset=utf-8"},
+			`{"type":"document","source":{"type":"text","media_type":"text/plain","data":"notes"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wire, _, err := requestToWireWithCompatibility("generate", "claude", 4096, document(test.part), llm.AnthropicCompatibility{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := jsonv2.Marshal(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), test.want) {
+				t.Fatalf("wire = %s, want %s", body, test.want)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		part llm.Part
+		kind llm.ErrorKind
+	}{
+		{"unsupported media type", llm.Part{Data: []byte("a,b"), MediaType: "text/csv"}, llm.KindUnsupported},
+		{"malformed media type", llm.Part{Data: []byte("a"), MediaType: "application/"}, llm.KindInvalidRequest},
+		{"plain text that is not UTF-8", llm.Part{Data: []byte{0xff}, MediaType: "text/plain"}, llm.KindInvalidRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := requestToWireWithCompatibility("generate", "claude", 4096, document(test.part), llm.AnthropicCompatibility{})
+			var modelErr *llm.Error
+			if !errors.As(err, &modelErr) || modelErr.Kind != test.kind {
+				t.Fatalf("error = %v, want kind %v", err, test.kind)
+			}
+		})
+	}
+}

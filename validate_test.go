@@ -251,6 +251,30 @@ func TestRequestValidateRejectsInvalidRequests(t *testing.T) {
 			want: "binary part data must not be empty",
 		},
 		{
+			name: "empty file data",
+			request: Request{Messages: []Message{{
+				Role:    RoleUser,
+				Content: []Part{{Kind: PartFile, MediaType: "application/pdf"}},
+			}}},
+			want: "binary part data must not be empty",
+		},
+		{
+			name: "filename on a text part",
+			request: Request{Messages: []Message{{
+				Role:    RoleUser,
+				Content: []Part{{Text: "text", Filename: "notes.txt"}},
+			}}},
+			want: "filename is valid only on a file part",
+		},
+		{
+			name: "invalid UTF-8 filename",
+			request: Request{Messages: []Message{{
+				Role:    RoleUser,
+				Content: []Part{{Kind: PartFile, Data: []byte("%PDF-1"), MediaType: "application/pdf", Filename: invalidUTF8}},
+			}}},
+			want: "filename must be valid UTF-8",
+		},
+		{
 			name: "invalid UTF-8 text",
 			request: Request{Messages: []Message{{
 				Role:    RoleUser,

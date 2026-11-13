@@ -381,6 +381,27 @@ func (c Codec) userContentToWire(op string, messageIndex int, parts []llm.Part, 
 			}
 			content = append(content, param.Override[openairesponses.ResponseInputContentUnionParam](json.RawMessage(raw)))
 			hasStructuredContent = true
+		case llm.PartFile:
+			mediaType, _, err := mime.ParseMediaType(part.MediaType)
+			if err != nil {
+				return nil, false, c.requestError(op, "messages[%d] content[%d] document media type %q is invalid", messageIndex, partIndex, part.MediaType)
+			}
+			if mediaType = strings.ToLower(mediaType); mediaType != "application/pdf" {
+				return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] document media type %q is not supported", messageIndex, partIndex, part.MediaType))
+			}
+			filename := part.Filename
+			if filename == "" {
+				filename = "document.pdf"
+			}
+			file := openairesponses.ResponseInputFileParam{
+				Filename: param.NewOpt(filename),
+				FileData: param.NewOpt("data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data)),
+			}
+			if part.CacheBreakpoint {
+				file.PromptCacheBreakpoint = openairesponses.NewResponseInputFilePromptCacheBreakpointParam()
+			}
+			content = append(content, openairesponses.ResponseInputContentUnionParam{OfInputFile: &file})
+			hasStructuredContent = true
 		default:
 			return nil, false, c.unsupported(op, fmt.Sprintf("messages[%d] content[%d] kind %d is not implemented", messageIndex, partIndex, part.Kind))
 		}

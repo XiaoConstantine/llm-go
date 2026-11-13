@@ -2,6 +2,7 @@ package openai
 
 import (
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -145,5 +146,38 @@ func TestChatParallelToolCallsWire(t *testing.T) {
 		} else if !strings.Contains(string(body), test.want) {
 			t.Errorf("wire = %s, want %s", body, test.want)
 		}
+	}
+}
+
+func TestChatDocumentWire(t *testing.T) {
+	document := func(part llm.Part) llm.Request {
+		part.Kind = llm.PartFile
+		return llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{part, {Text: "summarize"}}}}}
+	}
+	for _, test := range []struct {
+		name string
+		part llm.Part
+		want string
+	}{
+		{"default filename", llm.Part{Data: []byte("%PDF-1"), MediaType: "application/pdf"},
+			`{"type":"file","file":{"filename":"document.pdf","file_data":"data:application/pdf;base64,JVBERi0x"}}`},
+		{"explicit filename", llm.Part{Data: []byte("%PDF-1"), MediaType: "Application/PDF", Filename: "report.pdf"},
+			`{"type":"file","file":{"filename":"report.pdf","file_data":"data:application/pdf;base64,JVBERi0x"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wire, err := newChatRequestFor("generate", "model", document(test.part), llm.OpenAIChatCompatibility{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := jsonv2.Marshal(wire)
+			if !strings.Contains(string(body), test.want) {
+				t.Fatalf("wire = %s, want %s", body, test.want)
+			}
+		})
+	}
+	_, err := newChatRequestFor("generate", "model", document(llm.Part{Data: []byte("notes"), MediaType: "text/plain"}), llm.OpenAIChatCompatibility{})
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported {
+		t.Fatalf("plain-text document error = %v, want unsupported", err)
 	}
 }

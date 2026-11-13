@@ -492,6 +492,9 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if request.HasCacheBreakpoints() {
 		return unsupported(op, "explicit cache breakpoint placement is not supported by the subscription endpoint")
 	}
+	if documents, misplaced := adapterutil.FileParts(request); documents || misplaced {
+		return unsupported(op, "document content is not supported by the subscription endpoint")
+	}
 	usesTools := len(request.Tools) != 0
 	usesImages := false
 	usesAudio := false

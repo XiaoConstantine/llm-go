@@ -137,7 +137,7 @@ func normalizeModel(model llm.Model) (llm.Model, error) {
 	for index, capability := range model.Capabilities {
 		switch capability {
 		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools,
-			llm.CapabilityJSON, llm.CapabilityVision, llm.CapabilityAudio:
+			llm.CapabilityJSON, llm.CapabilityVision, llm.CapabilityAudio, llm.CapabilityDocuments:
 		default:
 			return llm.Model{}, fmt.Errorf("capabilities[%d] %q is invalid", index, capability)
 		}

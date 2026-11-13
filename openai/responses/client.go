@@ -1,6 +1,7 @@
 // Package responses implements OpenAI's Responses API with llm-go's neutral
 // model contracts. The Responses input-content union does not support audio, so
-// CapabilityAudio is unsupported.
+// CapabilityAudio is unsupported. PDF file parts in user messages are sent as
+// inline input_file content; other document media types are unsupported.
 package responses
 
 import (
@@ -219,7 +220,7 @@ func configureCapabilities(provider string, configured []llm.Capability) ([]llm.
 	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
 	for _, capability := range configured {
 		switch capability {
-		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityJSON:
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityJSON, llm.CapabilityDocuments:
 		default:
 			return nil, configError(provider, "capability %q is not implemented", capability)
 		}
@@ -593,6 +594,13 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	if usesImages && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(c.provider, op, "configured model does not declare vision capability")
 	}
+	documents, misplaced := adapterutil.FileParts(request)
+	if misplaced {
+		return unsupported(c.provider, op, "document content is supported only in user messages")
+	}
+	if documents && !c.hasCapability(llm.CapabilityDocuments) {
+		return unsupported(c.provider, op, "configured model does not declare documents capability")
+	}
 	if request.ResponseFormat == llm.ResponseFormatJSON && !c.hasCapability(llm.CapabilityJSON) {
 		return unsupported(c.provider, op, "configured model does not declare JSON capability")
 	}
@@ -627,6 +635,7 @@ func checkRequest(provider, op string, request llm.Request) error {
 				if message.Role != llm.RoleUser {
 					return unsupported(provider, op, "image content is supported only in user messages")
 				}
+			case llm.PartFile:
 			default:
 				return unsupported(provider, op, "OpenAI Responses does not support audio message content")
 			}

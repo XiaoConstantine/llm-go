@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"strings"
 	"testing"
 
@@ -69,5 +70,49 @@ func TestParallelToolCallsWire(t *testing.T) {
 		if !strings.Contains(string(body), test.want) {
 			t.Errorf("wire = %s, want %s", body, test.want)
 		}
+	}
+}
+
+func TestDocumentWire(t *testing.T) {
+	client, err := NewWithCompatibility(Config{Model: "model", APIKey: "key", Capabilities: []llm.Capability{llm.CapabilityDocuments}},
+		&llm.OpenAIResponsesCompatibility{ExplicitPromptCacheMode: llm.CompatibilityEnabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := func(part llm.Part) llm.Request {
+		part.Kind = llm.PartFile
+		return llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{part, {Text: "summarize"}}}}}
+	}
+	for _, test := range []struct {
+		name string
+		part llm.Part
+		want []string
+	}{
+		{"default filename", llm.Part{Data: []byte("%PDF-1"), MediaType: "application/pdf"},
+			[]string{`"file_data":"data:application/pdf;base64,JVBERi0x"`, `"filename":"document.pdf"`, `"type":"input_file"`}},
+		{"explicit filename and cache breakpoint", llm.Part{Data: []byte("%PDF-1"), MediaType: "application/pdf", Filename: "report.pdf", CacheBreakpoint: true},
+			[]string{`"filename":"report.pdf"`, `"prompt_cache_breakpoint":{`, `"type":"input_file"`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := document(test.part)
+			if test.part.CacheBreakpoint {
+				request.CacheRetention = llm.CacheRetentionShort
+			}
+			params, err := client.prepare(context.Background(), "generate", request, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := jsonv2.Marshal(params)
+			for _, want := range test.want {
+				if !strings.Contains(string(body), want) {
+					t.Errorf("wire = %s, want %s", body, want)
+				}
+			}
+		})
+	}
+	_, err = client.prepare(context.Background(), "generate", document(llm.Part{Data: []byte("notes"), MediaType: "text/plain"}), false)
+	var modelErr *llm.Error
+	if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported {
+		t.Fatalf("plain-text document error = %v, want unsupported", err)
 	}
 }

@@ -32,17 +32,21 @@ func SupportsCapability(api llm.API, capability llm.Capability) bool {
 	switch api {
 	case llm.APIOpenAIChatCompletions:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
+			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio ||
+			capability == llm.CapabilityDocuments
 	case llm.APIOpenAIResponses:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
-			capability == llm.CapabilityJSON || capability == llm.CapabilityVision
+			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityDocuments
 	case llm.APIOpenAICodexResponses:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
 			capability == llm.CapabilityVision || capability == llm.CapabilityAudio
 	case llm.APIGeminiGenerateContent, llm.APIGoogleVertex:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
 			capability == llm.CapabilityJSON || capability == llm.CapabilityVision || capability == llm.CapabilityAudio
-	case llm.APIAnthropicMessages, llm.APIMistralConversations, llm.APIBedrockConverseStream:
+	case llm.APIAnthropicMessages:
+		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools ||
+			capability == llm.CapabilityVision || capability == llm.CapabilityDocuments
+	case llm.APIMistralConversations, llm.APIBedrockConverseStream:
 		return capability == llm.CapabilityStreaming || capability == llm.CapabilityTools || capability == llm.CapabilityVision
 	default:
 		return false

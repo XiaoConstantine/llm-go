@@ -15,6 +15,7 @@ const (
 	TransformRemovedProviderData     TransformWarningCode = "removed_provider_data"
 	TransformReplacedImage           TransformWarningCode = "replaced_image"
 	TransformReplacedAudio           TransformWarningCode = "replaced_audio"
+	TransformReplacedDocument        TransformWarningCode = "replaced_document"
 	TransformNormalizedToolCallID    TransformWarningCode = "normalized_tool_call_id"
 	TransformAddedMissingToolResult  TransformWarningCode = "added_missing_tool_result"
 	TransformRemovedOrphanToolResult TransformWarningCode = "removed_orphan_tool_result"
@@ -32,6 +33,8 @@ type TransformWarning struct {
 // preserved only for the exact same provider, protocol, and model because it may
 // contain model-bound signatures or encrypted state. Unsupported image and audio
 // parts are replaced with visible text placeholders and individually reported.
+// File parts are replaced the same way unless they are in a user message and
+// target declares CapabilityDocuments.
 // OpenAI Chat tool-result images are preserved only when its explicit image
 // fallback compatibility is enabled; tool-result audio is always converted.
 // Tool history targeting a model without tool capability fails rather than being
@@ -50,6 +53,7 @@ func TransformHistory(source, target ModelInfo, history []Message) ([]Message, [
 		source.Provider == target.Provider && source.API == target.API && source.Model == target.Model
 	targetVision := modelHasCapability(target, CapabilityVision)
 	targetAudio := modelHasCapability(target, CapabilityAudio)
+	targetDocuments := modelHasCapability(target, CapabilityDocuments)
 	toolResultVision := targetVision && supportsImageToolResults(target)
 	targetTools := modelHasCapability(target, CapabilityTools)
 
@@ -70,7 +74,7 @@ func TransformHistory(source, target ModelInfo, history []Message) ([]Message, [
 		converted := Message{Role: message.Role,
 			Content: make([]Part, len(message.Content))}
 		for partIndex, part := range message.Content {
-			converted.Content[partIndex], warnings = transformPart(part, targetVision, targetAudio,
+			converted.Content[partIndex], warnings = transformPart(part, targetVision, targetAudio, targetDocuments && message.Role == RoleUser,
 				fmt.Sprintf("messages[%d].content[%d]", messageIndex, partIndex), warnings)
 		}
 		converted.ToolCalls = make([]ToolCall, len(message.ToolCalls))
@@ -121,7 +125,7 @@ func TransformHistory(source, target ModelInfo, history []Message) ([]Message, [
 				convertedResult.Name = call.converted.Name
 			}
 			for partIndex, part := range result.Content {
-				convertedResult.Content[partIndex], warnings = transformPart(part, toolResultVision, false,
+				convertedResult.Content[partIndex], warnings = transformPart(part, toolResultVision, false, false,
 					fmt.Sprintf("messages[%d].tool results[%d].content[%d]", messageIndex, resultIndex, partIndex), warnings)
 			}
 			converted.ToolResults = append(converted.ToolResults, convertedResult)
@@ -340,7 +344,7 @@ func validateRepairedToolHistory(history []Message) error {
 	return nil
 }
 
-func transformPart(part Part, vision, audio bool, path string, warnings []TransformWarning) (Part, []TransformWarning) {
+func transformPart(part Part, vision, audio, documents bool, path string, warnings []TransformWarning) (Part, []TransformWarning) {
 	switch part.Kind {
 	case PartImage:
 		if !vision {
@@ -353,6 +357,12 @@ func transformPart(part Part, vision, audio bool, path string, warnings []Transf
 			warnings = append(warnings, TransformWarning{Code: TransformReplacedAudio, Path: path,
 				Message: "replaced audio with text because target model does not support audio"})
 			return Part{Kind: PartText, Text: "(audio omitted: target model does not support audio)"}, warnings
+		}
+	case PartFile:
+		if !documents {
+			warnings = append(warnings, TransformWarning{Code: TransformReplacedDocument, Path: path,
+				Message: "replaced document with text because target model does not support documents here"})
+			return Part{Kind: PartText, Text: "(document omitted: target model does not support documents here)"}, warnings
 		}
 	}
 	return clonePart(part), warnings

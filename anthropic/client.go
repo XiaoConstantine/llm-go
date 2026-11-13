@@ -208,7 +208,7 @@ func configureCapabilities(configured []llm.Capability) ([]llm.Capability, error
 	seen := map[llm.Capability]struct{}{llm.CapabilityGeneration: {}}
 	for _, capability := range configured {
 		switch capability {
-		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision:
+		case llm.CapabilityGeneration, llm.CapabilityStreaming, llm.CapabilityTools, llm.CapabilityVision, llm.CapabilityDocuments:
 		default:
 			return nil, configError("capability %q is not implemented", capability)
 		}
@@ -471,6 +471,13 @@ func (c *Client) checkCapabilities(op string, request llm.Request) error {
 	}
 	if hasImage && !c.hasCapability(llm.CapabilityVision) {
 		return unsupported(op, "configured model does not declare vision capability")
+	}
+	documents, misplaced := adapterutil.FileParts(request)
+	if misplaced {
+		return unsupported(op, "document content is supported only in user messages")
+	}
+	if documents && !c.hasCapability(llm.CapabilityDocuments) {
+		return unsupported(op, "configured model does not declare documents capability")
 	}
 	return nil
 }

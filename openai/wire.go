@@ -65,7 +65,13 @@ type contentPart struct {
 	Text         *string           `json:"text,omitzero"`
 	ImageURL     *imageURL         `json:"image_url,omitempty"`
 	InputAudio   *inputAudio       `json:"input_audio,omitempty"`
+	File         *inputFile        `json:"file,omitempty"`
 	CacheControl *chatCacheControl `json:"cache_control,omitempty"`
+}
+
+type inputFile struct {
+	Filename string `json:"filename"`
+	FileData string `json:"file_data"`
 }
 
 type chatCacheControl struct {
@@ -719,6 +725,23 @@ func contentToWire(op string, role llm.Role, parts []llm.Part) (any, error) {
 					Data:   base64.StdEncoding.EncodeToString(part.Data),
 					Format: format,
 				},
+			}
+		case llm.PartFile:
+			mediaType, _, err := mime.ParseMediaType(part.MediaType)
+			if err != nil {
+				return nil, requestError(op, "document media type %q is invalid", part.MediaType)
+			}
+			if mediaType = strings.ToLower(mediaType); mediaType != "application/pdf" {
+				return nil, unsupported(op, fmt.Sprintf("document media type %q is not supported", part.MediaType))
+			}
+			filename := part.Filename
+			if filename == "" {
+				filename = "document.pdf"
+			}
+			content[i] = contentPart{
+				Type: "file",
+				File: &inputFile{Filename: filename, FileData: "data:" + mediaType + ";base64," +
+					base64.StdEncoding.EncodeToString(part.Data)},
 			}
 		default:
 			return nil, unsupported(op, "content kind is not supported")

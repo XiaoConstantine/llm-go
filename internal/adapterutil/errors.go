@@ -1,4 +1,5 @@
-// Package adapterutil contains provider-neutral adapter error mechanics.
+// Package adapterutil contains provider-neutral adapter error and request
+// inspection mechanics.
 // Protocol-specific classifications belong in the adapters, not here.
 package adapterutil
 

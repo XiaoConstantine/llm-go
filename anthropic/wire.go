@@ -9,6 +9,7 @@ import (
 	"mime"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	llm "github.com/XiaoConstantine/llm-go"
 	"github.com/XiaoConstantine/llm-go/internal/deferredtools"
@@ -73,6 +74,7 @@ type inputContentBlock struct {
 	Type         string          `json:"type"`
 	Text         *string         `json:"text,omitzero"`
 	Source       *imageSource    `json:"source,omitempty"`
+	Title        string          `json:"title,omitempty"`
 	ID           string          `json:"id,omitempty"`
 	Name         string          `json:"name,omitempty"`
 	Input        json.RawMessage `json:"input,omitzero"`
@@ -577,6 +579,25 @@ func anthropicParts(op string, parts []llm.Part) ([]inputContentBlock, error) {
 				return nil, requestError(op, "content[%d] image media type %q is not supported", index, part.MediaType)
 			}
 			blocks = append(blocks, inputContentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(part.Data)}})
+		case llm.PartFile:
+			mediaType, _, err := mime.ParseMediaType(part.MediaType)
+			mediaType = strings.ToLower(mediaType)
+			if err != nil {
+				return nil, requestError(op, "content[%d] document media type %q is invalid", index, part.MediaType)
+			}
+			var source *imageSource
+			switch mediaType {
+			case "application/pdf":
+				source = &imageSource{Type: "base64", MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(part.Data)}
+			case "text/plain":
+				if !utf8.Valid(part.Data) {
+					return nil, requestError(op, "content[%d] plain-text document must be valid UTF-8", index)
+				}
+				source = &imageSource{Type: "text", MediaType: mediaType, Data: string(part.Data)}
+			default:
+				return nil, unsupported(op, fmt.Sprintf("content[%d] document media type %q is not supported", index, part.MediaType))
+			}
+			blocks = append(blocks, inputContentBlock{Type: "document", Source: source, Title: part.Filename})
 		default:
 			return nil, unsupported(op, fmt.Sprintf("content[%d] kind %d is not supported", index, part.Kind))
 		}

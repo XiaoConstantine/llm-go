@@ -375,6 +375,9 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 }
 
 func (c *Client) checkCapabilities(op string, request llm.Request) error {
+	if documents, misplaced := adapterutil.FileParts(request); documents || misplaced {
+		return unsupported(op, "document content is not supported by the Gemini adapter")
+	}
 	usesTools := len(request.Tools) != 0
 	hasImage := false
 	hasAudio := false

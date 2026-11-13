@@ -31,11 +31,17 @@ const (
 	PartImage
 	// PartAudio contains encoded audio bytes in Part.Data.
 	PartAudio
+	// PartFile contains the bytes of a document, such as a PDF, in Part.Data.
+	// Data is always file content, never a provider file reference.
+	PartFile
 )
 
 // Part is one piece of message content. Text parts use Text and leave Data and
-// MediaType empty. Image and audio parts use Data and MediaType and leave Text
-// empty. Other combinations are invalid. CacheBreakpoint marks the exact end of
+// MediaType empty. Image, audio, and file parts use Data and MediaType and
+// leave Text empty. Filename optionally names a file part and is invalid on
+// other kinds. Other combinations are invalid. Adapters accept file parts only
+// in user messages, for the media types their protocol supports, and only when
+// configured with CapabilityDocuments. CacheBreakpoint marks the exact end of
 // a reusable prompt prefix. It requires short or long cache retention and is
 // rejected by adapters that do not support explicit breakpoint placement.
 type Part struct {
@@ -43,7 +49,8 @@ type Part struct {
 	Text            string
 	Data            []byte
 	MediaType       string
-	CacheBreakpoint bool `json:",omitzero"`
+	Filename        string `json:",omitzero"`
+	CacheBreakpoint bool   `json:",omitzero"`
 }
 
 // Message is one turn in a model conversation. ToolCalls are valid only on an
@@ -331,6 +338,8 @@ const (
 	CapabilityVision Capability = "vision"
 	// CapabilityAudio indicates audio input support.
 	CapabilityAudio Capability = "audio"
+	// CapabilityDocuments indicates document input support through file parts.
+	CapabilityDocuments Capability = "documents"
 )
 
 // ModelCost contains prices in US dollars per million tokens. Tiers apply the

@@ -51,6 +51,12 @@ unsupported cache keys and session-affinity mappings fail before provider I/O.
 `Request.ParallelToolCalls` is sent by the OpenAI Chat, OpenAI Responses (also
 Azure and Codex), and Anthropic adapters; the other adapters reject a non-nil
 value before provider I/O.
+Document input (`llm.PartFile`, declared with `llm.CapabilityDocuments`) is sent
+from user messages by the Anthropic (PDF and plain text), OpenAI Chat (PDF), and
+OpenAI Responses and Azure (PDF) adapters; the other adapters reject file parts
+before provider I/O. File parts carry bytes only, never provider file IDs. The
+built-in catalog does not declare the capability yet, so configure it on the
+adapter.
 OpenAI Responses also supports durable background jobs through
 `llm.BackgroundGenerator`.
 
