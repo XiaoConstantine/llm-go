@@ -59,7 +59,10 @@ built-in catalog does not declare the capability yet, so configure it on the
 adapter.
 Settings that only one protocol has go in `Request.ProviderOptions` as that
 adapter's options type: `*anthropic.RequestOptions` and `*openai.RequestOptions`
-(Chat Completions) currently carry `ServiceTier`. Every adapter rejects another
+(Chat Completions) carry `ServiceTier` and `ExtraFields`, which adds top-level
+request body members the package does not model; a name the adapter itself can
+send, such as `stream`, is rejected as an invalid request. Every adapter rejects
+another
 adapter's options before provider I/O, and the adapters without an options type
 reject any.
 OpenAI Responses also supports durable background jobs through

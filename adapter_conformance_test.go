@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,37 @@ import (
 	"github.com/XiaoConstantine/llm-go/openai/responses"
 	"github.com/XiaoConstantine/llm-go/vertex"
 )
+
+// extra decodes a JSON object into provider extra fields.
+func extra(object string) map[string]json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(object), &fields); err != nil {
+		panic(err)
+	}
+	return fields
+}
+
+func TestRequestOptionsCloneOwnsExtraFields(t *testing.T) {
+	for name, options := range map[string]llm.ProviderOptions{
+		"anthropic": &anthropic.RequestOptions{ServiceTier: "auto", ExtraFields: extra(`{"vendor_flag":[1]}`)},
+		"openai":    &openai.RequestOptions{ServiceTier: "auto", ExtraFields: extra(`{"vendor_flag":[1]}`)},
+	} {
+		var original, clone map[string]json.RawMessage
+		switch owned := options.CloneProviderOptions().(type) {
+		case *anthropic.RequestOptions:
+			original, clone = options.(*anthropic.RequestOptions).ExtraFields, owned.ExtraFields
+		case *openai.RequestOptions:
+			original, clone = options.(*openai.RequestOptions).ExtraFields, owned.ExtraFields
+		}
+		if string(clone["vendor_flag"]) != "[1]" {
+			t.Fatalf("%s: cloned extra fields = %s", name, clone)
+		}
+		clone["vendor_flag"][1] = '2'
+		if string(original["vendor_flag"]) != "[1]" {
+			t.Fatalf("%s: clone aliased extra fields", name)
+		}
+	}
+}
 
 // conformanceOptions is a provider options type that no adapter owns.
 type conformanceOptions struct{}
@@ -270,6 +302,7 @@ func TestAdapterConformance(t *testing.T) {
 							name    string
 							options llm.ProviderOptions
 							wire    string // expected in the body; empty means rejected
+							invalid bool   // rejected as an invalid request, not unsupported
 							absent  string // must not be in the body
 						}
 						cases := []optionsCase{{name: "another adapter's options", options: &conformanceOptions{}}}
@@ -278,12 +311,20 @@ func TestAdapterConformance(t *testing.T) {
 							cases[0].options = &openai.RequestOptions{ServiceTier: "flex"}
 							cases = append(cases,
 								optionsCase{name: "own options", options: &anthropic.RequestOptions{ServiceTier: "standard_only"}, wire: `"service_tier":"standard_only"`},
-								optionsCase{name: "nil own options", options: (*anthropic.RequestOptions)(nil), wire: `"messages"`, absent: "service_tier"})
+								optionsCase{name: "nil own options", options: (*anthropic.RequestOptions)(nil), wire: `"messages"`, absent: "service_tier"},
+								optionsCase{name: "extra field", options: &anthropic.RequestOptions{ExtraFields: extra(`{"vendor_flag":{"on":true}}`)}, wire: `,"vendor_flag":{"on":true}}`},
+								optionsCase{name: "extra field replaces stream", options: &anthropic.RequestOptions{ExtraFields: extra(`{"stream":true}`)}, invalid: true},
+								optionsCase{name: "extra field replaces an omitted field", options: &anthropic.RequestOptions{ExtraFields: extra(`{"vendor_flag":1,"thinking":{"type":"enabled"}}`)}, invalid: true},
+								optionsCase{name: "extra field is not JSON", options: &anthropic.RequestOptions{ExtraFields: map[string]json.RawMessage{"vendor_flag": []byte(`1,"stream":true`)}}, invalid: true})
 						case "openai":
 							cases[0].options = &anthropic.RequestOptions{ServiceTier: "auto"}
 							cases = append(cases,
 								optionsCase{name: "own options", options: &openai.RequestOptions{ServiceTier: "flex"}, wire: `"service_tier":"flex"`},
-								optionsCase{name: "nil own options", options: (*openai.RequestOptions)(nil), wire: `"messages"`, absent: "service_tier"})
+								optionsCase{name: "nil own options", options: (*openai.RequestOptions)(nil), wire: `"messages"`, absent: "service_tier"},
+								optionsCase{name: "extra field", options: &openai.RequestOptions{ExtraFields: extra(`{"vendor_flag":{"on":true}}`)}, wire: `,"vendor_flag":{"on":true}}`},
+								optionsCase{name: "extra field replaces stream", options: &openai.RequestOptions{ExtraFields: extra(`{"stream":true}`)}, invalid: true},
+								optionsCase{name: "extra field replaces an omitted field", options: &openai.RequestOptions{ExtraFields: extra(`{"vendor_flag":1,"stream_options":{}}`)}, invalid: true},
+								optionsCase{name: "extra field is not JSON", options: &openai.RequestOptions{ExtraFields: map[string]json.RawMessage{"vendor_flag": []byte(`1,"stream":true`)}}, invalid: true})
 						}
 						for _, test := range cases {
 							t.Run(test.name, func(t *testing.T) {
@@ -305,9 +346,13 @@ func TestAdapterConformance(t *testing.T) {
 								withOptions.ProviderOptions = test.options
 								err = conformanceCall(t, client, context.Background(), withOptions, streaming)
 								if test.wire == "" {
+									want := llm.KindUnsupported
+									if test.invalid {
+										want = llm.KindInvalidRequest
+									}
 									var modelErr *llm.Error
-									if !errors.As(err, &modelErr) || modelErr.Kind != llm.KindUnsupported || calls.Load() != 0 {
-										t.Fatalf("error = %v after %d HTTP requests, want unsupported before I/O", err, calls.Load())
+									if !errors.As(err, &modelErr) || modelErr.Kind != want || calls.Load() != 0 {
+										t.Fatalf("error = %v after %d HTTP requests, want %v before I/O", err, calls.Load(), want)
 									}
 									return
 								}

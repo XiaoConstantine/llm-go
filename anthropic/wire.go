@@ -31,6 +31,8 @@ type messageRequest struct {
 	OutputConfig  *outputConfig    `json:"output_config,omitempty"`
 	ServiceTier   string           `json:"service_tier,omitempty"`
 	Stream        bool             `json:"stream,omitzero"`
+
+	extra map[string]json.RawMessage
 }
 
 type inputMessage struct {
@@ -247,6 +249,7 @@ func requestToWireWithIdentity(op, model string, defaultMaxOutputTokens int, req
 	}
 	if options != nil {
 		wrequest.ServiceTier = options.ServiceTier
+		wrequest.extra = options.ExtraFields
 	}
 	cache := anthropicCacheControl(request.CacheRetention)
 	if subscriptionOAuth {

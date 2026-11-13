@@ -326,7 +326,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err != nil {
 		return nil, err
 	}
-	body, err := jsonv2.Marshal(&wrequest)
+	body, err := wrequest.encode()
 	if err != nil {
 		return nil, requestError("generate", "encode request: %w", err)
 	}
@@ -395,7 +395,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 		return nil, err
 	}
 	wrequest.Stream = true
-	payload, err := jsonv2.Marshal(&wrequest)
+	payload, err := wrequest.encode()
 	if err != nil {
 		return nil, requestError("stream", "encode request: %w", err)
 	}

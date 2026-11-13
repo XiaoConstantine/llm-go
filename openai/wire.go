@@ -37,6 +37,8 @@ type chatRequest struct {
 	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
 	ServiceTier          string              `json:"service_tier,omitempty"`
+
+	extra map[string]json.RawMessage
 }
 
 type reasoningOptions struct {
@@ -363,6 +365,7 @@ func newChatRequestFor(op, model string, request llm.Request, compatibility llm.
 	}
 	if options != nil {
 		wrequest.ServiceTier = options.ServiceTier
+		wrequest.extra = options.ExtraFields
 	}
 	applyReasoningOptions(&wrequest, request.ReasoningEffort, compatibility)
 	if request.MaxOutputTokens != 0 {

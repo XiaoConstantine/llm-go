@@ -308,7 +308,7 @@ func (c *Client) Generate(ctx context.Context, request llm.Request) (_ *llm.Resp
 	if err != nil {
 		return nil, err
 	}
-	body, err := jsonv2.Marshal(&wrequest)
+	body, err := wrequest.encode()
 	if err != nil {
 		return nil, &llm.Error{
 			Kind:     llm.KindInvalidRequest,
@@ -383,7 +383,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (_ llm.Stream,
 	if c.compatibility.StreamingUsage != llm.CompatibilityDisabled {
 		wrequest.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
-	payload, err := jsonv2.Marshal(&wrequest)
+	payload, err := wrequest.encode()
 	if err != nil {
 		return nil, requestError("stream", "encode request: %w", err)
 	}
