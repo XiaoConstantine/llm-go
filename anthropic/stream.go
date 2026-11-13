@@ -408,7 +408,10 @@ func (decoder *streamDecoder) consume(eventName, data string, emit internalstrea
 	case "error":
 		return false, decodeStreamError(data, decoder.requestID)
 	case "message_start":
-		return false, decoder.consumeMessageStart(data)
+		if err := decoder.consumeMessageStart(data); err != nil {
+			return false, err
+		}
+		return false, decoder.emitUsage(emit)
 	case "content_block_start":
 		return false, decoder.consumeContentStart(data, emit)
 	case "content_block_delta":
@@ -738,6 +741,9 @@ func (decoder *streamDecoder) consumeMessageDelta(data string, emit internalstre
 		}
 	}
 	if event.Delta.StopReason == nil {
+		if event.Usage != nil {
+			return decoder.emitUsage(emit)
+		}
 		return nil
 	}
 	if event.Usage == nil || event.Usage.OutputTokens == nil {
@@ -784,6 +790,19 @@ func (decoder *streamDecoder) consumeMessageDelta(data string, emit internalstre
 		Usage:        usage,
 		Events:       append(decoder.takePendingEvents(), llm.StreamEvent{Kind: llm.StreamEventDone, FinishReason: finish}),
 	}) {
+		return errStreamEmitStopped
+	}
+	return nil
+}
+
+// Usage snapshots are observable as soon as the provider reports them, even
+// when a later event fails or the caller cancels before a terminal response.
+func (decoder *streamDecoder) emitUsage(emit internalstream.Emit) error {
+	usage, err := decoder.usage.value()
+	if err != nil {
+		return malformedStream("partial usage: %w", err)
+	}
+	if !emit(llm.Chunk{ID: decoder.id, Model: decoder.model, Usage: usage, Events: decoder.takePendingEvents()}) {
 		return errStreamEmitStopped
 	}
 	return nil

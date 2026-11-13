@@ -45,6 +45,12 @@ func buildInput(op, model string, reasoning bool, request llm.Request) (*bedrock
 }
 
 func buildInputFor(op, model, region string, reasoning bool, request llm.Request) (*bedrockruntime.ConverseStreamInput, error) {
+	if request.TopK != nil || request.ParallelToolCalls != nil || request.OpenAIChat != nil || request.OpenAIResponses != nil || request.Anthropic != nil {
+		return nil, unsupported(op, "top-k, parallel tool controls, and foreign protocol options are not supported")
+	}
+	if request.ReasoningPolicy == llm.ReasoningPolicyExact {
+		return nil, unsupported(op, "exact reasoning policy is not supported")
+	}
 	if request.MaxOutputTokens > math.MaxInt32 || request.ReasoningBudgetTokens > math.MaxInt32 {
 		return nil, requestError(op, "token limits must not exceed %d", math.MaxInt32)
 	}

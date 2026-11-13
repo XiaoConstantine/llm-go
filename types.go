@@ -31,6 +31,10 @@ const (
 	PartImage
 	// PartAudio contains encoded audio bytes in Part.Data.
 	PartAudio
+	// PartFile contains a user document in Data, with MediaType and optional Filename.
+	// OpenAI Chat, Responses, Azure, and Anthropic support PDFs; Chat and
+	// Anthropic also support text documents. Other routes reject file parts.
+	PartFile
 )
 
 // Part is one piece of message content. Text parts use Text and leave Data and
@@ -43,7 +47,8 @@ type Part struct {
 	Text            string
 	Data            []byte
 	MediaType       string
-	CacheBreakpoint bool `json:",omitzero"`
+	Filename        string `json:",omitzero"`
+	CacheBreakpoint bool   `json:",omitzero"`
 }
 
 // Message is one turn in a model conversation. ToolCalls are valid only on an
@@ -213,6 +218,12 @@ type Request struct {
 	ToolChoice      ToolChoice
 	ResponseFormat  ResponseFormat
 	ReasoningEffort ReasoningEffort
+	// ReasoningPolicyExact refuses lossy effort conversions and implicit budgets.
+	ReasoningPolicy ReasoningPolicy
+	// Protocol options are checked against the selected client before I/O.
+	OpenAIChat      *OpenAIChatOptions
+	OpenAIResponses *OpenAIResponsesOptions
+	Anthropic       *AnthropicOptions
 	// ReasoningBudgetTokens requests an explicit provider reasoning-token
 	// budget. Zero leaves budgeting to the provider or ReasoningEffort.
 	ReasoningBudgetTokens int
@@ -223,13 +234,18 @@ type Request struct {
 	// SessionID supplies provider session-affinity identity independently of
 	// CacheRetention. When caching is enabled, it may also be used as the fallback
 	// prompt-cache key if CacheKey is empty.
-	SessionID        string
-	MaxOutputTokens  int
-	Temperature      *float64
-	TopP             *float64
-	PresencePenalty  *float64
-	FrequencyPenalty *float64
-	Stop             []string
+	SessionID       string
+	MaxOutputTokens int
+	Temperature     *float64
+	TopP            *float64
+	// TopK requests Anthropic top_k. Nil omits it; an explicit zero is retained.
+	TopK *int
+	// ParallelToolCalls controls parallel tools on OpenAI Chat, Responses,
+	// Azure, Codex, and Anthropic. Nil leaves the setting to the provider.
+	ParallelToolCalls *bool
+	PresencePenalty   *float64
+	FrequencyPenalty  *float64
+	Stop              []string
 }
 
 // HasCacheBreakpoints reports whether any message or tool-result content marks
