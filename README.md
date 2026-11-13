@@ -338,7 +338,8 @@ git diff --exit-code -- models/catalog_generated.go
 
 The **Update model catalog** GitHub Actions workflow checks models.dev every six
 hours and opens a tested pull request for Anthropic, direct OpenAI, and Google
-catalog updates. New entries must advertise tool support and text-only output;
-other model types and Codex subscription entries need separate maintenance. See
-the [catalog maintenance guide](./models/catalogsource/README.md#scheduled-updates)
+catalog updates. Models.dev-managed entries are removed when missing, deprecated,
+or ineligible; eligible discoveries must advertise tool support and text-only
+output. Curated entries, including Codex subscription routes, are maintained
+separately. See the [catalog maintenance guide](./models/catalogsource/README.md#scheduled-updates)
 for setup, manual runs, and reproducing an update from its saved snapshot.

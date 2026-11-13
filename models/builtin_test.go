@@ -1,6 +1,7 @@
 package models
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -112,16 +113,17 @@ func TestBuiltinCatalogCodexRouteLimits(t *testing.T) {
 		additionalTools llm.CompatibilityToggle
 		toolSearch      llm.CompatibilityToggle
 	}{
-		{id: "gpt-5.3-codex-spark", contextWindow: 128_000, maxOutputTokens: 128_000},
-		{id: "gpt-5.4", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, toolSearch: llm.CompatibilityEnabled},
-		{id: "gpt-5.4-mini", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, toolSearch: llm.CompatibilityEnabled},
-		{id: "gpt-5.5", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-6.1-sol", contextWindow: 500_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+		{id: "gpt-6.1-terra", contextWindow: 500_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-5.6-luna", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-5.6-sol", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-5.6-terra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-6-astra", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-6-luna", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
 		{id: "gpt-6-sol", contextWindow: 272_000, maxOutputTokens: 128_000, vision: true, additionalTools: llm.CompatibilityEnabled, toolSearch: llm.CompatibilityEnabled},
+	}
+	if got := len(catalog.Models("openai-codex")); got != len(tests) {
+		t.Errorf("Codex model count = %d, want %d", got, len(tests))
 	}
 	for _, test := range tests {
 		model, ok := catalog.Model("openai-codex", test.id)
@@ -142,6 +144,29 @@ func TestBuiltinCatalogCodexRouteLimits(t *testing.T) {
 		compatibility := model.Compatibility.OpenAIResponses
 		if compatibility.StrictTools != llm.CompatibilityEnabled || compatibility.AdditionalTools != test.additionalTools || compatibility.ToolSearch != test.toolSearch {
 			t.Errorf("openai-codex/%s compatibility = %#v", test.id, compatibility)
+		}
+	}
+
+	for _, id := range []string{"gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5"} {
+		if _, ok := catalog.Model("openai-codex", id); ok {
+			t.Errorf("retired Codex model %q remains discoverable", id)
+		}
+		if _, ok := catalog.Model("openai", id); !ok {
+			t.Errorf("direct OpenAI model %q was pruned by Codex policy", id)
+		}
+	}
+	for _, test := range []struct {
+		id   string
+		cost llm.ModelCost
+	}{
+		{"gpt-6.1-sol", llm.ModelCost{Input: 2, Output: 10, CacheRead: 0.1, CacheWrite: 2.5,
+			Tiers: []llm.ModelCostTier{{InputTokensAbove: 272_000, Input: 4, Output: 15, CacheRead: 0.2, CacheWrite: 5}}}},
+		{"gpt-6.1-terra", llm.ModelCost{Input: 1, Output: 5, CacheRead: 0.05, CacheWrite: 1.25,
+			Tiers: []llm.ModelCostTier{{InputTokensAbove: 272_000, Input: 2, Output: 7.5, CacheRead: 0.1, CacheWrite: 2.5}}}},
+	} {
+		model, ok := catalog.Model("openai-codex", test.id)
+		if !ok || !model.Reasoning || !reflect.DeepEqual(model.Cost, &test.cost) {
+			t.Errorf("Codex %s reasoning/pricing = %#v", test.id, model)
 		}
 	}
 

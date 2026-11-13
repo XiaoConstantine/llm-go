@@ -18,7 +18,7 @@ import (
 	"github.com/XiaoConstantine/llm-go/internal/catalogmeta"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type sourceCatalog struct {
 	SchemaVersion int           `json:"schema_version"`
@@ -29,6 +29,7 @@ type sourceCatalog struct {
 type sourceModel struct {
 	Provider        string               `json:"provider"`
 	ID              string               `json:"id"`
+	Source          string               `json:"source,omitempty"`
 	Name            string               `json:"name"`
 	API             llm.API              `json:"api"`
 	Reasoning       *bool                `json:"reasoning"`
@@ -183,6 +184,12 @@ func load(path string) (int, []llm.Model, error) {
 }
 
 func (source sourceModel) model() (llm.Model, error) {
+	if source.Source != "" && source.Source != "models.dev" {
+		return llm.Model{}, fmt.Errorf("unknown source %q", source.Source)
+	}
+	if source.Provider == "openai-codex" && source.Source != "" {
+		return llm.Model{}, errors.New("openai-codex must be curated")
+	}
 	if source.Provider == "" || !utf8.ValidString(source.Provider) || strings.TrimSpace(source.Provider) != source.Provider {
 		return llm.Model{}, errors.New("provider must be nonempty valid UTF-8 without surrounding whitespace")
 	}

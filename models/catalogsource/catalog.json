@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "revision": 23,
+  "schema_version": 2,
+  "revision": 24,
   "models": [
     {
       "provider": "amazon-bedrock",
@@ -2001,6 +2001,7 @@
     {
       "provider": "anthropic",
       "id": "claude-fable-5-2",
+      "source": "models.dev",
       "name": "Claude Fable 5.2",
       "api": "anthropic-messages",
       "reasoning": true,
@@ -2077,6 +2078,7 @@
     {
       "provider": "anthropic",
       "id": "claude-haiku-5-5",
+      "source": "models.dev",
       "name": "Claude Haiku 5.5",
       "api": "anthropic-messages",
       "reasoning": true,
@@ -2409,6 +2411,7 @@
     {
       "provider": "anthropic",
       "id": "claude-sonnet-5-5",
+      "source": "models.dev",
       "name": "Claude Sonnet 5.5",
       "api": "anthropic-messages",
       "reasoning": true,
@@ -3179,6 +3182,7 @@
     {
       "provider": "google",
       "id": "gemini-4-argon",
+      "source": "models.dev",
       "name": "Gemini 4 Argon",
       "api": "gemini-generate-content",
       "reasoning": true,
@@ -3201,6 +3205,7 @@
     {
       "provider": "google",
       "id": "gemini-4-carbon",
+      "source": "models.dev",
       "name": "Gemini 4 Carbon",
       "api": "gemini-generate-content",
       "reasoning": true,
@@ -3265,6 +3270,7 @@
     {
       "provider": "google",
       "id": "gemini-pro-latest",
+      "source": "models.dev",
       "name": "Gemini Pro Latest",
       "api": "gemini-generate-content",
       "reasoning": true,
@@ -5413,6 +5419,7 @@
     {
       "provider": "openai",
       "id": "gpt-6.1-sol",
+      "source": "models.dev",
       "name": "GPT-6.1 Sol",
       "api": "openai-responses",
       "reasoning": true,
@@ -5449,6 +5456,7 @@
     {
       "provider": "openai",
       "id": "gpt-6.1-terra",
+      "source": "models.dev",
       "name": "GPT-6.1 Terra",
       "api": "openai-responses",
       "reasoning": true,
@@ -5485,6 +5493,7 @@
     {
       "provider": "openai",
       "id": "gpt-daybreak-blue-latest",
+      "source": "models.dev",
       "name": "Daybreak Blue",
       "api": "openai-responses",
       "reasoning": true,
@@ -5521,6 +5530,7 @@
     {
       "provider": "openai",
       "id": "gpt-daybreak-red-latest",
+      "source": "models.dev",
       "name": "Daybreak Red",
       "api": "openai-responses",
       "reasoning": true,
@@ -5727,108 +5737,6 @@
     },
     {
       "provider": "openai-codex",
-      "id": "gpt-5.3-codex-spark",
-      "name": "GPT-5.3 Codex Spark",
-      "api": "openai-codex-responses",
-      "reasoning": true,
-      "capabilities": [
-        "streaming",
-        "tools"
-      ],
-      "context_window": 128000,
-      "max_output_tokens": 128000,
-      "cost": {
-        "input": 1.75,
-        "output": 14,
-        "cache_read": 0.175,
-        "cache_write": 0
-      },
-      "compatibility": {
-        "openai_responses": {
-          "strict_tools": true
-        }
-      }
-    },
-    {
-      "provider": "openai-codex",
-      "id": "gpt-5.4",
-      "name": "GPT-5.4",
-      "api": "openai-codex-responses",
-      "reasoning": true,
-      "capabilities": [
-        "streaming",
-        "tools",
-        "vision"
-      ],
-      "context_window": 272000,
-      "max_output_tokens": 128000,
-      "cost": {
-        "input": 2.5,
-        "output": 15,
-        "cache_read": 0.25,
-        "cache_write": 0
-      },
-      "compatibility": {
-        "openai_responses": {
-          "strict_tools": true,
-          "tool_search": true
-        }
-      }
-    },
-    {
-      "provider": "openai-codex",
-      "id": "gpt-5.4-mini",
-      "name": "GPT-5.4 mini",
-      "api": "openai-codex-responses",
-      "reasoning": true,
-      "capabilities": [
-        "streaming",
-        "tools",
-        "vision"
-      ],
-      "context_window": 272000,
-      "max_output_tokens": 128000,
-      "cost": {
-        "input": 0.75,
-        "output": 4.5,
-        "cache_read": 0.075,
-        "cache_write": 0
-      },
-      "compatibility": {
-        "openai_responses": {
-          "strict_tools": true,
-          "tool_search": true
-        }
-      }
-    },
-    {
-      "provider": "openai-codex",
-      "id": "gpt-5.5",
-      "name": "GPT-5.5",
-      "api": "openai-codex-responses",
-      "reasoning": true,
-      "capabilities": [
-        "streaming",
-        "tools",
-        "vision"
-      ],
-      "context_window": 272000,
-      "max_output_tokens": 128000,
-      "cost": {
-        "input": 5,
-        "output": 30,
-        "cache_read": 0.5,
-        "cache_write": 0
-      },
-      "compatibility": {
-        "openai_responses": {
-          "strict_tools": true,
-          "tool_search": true
-        }
-      }
-    },
-    {
-      "provider": "openai-codex",
       "id": "gpt-5.6-luna",
       "name": "GPT-5.6 Luna",
       "api": "openai-codex-responses",
@@ -5980,6 +5888,78 @@
         "output": 10,
         "cache_read": 0.2,
         "cache_write": 2.5
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "api": "openai-codex-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 500000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.1,
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.2,
+            "cache_write": 5
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6.1-terra",
+      "name": "GPT-6.1 Terra",
+      "api": "openai-codex-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 500000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 1,
+        "output": 5,
+        "cache_read": 0.05,
+        "cache_write": 1.25,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 2,
+            "output": 7.5,
+            "cache_read": 0.1,
+            "cache_write": 2.5
+          }
+        ]
       },
       "compatibility": {
         "openai_responses": {

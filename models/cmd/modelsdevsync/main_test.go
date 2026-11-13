@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	jsonv2 "encoding/json/v2"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -18,12 +22,13 @@ func boolPtr(v bool) *bool        { return &v }
 
 func TestSyncCatalogUpdatesLimitsAndCost(t *testing.T) {
 	catalog := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{
 			{
 				Provider:        "anthropic",
 				ID:              "claude-3-5-sonnet",
+				Source:          "models.dev",
 				Name:            "Claude 3.5 Sonnet",
 				API:             llm.APIAnthropicMessages,
 				Reasoning:       boolPtr(false),
@@ -52,6 +57,7 @@ func TestSyncCatalogUpdatesLimitsAndCost(t *testing.T) {
 			Models: map[string]modelsdev.ModelEntry{
 				"claude-3-5-sonnet": {
 					ID:        "claude-3-5-sonnet",
+					ToolCall:  true,
 					Name:      "Claude 3.5 Sonnet",
 					Reasoning: true,
 					Limit: &modelsdev.Limit{
@@ -65,7 +71,8 @@ func TestSyncCatalogUpdatesLimitsAndCost(t *testing.T) {
 						CacheWrite: floatPtr(3.75),
 					},
 					Modalities: &modelsdev.Modalities{
-						Input: []string{"text", "image"},
+						Input:  []string{"text", "image"},
+						Output: []string{"text"},
 					},
 				},
 			},
@@ -140,12 +147,13 @@ func TestApplyModelUpdateKeepsCapabilitiesAndPricingUsable(t *testing.T) {
 func TestSyncCatalogIsIdempotentOnTiers(t *testing.T) {
 	threshold := 272000
 	catalog := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{
 			{
 				Provider:        "openai",
 				ID:              "gpt-5.5",
+				Source:          "models.dev",
 				Name:            "GPT-5.5",
 				API:             llm.APIOpenAIResponses,
 				Reasoning:       boolPtr(true),
@@ -177,9 +185,11 @@ func TestSyncCatalogIsIdempotentOnTiers(t *testing.T) {
 			Name: "OpenAI",
 			Models: map[string]modelsdev.ModelEntry{
 				"gpt-5.5": {
-					ID:        "gpt-5.5",
-					Name:      "GPT-5.5",
-					Reasoning: true,
+					ID:         "gpt-5.5",
+					ToolCall:   true,
+					Modalities: &modelsdev.Modalities{Output: []string{"text"}},
+					Name:       "GPT-5.5",
+					Reasoning:  true,
 					Limit: &modelsdev.Limit{
 						Context: 1000000,
 						Output:  128000,
@@ -234,12 +244,13 @@ func TestSyncCatalogIsIdempotentOnTiers(t *testing.T) {
 
 func TestSyncCatalogNoChangesDoesNotIncrementRevision(t *testing.T) {
 	catalog := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      5,
 		Models: []sourceModel{
 			{
 				Provider:        "openai",
 				ID:              "gpt-4o",
+				Source:          "models.dev",
 				Name:            "GPT-4o",
 				API:             llm.APIOpenAIResponses,
 				Reasoning:       boolPtr(false),
@@ -263,6 +274,7 @@ func TestSyncCatalogNoChangesDoesNotIncrementRevision(t *testing.T) {
 			Models: map[string]modelsdev.ModelEntry{
 				"gpt-4o": {
 					ID:        "gpt-4o",
+					ToolCall:  true,
 					Name:      "GPT-4o",
 					Reasoning: false,
 					Limit: &modelsdev.Limit{
@@ -276,7 +288,8 @@ func TestSyncCatalogNoChangesDoesNotIncrementRevision(t *testing.T) {
 						CacheWrite: floatPtr(0),
 					},
 					Modalities: &modelsdev.Modalities{
-						Input: []string{"text", "image"},
+						Input:  []string{"text", "image"},
+						Output: []string{"text"},
 					},
 				},
 			},
@@ -304,7 +317,7 @@ func TestSyncCatalogNoChangesDoesNotIncrementRevision(t *testing.T) {
 
 func TestSyncCatalogAddNewModelWithContextOver200k(t *testing.T) {
 	catalog := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models:        []sourceModel{},
 	}
@@ -397,7 +410,7 @@ func TestCreateSourceModelNormalizesIdentityAndKeepsProviderCompatibility(t *tes
 	if model.Compatibility == nil || model.Compatibility.OpenAIChat == nil || model.Compatibility.OpenAIChat.ThinkingFormat != llm.ThinkingFormatDeepSeek {
 		t.Fatalf("compatibility = %#v", model.Compatibility)
 	}
-	if err := validateCatalog(&sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{model}}); err != nil {
+	if err := validateCatalog(&sourceCatalog{SchemaVersion: schemaVersion, Revision: 1, Models: []sourceModel{model}}); err != nil {
 		t.Fatalf("validate normalized model: %v", err)
 	}
 
@@ -435,7 +448,7 @@ func TestSyncCatalogFiltersNewModelsAndUsesProviderAPI(t *testing.T) {
 				entries[candidate.id] = modelsdev.ModelEntry{ID: candidate.id, ToolCall: candidate.tools,
 					Modalities: &modelsdev.Modalities{Output: candidate.output}, Limit: &modelsdev.Limit{Context: 1000, Output: 123}}
 			}
-			catalog := &sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{{
+			catalog := &sourceCatalog{SchemaVersion: schemaVersion, Revision: 1, Models: []sourceModel{{
 				Provider: test.provider, ID: "existing", Name: "Existing", API: test.api,
 				Reasoning: boolPtr(false), Capabilities: &[]llm.Capability{llm.CapabilityStreaming},
 				ContextWindow: intPtr(500), MaxOutputTokens: intPtr(100),
@@ -444,7 +457,7 @@ func TestSyncCatalogFiltersNewModelsAndUsesProviderAPI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(result.AddedModels, []string{test.provider + "/generation"}) || !slices.Equal(result.UpdatedModels, []string{test.provider + "/existing"}) || len(catalog.Models) != 2 {
+			if !slices.Equal(result.AddedModels, []string{test.provider + "/generation"}) || len(result.UpdatedModels) != 0 || result.Unchanged != 1 || len(catalog.Models) != 2 {
 				t.Fatalf("sync result = %#v, model count = %d", result, len(catalog.Models))
 			}
 			if !slices.Equal(result.ExcludedModels, []string{test.provider + "/embedding", test.provider + "/image", test.provider + "/multimodal", test.provider + "/unknown"}) {
@@ -460,7 +473,7 @@ func TestSyncCatalogFiltersNewModelsAndUsesProviderAPI(t *testing.T) {
 func TestValidateCatalogRejectsInvalidData(t *testing.T) {
 	// Missing name
 	bad1 := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{
 			{
@@ -477,7 +490,7 @@ func TestValidateCatalogRejectsInvalidData(t *testing.T) {
 
 	// Output > context
 	bad2 := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{
 			{
@@ -497,7 +510,7 @@ func TestValidateCatalogRejectsInvalidData(t *testing.T) {
 	// Tier above context window
 	threshold := 500
 	bad3 := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{
 			{
@@ -537,8 +550,8 @@ func TestSyncCatalogSkipsInvalidCacheReadPrices(t *testing.T) {
 		// A discarded cost must not report its provisional base-price clamp.
 		{Input: floatPtr(.1), Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(200), Input: floatPtr(.1), CacheRead: floatPtr(.2)}}},
 	} {
-		catalog := &sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{{
-			Provider: "openrouter", ID: "existing", Name: "Existing", API: llm.APIOpenAIChatCompletions,
+		catalog := &sourceCatalog{SchemaVersion: schemaVersion, Revision: 1, Models: []sourceModel{{
+			Provider: "openrouter", ID: "existing", Source: modelsDevSource, Name: "Existing", API: llm.APIOpenAIChatCompletions,
 			Reasoning: boolPtr(false), Capabilities: &[]llm.Capability{llm.CapabilityStreaming},
 			ContextWindow: intPtr(1000), MaxOutputTokens: intPtr(100),
 			Cost: &sourceCost{Input: floatPtr(3), Output: floatPtr(7), CacheRead: floatPtr(.3), CacheWrite: floatPtr(4)},
@@ -547,7 +560,7 @@ func TestSyncCatalogSkipsInvalidCacheReadPrices(t *testing.T) {
 		beforeCost := *before.Cost
 		before.Cost = &beforeCost
 		dataset := modelsdev.Dataset{"openrouter": {Models: map[string]modelsdev.ModelEntry{
-			"existing": {ID: "existing", Limit: &modelsdev.Limit{Context: 2000, Output: 200}, Reasoning: true, Modalities: &modelsdev.Modalities{Input: []string{"text", "image"}}, Cost: cost},
+			"existing": {ID: "existing", ToolCall: true, Limit: &modelsdev.Limit{Context: 2000, Output: 200}, Reasoning: true, Modalities: &modelsdev.Modalities{Input: []string{"text", "image"}, Output: []string{"text"}}, Cost: cost},
 			"bad-new":  {ID: "bad-new", ToolCall: true, Modalities: &modelsdev.Modalities{Output: []string{"text"}}, Limit: &modelsdev.Limit{Context: 1000, Output: 100}, Cost: &modelsdev.Cost{Input: floatPtr(.1), CacheRead: floatPtr(.2)}},
 			"good-new": {ID: "good-new", ToolCall: true, Modalities: &modelsdev.Modalities{Output: []string{"text"}}, Limit: &modelsdev.Limit{Context: 1000, Output: 100}, Cost: &modelsdev.Cost{Input: floatPtr(.2), CacheRead: floatPtr(.2)}},
 		}}}
@@ -592,6 +605,13 @@ func TestSyncCatalogRecordedPartialCost(t *testing.T) {
 	catalog, err := loadCatalog(filepath.Join("..", "..", "catalogsource", "catalog.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Explicitly opt this fixture model into synchronization; the canonical
+	// reviewed snapshot remains curated.
+	for i := range catalog.Models {
+		if catalog.Models[i].Provider == "openrouter" && catalog.Models[i].ID == "meta-llama/llama-3.1-8b-instruct" {
+			catalog.Models[i].Source = modelsDevSource
+		}
 	}
 	dataset, err := loadDataset(filepath.Join("..", "..", "modelsdev", "testdata", "partial-cost.json"), "")
 	if err != nil {
@@ -642,14 +662,17 @@ func TestSyncCatalogRetainsTierRates(t *testing.T) {
 		{"filtered", &modelsdev.Cost{Tiers: []modelsdev.CostTierEntry{{InputTokensAbove: intPtr(1000000), Input: floatPtr(20)}}}, llm.ModelCostTier{InputTokensAbove: 200000, Input: 6, Output: 14, CacheRead: .6, CacheWrite: 8}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			catalog := &sourceCatalog{SchemaVersion: 1, Revision: 1, Models: []sourceModel{{Provider: "openrouter", ID: "m", Name: "M", API: llm.APIOpenAIChatCompletions,
+			catalog := &sourceCatalog{SchemaVersion: schemaVersion, Revision: 1, Models: []sourceModel{{Provider: "openrouter", ID: "m", Source: modelsDevSource, Name: "M", API: llm.APIOpenAIChatCompletions,
 				Reasoning: boolPtr(false), Capabilities: &[]llm.Capability{llm.CapabilityStreaming}, ContextWindow: intPtr(1000000), MaxOutputTokens: intPtr(1000),
 				Cost: &sourceCost{Input: floatPtr(3), Output: floatPtr(7), CacheRead: floatPtr(.3), CacheWrite: floatPtr(4), Tiers: []sourceTier{
 					{InputTokensAbove: intPtr(200000), Input: floatPtr(6), Output: floatPtr(14), CacheRead: floatPtr(.6), CacheWrite: floatPtr(8)},
 					{InputTokensAbove: intPtr(500000), Input: floatPtr(8), Output: floatPtr(20), CacheRead: floatPtr(.8), CacheWrite: floatPtr(10)},
 				}},
 			}}}
-			dataset := modelsdev.Dataset{"openrouter": {Models: map[string]modelsdev.ModelEntry{"m": {ID: "m", Cost: test.cost}}}}
+			dataset := modelsdev.Dataset{"openrouter": {Models: map[string]modelsdev.ModelEntry{"m": {
+				ID: "m", ToolCall: true, Modalities: &modelsdev.Modalities{Output: []string{"text"}},
+				Limit: &modelsdev.Limit{Context: 1000000, Output: 1000}, Cost: test.cost,
+			}}}}
 			for run := range 2 {
 				result, err := syncCatalog(catalog, dataset, SyncOptions{Providers: []string{"openrouter"}})
 				if err != nil || len(result.SkippedModels) > 0 {
@@ -692,7 +715,14 @@ func TestSyncCatalogDropsTiersOutsideMergedContext(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				entry := modelsdev.ModelEntry{ID: "openai/gpt-5.6-sol", Limit: &modelsdev.Limit{Context: window}}
+				entry := modelsdev.ModelEntry{ID: "openai/gpt-5.6-sol", ToolCall: true,
+					Modalities: &modelsdev.Modalities{Output: []string{"text"}},
+					Limit:      &modelsdev.Limit{Context: window, Output: 128000}}
+				for i := range catalog.Models {
+					if catalog.Models[i].Provider == "openrouter" && catalog.Models[i].ID == entry.ID {
+						catalog.Models[i].Source = modelsDevSource
+					}
+				}
 				switch variant {
 				case "invalid price":
 					entry.Cost = &modelsdev.Cost{Input: floatPtr(.1), CacheRead: floatPtr(.3)}
@@ -736,7 +766,7 @@ func TestSyncCatalogDropsTiersOutsideMergedContext(t *testing.T) {
 
 func TestSyncCatalogLeavesManualCodexRoutesUnchanged(t *testing.T) {
 	catalog := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{{
 			Provider:        "openai-codex",
@@ -769,6 +799,254 @@ func TestSyncCatalogLeavesManualCodexRoutesUnchanged(t *testing.T) {
 	}
 }
 
+func syncTestEntry(id string) modelsdev.ModelEntry {
+	return modelsdev.ModelEntry{
+		ID: id, Name: id, ToolCall: true,
+		Modalities: &modelsdev.Modalities{Output: []string{"text"}},
+		Limit:      &modelsdev.Limit{Context: 1000, Output: 100},
+	}
+}
+
+func syncTestModel(t *testing.T, provider, id string) sourceModel {
+	t.Helper()
+	model, ok := createSourceModel(provider, syncTestEntry(id))
+	if !ok {
+		t.Fatal("createSourceModel rejected test entry")
+	}
+	model.Source = "models.dev"
+	return model
+}
+
+func TestSyncCatalogReconcilesManagedMembership(t *testing.T) {
+	for _, reason := range []string{"missing", "deprecated", "no tools", "non-text output", "missing modalities", "invalid limits"} {
+		t.Run(reason, func(t *testing.T) {
+			managed := syncTestModel(t, "openai", "old")
+			curated := syncTestModel(t, "openai", "curated")
+			curated.Source = ""
+			otherRoute := syncTestModel(t, "openrouter", "old")
+			catalog := &sourceCatalog{SchemaVersion: 2, Revision: 7, Models: []sourceModel{managed, curated, otherRoute}}
+			entry := syncTestEntry("old")
+			switch reason {
+			case "deprecated":
+				entry.Status = "deprecated"
+			case "no tools":
+				entry.ToolCall = false
+			case "non-text output":
+				entry.Modalities.Output = []string{"text", "image"}
+			case "missing modalities":
+				entry.Modalities = nil
+			case "invalid limits":
+				entry.Limit.Output = entry.Limit.Context + 1
+			}
+			entries := map[string]modelsdev.ModelEntry{"old": entry}
+			if reason == "missing" {
+				delete(entries, "old")
+			} else {
+				// Even a matching deprecated/ineligible upstream entry must not
+				// alter a curated entry or claim ownership of it.
+				entry.ID, entry.Name = "curated", "Upstream name"
+				entry.Limit = &modelsdev.Limit{Context: 500, Output: 50}
+				entries["curated"] = entry
+			}
+			dataset := modelsdev.Dataset{"openai": {Models: entries}}
+			// AddNew must not re-add a just-retired entry. Removals also apply
+			// without AddNew, including a removal-only revision bump.
+			for _, addNew := range []bool{false, true} {
+				candidate := *catalog
+				candidate.Models = slices.Clone(catalog.Models)
+				result, err := syncCatalog(&candidate, dataset, SyncOptions{Providers: []string{"openai"}, AddNew: addNew})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(candidate.Models, []sourceModel{curated, otherRoute}) {
+					t.Fatalf("reconciled models = %#v, want only unchanged curated and other route", candidate.Models)
+				}
+				if !slices.Equal(result.RemovedModels, []string{"openai/old"}) || len(result.AddedModels) != 0 || len(result.UpdatedModels) != 0 || result.Total != 2 || result.Unchanged != 2 || candidate.Revision != 8 {
+					t.Fatalf("result = %#v, revision = %d", result, candidate.Revision)
+				}
+			}
+		})
+	}
+}
+
+func TestSyncCatalogRejectsIncompleteSnapshotsBeforeMutation(t *testing.T) {
+	for _, dataset := range []modelsdev.Dataset{
+		nil,
+		{},
+		{"openai": {}},
+		{"openai": {Models: map[string]modelsdev.ModelEntry{"wrong-key": syncTestEntry("old")}}},
+	} {
+		catalog := &sourceCatalog{SchemaVersion: 2, Revision: 1, Models: []sourceModel{syncTestModel(t, "openai", "old")}}
+		before, _ := jsonv2.Marshal(catalog)
+		if _, err := syncCatalog(catalog, dataset, SyncOptions{}); err == nil {
+			t.Errorf("accepted incomplete or inconsistent snapshot: %#v", dataset)
+		}
+		after, _ := jsonv2.Marshal(catalog)
+		if !bytes.Equal(before, after) {
+			t.Fatal("invalid snapshot mutated catalog")
+		}
+	}
+}
+
+func TestSyncCatalogMembershipIsDeterministicAndPersistent(t *testing.T) {
+	var want []byte
+	var wantResult SyncResult
+	for run := range 10 {
+		catalog := &sourceCatalog{SchemaVersion: 2, Revision: 1, Models: []sourceModel{
+			syncTestModel(t, "openai", "removed-z"), syncTestModel(t, "openai", "removed-a"),
+		}}
+		dataset := modelsdev.Dataset{"openai": {Models: map[string]modelsdev.ModelEntry{
+			"new-z": syncTestEntry("new-z"), "new-a": syncTestEntry("new-a"),
+		}}}
+		result, err := syncCatalog(catalog, dataset, SyncOptions{Providers: []string{"openai"}, AddNew: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(result.AddedModels, []string{"openai/new-a", "openai/new-z"}) || !slices.Equal(result.RemovedModels, []string{"openai/removed-a", "openai/removed-z"}) {
+			t.Fatalf("unsorted or incorrect report: %#v", result)
+		}
+		path := filepath.Join(t.TempDir(), "catalog.json")
+		if err := writeCatalog(path, catalog); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run == 0 {
+			want, wantResult = data, result
+		} else if !bytes.Equal(data, want) || !reflect.DeepEqual(result, wantResult) {
+			t.Fatal("catalog or report depends on map/input order")
+		}
+		loaded, err := loadCatalog(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, model := range loaded.Models {
+			if model.Source != "models.dev" {
+				t.Fatalf("new model lost ownership: %#v", model)
+			}
+		}
+		if _, err := syncCatalog(loaded, dataset, SyncOptions{AddNew: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeCatalog(path, loaded); err != nil {
+			t.Fatal(err)
+		}
+		again, _ := os.ReadFile(path)
+		if !bytes.Equal(data, again) {
+			t.Fatal("repeat sync changed catalog or revision")
+		}
+		// Explicitly empty models is authoritative; absent/null models is not.
+		dataset["openai"] = modelsdev.ProviderEntry{Models: map[string]modelsdev.ModelEntry{}}
+		removed, err := syncCatalog(loaded, dataset, SyncOptions{})
+		if err != nil || len(loaded.Models) != 0 || len(removed.RemovedModels) != 2 || loaded.Revision != 3 {
+			t.Fatalf("empty desired set: result %#v, catalog %#v, err %v", removed, loaded, err)
+		}
+	}
+}
+
+func TestSyncCatalogDryRunReportsRetirement(t *testing.T) {
+	catalog := &sourceCatalog{SchemaVersion: 2, Revision: 1, Models: []sourceModel{syncTestModel(t, "openai", "old")}}
+	result, err := syncCatalog(catalog, modelsdev.Dataset{"openai": {Models: map[string]modelsdev.ModelEntry{}}}, SyncOptions{DryRun: true})
+	if err != nil || !slices.Equal(result.RemovedModels, []string{"openai/old"}) || result.Total != 0 || catalog.Revision != 1 {
+		t.Fatalf("dry run = %#v, revision = %d, err = %v", result, catalog.Revision, err)
+	}
+}
+
+func TestSyncCatalogEligibilityAndProviderMapping(t *testing.T) {
+	entries := make(map[string]modelsdev.ModelEntry)
+	for _, status := range []string{"alpha", "beta", "deprecated"} {
+		entry := syncTestEntry(status)
+		entry.Status = status
+		entry.ReleaseDate = "2020-01-01" // Age is not a retirement signal.
+		entries[status] = entry
+	}
+	noTools := syncTestEntry("no-tools")
+	noTools.ToolCall = false
+	entries[noTools.ID] = noTools
+	image := syncTestEntry("image")
+	image.Modalities.Output = []string{"image"}
+	entries[image.ID] = image
+	catalog := &sourceCatalog{SchemaVersion: schemaVersion, Revision: 1}
+	result, err := syncCatalog(catalog, modelsdev.Dataset{"fireworks-ai": {Models: entries}}, SyncOptions{Providers: []string{"fireworks"}, AddNew: true})
+	if err != nil || !slices.Equal(result.AddedModels, []string{"fireworks/alpha", "fireworks/beta"}) {
+		t.Fatalf("eligible discoveries = %#v, err = %v", result, err)
+	}
+	delete(entries, "alpha")
+	result, err = syncCatalog(catalog, modelsdev.Dataset{"fireworks-ai": {Models: entries}}, SyncOptions{Providers: []string{"fireworks"}})
+	if err != nil || !slices.Equal(result.RemovedModels, []string{"fireworks/alpha"}) || len(catalog.Models) != 1 || catalog.Models[0].ID != "beta" {
+		t.Fatalf("mapped route retirement = %#v, err = %v", result, err)
+	}
+	if _, err := syncCatalog(catalog, modelsdev.Dataset{"openai-codex": {Models: entries}}, SyncOptions{Providers: []string{"openai-codex"}, AddNew: true}); err == nil {
+		t.Fatal("Codex accepted models.dev synchronization")
+	}
+}
+
+func TestSyncCommandWritesRemovalOnlyAndHonorsDryRun(t *testing.T) {
+	dir := t.TempDir()
+	catalogPath := filepath.Join(dir, "catalog.json")
+	datasetPath := filepath.Join(dir, "modelsdev.json")
+	catalog := &sourceCatalog{SchemaVersion: schemaVersion, Revision: 1, Models: []sourceModel{syncTestModel(t, "openai", "old")}}
+	if err := writeCatalog(catalogPath, catalog); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(datasetPath, []byte(`{"openai":{"models":{}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dryRun := range []bool{true, false} {
+		args := []string{"run", ".", "-catalog", catalogPath, "-file", datasetPath, "-providers", "openai"}
+		if dryRun {
+			args = append(args, "-dry-run")
+		}
+		if output, err := exec.CommandContext(t.Context(), "go", args...).CombinedOutput(); err != nil {
+			t.Fatalf("sync command: %v\n%s", err, output)
+		}
+		if dryRun {
+			after, err := os.ReadFile(catalogPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("dry run changed source file: %v", err)
+			}
+		} else {
+			loaded, err := loadCatalog(catalogPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(loaded.Models) != 0 || loaded.Revision != 2 {
+				t.Fatalf("removal-only sync was not persisted: %#v", loaded)
+			}
+		}
+	}
+}
+
+func TestValidateCatalogRejectsInvalidOwnership(t *testing.T) {
+	model := syncTestModel(t, "openai", "test")
+	model.Source = "unknown"
+	catalog := &sourceCatalog{SchemaVersion: schemaVersion, Revision: 1, Models: []sourceModel{model}}
+	if err := validateCatalog(catalog); err == nil {
+		t.Fatal("accepted unknown source")
+	}
+	catalog.Models[0] = syncTestModel(t, "openai-codex", "test")
+	if err := validateCatalog(catalog); err == nil {
+		t.Fatal("accepted managed Codex entry")
+	}
+}
+
+func TestLoadDatasetPreservesLifecycleStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "modelsdev.json")
+	if err := os.WriteFile(path, []byte(`{"openai":{"models":{"old":{"id":"old","status":"deprecated"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataset, err := loadDataset(path, "")
+	if err != nil || dataset["openai"].Models["old"].Status != "deprecated" {
+		t.Fatalf("dataset = %#v, err = %v", dataset, err)
+	}
+}
+
 func TestLoadCanonicalCatalog(t *testing.T) {
 	catalog, err := loadCatalog(filepath.Join("..", "..", "catalogsource", "catalog.json"))
 	if err != nil {
@@ -789,7 +1067,7 @@ func TestLoadCanonicalCatalog(t *testing.T) {
 func TestWriteCatalogProducesValidFile(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "catalog.json")
 	catalog := &sourceCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		Revision:      1,
 		Models: []sourceModel{
 			{

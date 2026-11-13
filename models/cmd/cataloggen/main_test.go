@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,6 +40,31 @@ func TestGenerateIsDeterministic(t *testing.T) {
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatal("generate() output changed without source changes")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source sourceCatalog
+	if err := jsonv2.Unmarshal(data, &source); err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(source.Models)
+	for i := range source.Models {
+		// Ownership is build-time provenance, not runtime model metadata.
+		source.Models[i].Source = ""
+	}
+	data, err = jsonv2.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path = filepath.Join(t.TempDir(), "catalog.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := generate(path)
+	if err != nil || !bytes.Equal(first, reordered) {
+		t.Fatalf("source order/ownership changed generated output: %v", err)
 	}
 }
 
@@ -74,22 +101,24 @@ func TestLoadRejectsInvalidSources(t *testing.T) {
 		source   string
 		contains string
 	}{
-		{"schema", `{"schema_version":2,"revision":1,"models":[]}`, "schema_version"},
-		{"revision", `{"schema_version":1,"revision":0,"models":[]}`, "revision"},
-		{"unknown field", `{"schema_version":1,"revision":1,"models":[],"extra":true}`, "unknown object member"},
-		{"duplicate field", `{"schema_version":1,"schema_version":1,"revision":1,"models":[]}`, "duplicate"},
-		{"invalid UTF-8", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"` + string([]byte{0xff}) + `","api":"openai-responses"}]}`, "invalid UTF-8"},
-		{"surrounding whitespace", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M ","api":"openai-responses"}]}`, "surrounding whitespace"},
-		{"missing required model field", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses"}]}`, "are required"},
-		{"unknown provider", `{"schema_version":1,"revision":1,"models":[{"provider":"unknown","id":"m","name":"M","api":"openai-responses",` + required + `}]}`, "unsupported built-in provider"},
-		{"provider API mismatch", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"anthropic-messages",` + required + `}]}`, "requires API"},
-		{"missing cost field", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `,"cost":{"input":1}}]}`, "are required"},
-		{"null cost field", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `,"cost":{"input":1,"output":null,"cache_read":0,"cache_write":0}}]}`, "must not be null"},
-		{"missing tier field", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":1,"cache_read":0,"cache_write":0,"tiers":[{"input_tokens_above":50,"input":2}]}}]}`, "tier 0"},
-		{"unreachable cost tier", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":1,"cache_read":0,"cache_write":0,"tiers":[{"input_tokens_above":100,"input":2,"output":2,"cache_read":0,"cache_write":0}]}}]}`, "below context window"},
-		{"protocol capability", `{"schema_version":1,"revision":1,"models":[{"provider":"anthropic","id":"m","name":"M","api":"anthropic-messages","reasoning":false,"capabilities":["audio"],"context_window":1,"max_output_tokens":1}]}`, "does not support capability"},
-		{"duplicate", `{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `},{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `}]}`, "duplicate model"},
-		{"wrong compatibility API", `{"schema_version":1,"revision":1,"models":[{"provider":"anthropic","id":"m","name":"M","api":"anthropic-messages",` + required + `,"compatibility":{"openai_chat":{}}}]}`, "compatibility"},
+		{"schema", `{"schema_version":99,"revision":1,"models":[]}`, "schema_version"},
+		{"revision", `{"schema_version":2,"revision":0,"models":[]}`, "revision"},
+		{"unknown source", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","source":"unknown","name":"M","api":"openai-responses",` + required + `}]}`, "unknown source"},
+		{"managed Codex", `{"schema_version":2,"revision":1,"models":[{"provider":"openai-codex","id":"m","source":"models.dev","name":"M","api":"openai-codex-responses",` + required + `}]}`, "must be curated"},
+		{"unknown field", `{"schema_version":2,"revision":1,"models":[],"extra":true}`, "unknown object member"},
+		{"duplicate field", `{"schema_version":2,"schema_version":2,"revision":1,"models":[]}`, "duplicate"},
+		{"invalid UTF-8", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"` + string([]byte{0xff}) + `","api":"openai-responses"}]}`, "invalid UTF-8"},
+		{"surrounding whitespace", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M ","api":"openai-responses"}]}`, "surrounding whitespace"},
+		{"missing required model field", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses"}]}`, "are required"},
+		{"unknown provider", `{"schema_version":2,"revision":1,"models":[{"provider":"unknown","id":"m","name":"M","api":"openai-responses",` + required + `}]}`, "unsupported built-in provider"},
+		{"provider API mismatch", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"anthropic-messages",` + required + `}]}`, "requires API"},
+		{"missing cost field", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `,"cost":{"input":1}}]}`, "are required"},
+		{"null cost field", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `,"cost":{"input":1,"output":null,"cache_read":0,"cache_write":0}}]}`, "must not be null"},
+		{"missing tier field", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":1,"cache_read":0,"cache_write":0,"tiers":[{"input_tokens_above":50,"input":2}]}}]}`, "tier 0"},
+		{"unreachable cost tier", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":1,"cache_read":0,"cache_write":0,"tiers":[{"input_tokens_above":100,"input":2,"output":2,"cache_read":0,"cache_write":0}]}}]}`, "below context window"},
+		{"protocol capability", `{"schema_version":2,"revision":1,"models":[{"provider":"anthropic","id":"m","name":"M","api":"anthropic-messages","reasoning":false,"capabilities":["audio"],"context_window":1,"max_output_tokens":1}]}`, "does not support capability"},
+		{"duplicate", `{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `},{"provider":"openai","id":"m","name":"M","api":"openai-responses",` + required + `}]}`, "duplicate model"},
+		{"wrong compatibility API", `{"schema_version":2,"revision":1,"models":[{"provider":"anthropic","id":"m","name":"M","api":"anthropic-messages",` + required + `,"compatibility":{"openai_chat":{}}}]}`, "compatibility"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -119,7 +148,7 @@ func TestLoadCacheReadPriceRelationships(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Cheap cache writes are allowed: some providers price storage separately.
-			source := fmt.Sprintf(`{"schema_version":1,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":0.5,"cache_read":%g,"cache_write":0.01,"tiers":[{"input_tokens_above":50,"input":2,"output":1,"cache_read":%g,"cache_write":0}]}}]}`, test.baseRead, test.tierRead)
+			source := fmt.Sprintf(`{"schema_version":2,"revision":1,"models":[{"provider":"openai","id":"m","name":"M","api":"openai-responses","reasoning":false,"capabilities":[],"context_window":100,"max_output_tokens":1,"cost":{"input":1,"output":0.5,"cache_read":%g,"cache_write":0.01,"tiers":[{"input_tokens_above":50,"input":2,"output":1,"cache_read":%g,"cache_write":0}]}}]}`, test.baseRead, test.tierRead)
 			path := filepath.Join(t.TempDir(), "catalog.json")
 			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 				t.Fatal(err)

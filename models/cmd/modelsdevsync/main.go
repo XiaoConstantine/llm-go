@@ -35,7 +35,11 @@ var defaultProviderMapping = map[string]string{
 	"xai":        "xai",
 }
 
-const maxResponseSize = 32 << 20
+const (
+	maxResponseSize = 32 << 20
+	schemaVersion   = 2
+	modelsDevSource = "models.dev"
+)
 
 type sourceCatalog struct {
 	SchemaVersion int           `json:"schema_version"`
@@ -46,6 +50,7 @@ type sourceCatalog struct {
 type sourceModel struct {
 	Provider        string               `json:"provider"`
 	ID              string               `json:"id"`
+	Source          string               `json:"source,omitempty"`
 	Name            string               `json:"name"`
 	API             llm.API              `json:"api"`
 	Reasoning       *bool                `json:"reasoning"`
@@ -135,6 +140,7 @@ type SyncOptions struct {
 type SyncResult struct {
 	UpdatedModels  []string
 	AddedModels    []string
+	RemovedModels  []string
 	ExcludedModels []string
 	SkippedModels  []string
 	ClampedModels  []string
@@ -210,10 +216,14 @@ func main() {
 	for _, m := range result.ClampedModels {
 		fmt.Printf("    ! %s (retained cache_read capped at input)\n", m)
 	}
+	fmt.Printf("  Removed models: %d\n", len(result.RemovedModels))
+	for _, m := range result.RemovedModels {
+		fmt.Printf("    - %s\n", m)
+	}
 	fmt.Printf("  Unchanged:      %d\n", result.Unchanged)
 	fmt.Printf("  Total models:   %d\n", result.Total)
 
-	if !*dryRun && (len(result.UpdatedModels) > 0 || len(result.AddedModels) > 0) {
+	if !*dryRun && (len(result.UpdatedModels) > 0 || len(result.AddedModels) > 0 || len(result.RemovedModels) > 0) {
 		if err := writeCatalog(*outputPath, catalog); err != nil {
 			fatal(fmt.Errorf("write catalog: %w", err))
 		}
@@ -274,21 +284,27 @@ func loadCatalog(path string) (*sourceCatalog, error) {
 	if err := jsonv2.Unmarshal(data, &catalog, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", path, err)
 	}
-	if catalog.SchemaVersion != 1 {
-		return nil, fmt.Errorf("schema_version is %d, want 1", catalog.SchemaVersion)
+	if catalog.SchemaVersion != schemaVersion {
+		return nil, fmt.Errorf("schema_version is %d, want %d", catalog.SchemaVersion, schemaVersion)
 	}
 	return &catalog, nil
 }
 
 func validateCatalog(catalog *sourceCatalog) error {
-	if catalog.SchemaVersion != 1 {
-		return fmt.Errorf("schema_version is %d, want 1", catalog.SchemaVersion)
+	if catalog.SchemaVersion != schemaVersion {
+		return fmt.Errorf("schema_version is %d, want %d", catalog.SchemaVersion, schemaVersion)
 	}
 	if catalog.Revision <= 0 {
 		return errors.New("revision must be positive")
 	}
 	seen := make(map[string]map[string]struct{})
 	for i, m := range catalog.Models {
+		if m.Source != "" && m.Source != modelsDevSource {
+			return fmt.Errorf("models[%d]: unknown source %q", i, m.Source)
+		}
+		if m.Provider == "openai-codex" && m.Source != "" {
+			return fmt.Errorf("models[%d]: openai-codex must be curated", i)
+		}
 		if m.Provider == "" || !utf8.ValidString(m.Provider) || strings.TrimSpace(m.Provider) != m.Provider {
 			return fmt.Errorf("models[%d]: provider must be nonempty valid UTF-8 without surrounding whitespace", i)
 		}
@@ -456,6 +472,9 @@ func syncCatalog(catalog *sourceCatalog, dataset modelsdev.Dataset, opts SyncOpt
 	targetProviders := make(map[string]struct{})
 	if len(opts.Providers) > 0 {
 		for _, p := range opts.Providers {
+			if _, known := catalogmeta.ProviderAPI(p); !known || p == "openai-codex" {
+				return SyncResult{}, fmt.Errorf("provider %q is not a models.dev sync route", p)
+			}
 			targetProviders[p] = struct{}{}
 		}
 	} else {
@@ -464,100 +483,105 @@ func syncCatalog(catalog *sourceCatalog, dataset modelsdev.Dataset, opts SyncOpt
 		}
 	}
 
-	var result SyncResult
-	var changesMade bool
-
-	existingByProvider := make(map[string]map[string]int)
-	for i, m := range catalog.Models {
-		if existingByProvider[m.Provider] == nil {
-			existingByProvider[m.Provider] = make(map[string]int)
+	// Resolve upstream names per route, and validate snapshot completeness before
+	// modifying anything. A missing provider/null models map is not evidence of
+	// retirement; an explicitly empty models object is an authoritative empty set.
+	snapshots := make(map[string]modelsdev.ProviderEntry)
+	for provider := range targetProviders {
+		upstream := defaultProviderMapping[provider]
+		if upstream == "" {
+			upstream = provider
 		}
-		existingByProvider[m.Provider][m.ID] = i
+		data, ok := dataset[upstream]
+		if !ok {
+			if len(opts.Providers) > 0 {
+				return SyncResult{}, fmt.Errorf("snapshot is missing provider %q", upstream)
+			}
+			continue
+		}
+		if data.Models == nil {
+			return SyncResult{}, fmt.Errorf("snapshot provider %q has no models object", upstream)
+		}
+		for id, entry := range data.Models {
+			if id == "" || strings.TrimSpace(id) != id || id != entry.ID {
+				return SyncResult{}, fmt.Errorf("snapshot provider %q has inconsistent model key %q or ID %q", upstream, id, entry.ID)
+			}
+		}
+		snapshots[provider] = data
+	}
+	for _, model := range catalog.Models {
+		if _, targeted := targetProviders[model.Provider]; targeted && model.Source == modelsDevSource {
+			if _, ok := snapshots[model.Provider]; !ok {
+				return SyncResult{}, fmt.Errorf("snapshot is missing managed provider %q", model.Provider)
+			}
+		}
 	}
 
-	for i := range catalog.Models {
-		m := &catalog.Models[i]
-		if _, targeted := targetProviders[m.Provider]; !targeted {
+	var result SyncResult
+	existingByProvider := make(map[string]map[string]struct{})
+	retained := make([]sourceModel, 0, len(catalog.Models))
+	for _, model := range catalog.Models {
+		if existingByProvider[model.Provider] == nil {
+			existingByProvider[model.Provider] = make(map[string]struct{})
+		}
+		existingByProvider[model.Provider][model.ID] = struct{}{}
+		data, targeted := snapshots[model.Provider]
+		if !targeted || model.Source != modelsDevSource {
+			retained = append(retained, model)
 			result.Unchanged++
 			continue
 		}
-
-		modelsDevProvider := defaultProviderMapping[m.Provider]
-		if modelsDevProvider == "" {
-			modelsDevProvider = m.Provider
-		}
-
-		providerData, ok := dataset[modelsDevProvider]
-		if !ok {
-			result.Unchanged++
+		entry, found := data.Models[model.ID]
+		if !found || !eligibleModel(entry) {
+			result.RemovedModels = append(result.RemovedModels, model.Provider+"/"+model.ID)
 			continue
 		}
-
-		modelEntry, ok := providerData.Models[m.ID]
-		if !ok {
-			result.Unchanged++
-			continue
-		}
-
 		// Check prices before applying them, without discarding independent metadata.
 		// Audio pricing is not imported by applyModelUpdate either.
-		if modelEntry.Cost != nil && (m.Capabilities == nil || !slices.Contains(*m.Capabilities, llm.CapabilityAudio)) {
-			candidate := *m
-			if m.Cost != nil {
-				cost := *m.Cost
+		if entry.Cost != nil && (model.Capabilities == nil || !slices.Contains(*model.Capabilities, llm.CapabilityAudio)) {
+			candidate := model
+			if model.Cost != nil {
+				cost := *model.Cost
 				candidate.Cost = &cost
 			}
-			if modelEntry.Limit != nil && modelEntry.Limit.Context > 0 {
-				candidate.ContextWindow = &modelEntry.Limit.Context
+			if entry.Limit != nil && entry.Limit.Context > 0 {
+				candidate.ContextWindow = &entry.Limit.Context
 			}
-			_, clamped := updateSourceCost(&candidate, modelEntry.Cost)
+			_, clamped := updateSourceCost(&candidate, entry.Cost)
 			if err := validateCacheReadPrices(candidate.Cost); err != nil {
-				result.SkippedModels = append(result.SkippedModels, fmt.Sprintf("%s/%s: cost skipped: %v", m.Provider, m.ID, err))
-				modelEntry.Cost = nil
+				result.SkippedModels = append(result.SkippedModels, fmt.Sprintf("%s/%s: cost skipped: %v", model.Provider, model.ID, err))
+				entry.Cost = nil
 			} else if clamped {
-				result.ClampedModels = append(result.ClampedModels, fmt.Sprintf("%s/%s", m.Provider, m.ID))
+				result.ClampedModels = append(result.ClampedModels, fmt.Sprintf("%s/%s", model.Provider, model.ID))
 			}
 		}
 
-		updated := applyModelUpdate(m, modelEntry)
-		if updated {
-			changesMade = true
-			result.UpdatedModels = append(result.UpdatedModels, fmt.Sprintf("%s/%s", m.Provider, m.ID))
+		if applyModelUpdate(&model, entry) {
+			result.UpdatedModels = append(result.UpdatedModels, model.Provider+"/"+model.ID)
 		} else {
 			result.Unchanged++
 		}
+		retained = append(retained, model)
 	}
+	catalog.Models = retained
 
 	if opts.AddNew {
-		for provider := range targetProviders {
-			modelsDevProvider := defaultProviderMapping[provider]
-			if modelsDevProvider == "" {
-				modelsDevProvider = provider
-			}
-
-			providerData, ok := dataset[modelsDevProvider]
-			if !ok {
-				continue
-			}
-
-			existing := existingByProvider[provider]
-			for modelID, entry := range providerData.Models {
-				if _, exists := existing[modelID]; exists {
+		for provider, data := range snapshots {
+			for id, entry := range data.Models {
+				if _, exists := existingByProvider[provider][id]; exists {
 					continue
 				}
-
-				newModel, ok := createSourceModel(provider, entry)
+				model, ok := createSourceModel(provider, entry)
 				if !ok {
-					result.ExcludedModels = append(result.ExcludedModels, fmt.Sprintf("%s/%s", provider, modelID))
+					result.ExcludedModels = append(result.ExcludedModels, fmt.Sprintf("%s/%s", provider, id))
 					continue
 				}
-				if err := validateCacheReadPrices(newModel.Cost); err != nil {
-					result.SkippedModels = append(result.SkippedModels, fmt.Sprintf("%s/%s: new model skipped (cost): %v", provider, modelID, err))
+				if err := validateCacheReadPrices(model.Cost); err != nil {
+					result.SkippedModels = append(result.SkippedModels, fmt.Sprintf("%s/%s: new model skipped (cost): %v", provider, id, err))
 					continue
 				}
-				catalog.Models = append(catalog.Models, newModel)
-				changesMade = true
-				result.AddedModels = append(result.AddedModels, fmt.Sprintf("%s/%s", provider, modelID))
+				catalog.Models = append(catalog.Models, model)
+				result.AddedModels = append(result.AddedModels, provider+"/"+model.ID)
 			}
 		}
 	}
@@ -568,18 +592,26 @@ func syncCatalog(catalog *sourceCatalog, dataset modelsdev.Dataset, opts SyncOpt
 		}
 		return catalog.Models[i].ID < catalog.Models[j].ID
 	})
-
-	if changesMade && !opts.DryRun {
+	slices.Sort(result.AddedModels)
+	slices.Sort(result.UpdatedModels)
+	slices.Sort(result.RemovedModels)
+	if !opts.DryRun && (len(result.AddedModels) > 0 || len(result.UpdatedModels) > 0 || len(result.RemovedModels) > 0) {
 		catalog.Revision++
 	}
-
-	sort.Strings(result.UpdatedModels)
-	sort.Strings(result.AddedModels)
-	sort.Strings(result.ExcludedModels)
-	sort.Strings(result.SkippedModels)
-	sort.Strings(result.ClampedModels)
+	slices.Sort(result.ExcludedModels)
+	slices.Sort(result.SkippedModels)
+	slices.Sort(result.ClampedModels)
 	result.Total = len(catalog.Models)
 	return result, nil
+}
+
+// eligibleModel is the membership policy for models.dev-managed entries, both
+// existing and new. Curated entries are outside this policy. No age/name rule or
+// cross-provider retirement inference belongs here.
+func eligibleModel(entry modelsdev.ModelEntry) bool {
+	return strings.TrimSpace(entry.ID) != "" && entry.Status != "deprecated" &&
+		entry.ToolCall && entry.Modalities != nil && slices.Equal(entry.Modalities.Output, []string{"text"}) &&
+		entry.Limit != nil && entry.Limit.Context > 0 && entry.Limit.Output > 0 && entry.Limit.Output <= entry.Limit.Context
 }
 
 func applyModelUpdate(m *sourceModel, entry modelsdev.ModelEntry) bool {
@@ -780,20 +812,15 @@ func equalFloatPtr(a, b *float64) bool {
 }
 
 func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel, bool) {
-	// Discovery is limited to tool-calling, text-output generation models.
-	if !entry.ToolCall || entry.Modalities == nil || !slices.Equal(entry.Modalities.Output, []string{"text"}) {
-		return sourceModel{}, false
-	}
 	api, known := catalogmeta.ProviderAPI(provider)
 	if !known {
 		return sourceModel{}, false
 	}
-	// Only add model if it has authoritative context limits and output <= context.
-	id := strings.TrimSpace(entry.ID)
-	if id == "" || entry.Limit == nil || entry.Limit.Context <= 0 || entry.Limit.Output <= 0 || entry.Limit.Output > entry.Limit.Context {
+	if !eligibleModel(entry) {
 		return sourceModel{}, false
 	}
 
+	id := strings.TrimSpace(entry.ID)
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
 		name = id
@@ -916,6 +943,7 @@ func createSourceModel(provider string, entry modelsdev.ModelEntry) (sourceModel
 	return sourceModel{
 		Provider:        provider,
 		ID:              id,
+		Source:          modelsDevSource,
 		Name:            name,
 		API:             api,
 		Reasoning:       &reasoning,

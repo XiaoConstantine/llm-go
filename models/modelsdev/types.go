@@ -30,6 +30,9 @@ type ModelEntry struct {
 	OpenWeights      bool              `json:"open_weights,omitempty"`
 	Limit            *Limit            `json:"limit,omitempty"`
 	Cost             *Cost             `json:"cost,omitempty"`
+
+	// Status is the upstream lifecycle status (alpha, beta, or deprecated).
+	Status string `json:"status,omitempty"`
 }
 
 // Modalities describes input and output modality support.
