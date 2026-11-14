@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
@@ -93,9 +94,46 @@ func compileToolSchema(raw []byte) (*jsonschema.Schema, error) {
 	return schema, nil
 }
 
+// maxValidSchemaCacheBytes bounds the schema bytes remembered by
+// validSchemas. Exceeding it clears the cache rather than growing it.
+const maxValidSchemaCacheBytes = 4 << 20
+
+// validSchemas remembers the exact bytes of tool schemas that compiled
+// successfully. Compilation depends only on those bytes, because the draft is
+// fixed and external loading is disabled, so an agent loop that resends the same
+// tools validates them once instead of recompiling them on every request. Only
+// the outcome is cached; compiled schemas are not shared, so no caller can reach
+// cached storage. Failures are not cached.
+var validSchemas struct {
+	sync.RWMutex
+	entries map[string]struct{}
+	bytes   int
+}
+
 func validateJSONSchema(raw []byte) error {
-	_, err := compileToolSchema(raw)
-	return err
+	validSchemas.RLock()
+	_, known := validSchemas.entries[string(raw)]
+	validSchemas.RUnlock()
+	if known {
+		return nil
+	}
+	if _, err := compileToolSchema(raw); err != nil {
+		return err
+	}
+	if len(raw) > maxValidSchemaCacheBytes {
+		return nil
+	}
+	validSchemas.Lock()
+	defer validSchemas.Unlock()
+	if validSchemas.entries == nil || validSchemas.bytes+len(raw) > maxValidSchemaCacheBytes {
+		validSchemas.entries = make(map[string]struct{})
+		validSchemas.bytes = 0
+	}
+	if _, exists := validSchemas.entries[string(raw)]; !exists {
+		validSchemas.entries[string(raw)] = struct{}{}
+		validSchemas.bytes += len(raw)
+	}
+	return nil
 }
 
 func decodeSchemaJSON(raw []byte) (any, error) {
