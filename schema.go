@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,14 +60,99 @@ func (compiled toolCallValidator) validate(calls []ToolCall) error {
 		if err != nil {
 			return fmt.Errorf("tool calls[%d] %q arguments: %w", index, call.Name, err)
 		}
-		if err := schema.Validate(value); err != nil {
+		if err := validateSchemaValue(schema, value); err != nil {
 			return fmt.Errorf("tool calls[%d] %q arguments at %s: %w", index, call.Name, validationPath(err), err)
 		}
 	}
 	return nil
 }
 
+// maxCompiledSchemaCacheBytes bounds the raw schema bytes whose compiled forms
+// compiledSchemas retains. A compiled schema takes roughly 7 to 16 times its
+// raw size. Exceeding the bound clears the cache rather than growing it.
+const maxCompiledSchemaCacheBytes = 1 << 20
+
+// compiledSchemas holds schemas that compiled successfully, keyed by their exact
+// bytes. Compilation depends only on those bytes, because the default draft is
+// fixed and external loading is disabled, so an agent loop that resends the same
+// tools compiles each schema once for request validation and tool-call
+// validation. Compiled schemas are read-only during validation and are never
+// returned to callers; validateSchemaValue detaches schema storage from the
+// errors it returns. Failures are not cached.
+var compiledSchemas struct {
+	sync.RWMutex
+	entries map[string]*jsonschema.Schema
+	bytes   int
+}
+
 func compileToolSchema(raw []byte) (*jsonschema.Schema, error) {
+	compiledSchemas.RLock()
+	schema, known := compiledSchemas.entries[string(raw)]
+	compiledSchemas.RUnlock()
+	if known {
+		return schema, nil
+	}
+	schema, err := compileSchema(raw)
+	if err != nil || len(raw) > maxCompiledSchemaCacheBytes {
+		return schema, err
+	}
+	compiledSchemas.Lock()
+	defer compiledSchemas.Unlock()
+	if cached, exists := compiledSchemas.entries[string(raw)]; exists {
+		return cached, nil
+	}
+	if compiledSchemas.entries == nil || compiledSchemas.bytes+len(raw) > maxCompiledSchemaCacheBytes {
+		compiledSchemas.entries = make(map[string]*jsonschema.Schema)
+		compiledSchemas.bytes = 0
+	}
+	compiledSchemas.entries[string(raw)] = schema
+	compiledSchemas.bytes += len(raw)
+	return schema, nil
+}
+
+// validateSchemaValue validates value against a possibly shared compiled
+// schema. Validation errors reference schema-owned enum, const, and numeric
+// bound values, so they are replaced with copies before the error reaches a
+// caller who could mutate them.
+func validateSchemaValue(schema *jsonschema.Schema, value any) error {
+	err := schema.Validate(value)
+	var validationErr *jsonschema.ValidationError
+	if errors.As(err, &validationErr) {
+		detachValidationError(validationErr)
+	}
+	return err
+}
+
+func detachValidationError(err *jsonschema.ValidationError) {
+	switch detail := err.ErrorKind.(type) {
+	case *kind.Enum:
+		detail.Want = cloneJSONValue(detail.Want).([]any)
+	case *kind.Const:
+		detail.Want = cloneJSONValue(detail.Want)
+	case *kind.Minimum:
+		detail.Want = cloneRat(detail.Want)
+	case *kind.Maximum:
+		detail.Want = cloneRat(detail.Want)
+	case *kind.ExclusiveMinimum:
+		detail.Want = cloneRat(detail.Want)
+	case *kind.ExclusiveMaximum:
+		detail.Want = cloneRat(detail.Want)
+	case *kind.MultipleOf:
+		detail.Want = cloneRat(detail.Want)
+	}
+	for _, cause := range err.Causes {
+		detachValidationError(cause)
+	}
+}
+
+func cloneRat(value *big.Rat) *big.Rat {
+	if value == nil {
+		return nil
+	}
+	return new(big.Rat).Set(value)
+}
+
+func compileSchema(raw []byte) (*jsonschema.Schema, error) {
 	if err := validateJSON(raw); err != nil {
 		return nil, err
 	}
@@ -94,46 +180,9 @@ func compileToolSchema(raw []byte) (*jsonschema.Schema, error) {
 	return schema, nil
 }
 
-// maxValidSchemaCacheBytes bounds the schema bytes remembered by
-// validSchemas. Exceeding it clears the cache rather than growing it.
-const maxValidSchemaCacheBytes = 4 << 20
-
-// validSchemas remembers the exact bytes of tool schemas that compiled
-// successfully. Compilation depends only on those bytes, because the draft is
-// fixed and external loading is disabled, so an agent loop that resends the same
-// tools validates them once instead of recompiling them on every request. Only
-// the outcome is cached; compiled schemas are not shared, so no caller can reach
-// cached storage. Failures are not cached.
-var validSchemas struct {
-	sync.RWMutex
-	entries map[string]struct{}
-	bytes   int
-}
-
 func validateJSONSchema(raw []byte) error {
-	validSchemas.RLock()
-	_, known := validSchemas.entries[string(raw)]
-	validSchemas.RUnlock()
-	if known {
-		return nil
-	}
-	if _, err := compileToolSchema(raw); err != nil {
-		return err
-	}
-	if len(raw) > maxValidSchemaCacheBytes {
-		return nil
-	}
-	validSchemas.Lock()
-	defer validSchemas.Unlock()
-	if validSchemas.entries == nil || validSchemas.bytes+len(raw) > maxValidSchemaCacheBytes {
-		validSchemas.entries = make(map[string]struct{})
-		validSchemas.bytes = 0
-	}
-	if _, exists := validSchemas.entries[string(raw)]; !exists {
-		validSchemas.entries[string(raw)] = struct{}{}
-		validSchemas.bytes += len(raw)
-	}
-	return nil
+	_, err := compileToolSchema(raw)
+	return err
 }
 
 func decodeSchemaJSON(raw []byte) (any, error) {

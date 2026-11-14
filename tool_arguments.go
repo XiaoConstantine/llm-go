@@ -44,7 +44,7 @@ func ValidateToolArguments(tool Tool, call ToolCall) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tool %q schema: %w", tool.Name, err)
 	}
-	if err := compiled.Validate(coerced); err != nil {
+	if err := validateSchemaValue(compiled, coerced); err != nil {
 		return nil, fmt.Errorf("tool %q arguments at %s: %w", call.Name, validationPath(err), err)
 	}
 	return coerced, nil

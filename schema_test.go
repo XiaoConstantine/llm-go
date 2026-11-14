@@ -1,8 +1,12 @@
 package llm
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 )
 
 func TestToolCallSchemaValidation(t *testing.T) {
@@ -132,5 +136,47 @@ func TestJSONSchemaDialectsLocalRefsAndFormats(t *testing.T) {
 		if err := request.Validate(); err == nil {
 			t.Fatalf("unresolved schema %s succeeded", schema)
 		}
+	}
+}
+
+// Compiled schemas are cached and shared, so a caller that mutates the details
+// of a returned validation error must not change how later calls validate.
+func TestToolCallSchemaErrorsDoNotShareSchemaStorage(t *testing.T) {
+	tools := []Tool{{Name: "lookup", InputSchema: []byte(`{"type":"object","properties":{` +
+		`"mode":{"enum":["text","hex"]},"pin":{"const":{"a":1}},` +
+		`"count":{"type":"integer","minimum":1},"step":{"type":"integer","multipleOf":3}}}`)}}
+	validate := func(arguments string) error {
+		return ValidateToolCalls(tools, []ToolCall{{Name: "lookup", Arguments: []byte(arguments)}})
+	}
+	mutate := func(arguments string) {
+		t.Helper()
+		var validationErr *jsonschema.ValidationError
+		if err := validate(arguments); !errors.As(err, &validationErr) {
+			t.Fatalf("%s: error = %v, want a schema validation error", arguments, err)
+		}
+		for len(validationErr.Causes) != 0 {
+			validationErr = validationErr.Causes[0]
+		}
+		switch detail := validationErr.ErrorKind.(type) {
+		case *kind.Enum:
+			detail.Want[0] = "bogus"
+		case *kind.Const:
+			detail.Want.(map[string]any)["a"] = "bogus"
+		case *kind.Minimum:
+			detail.Want.SetInt64(-100)
+		case *kind.MultipleOf:
+			detail.Want.SetInt64(1)
+		default:
+			t.Fatalf("%s: unexpected error kind %T", arguments, detail)
+		}
+	}
+	for _, arguments := range []string{`{"mode":"bogus"}`, `{"pin":{"a":"bogus"}}`, `{"count":0}`, `{"step":4}`} {
+		mutate(arguments)
+		if err := validate(arguments); err == nil {
+			t.Errorf("%s succeeded after mutating an earlier validation error", arguments)
+		}
+	}
+	if err := validate(`{"mode":"text","pin":{"a":1},"count":1,"step":6}`); err != nil {
+		t.Fatalf("valid arguments failed after mutating validation errors: %v", err)
 	}
 }
