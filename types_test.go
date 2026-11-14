@@ -15,6 +15,8 @@ func TestTranscriptEncodingPreservesLegacyShapeAndNonzeroMetadata(t *testing.T) 
 		{"legacy part", Part{Text: "hello"}, `{"Kind":0,"Text":"hello","Data":null,"MediaType":""}`},
 		{"cache breakpoint", Part{Text: "hello", CacheBreakpoint: true}, `{"Kind":0,"Text":"hello","Data":null,"MediaType":"","CacheBreakpoint":true}`},
 		{"legacy call", ToolCall{ID: "call", Name: "lookup", Arguments: []byte(`{}`)}, `{"ID":"call","Name":"lookup","Arguments":{}}`},
+		{"legacy request", Request{}, `{"Messages":null,"Tools":null,"ToolChoice":{"Mode":"","Name":""},"ResponseFormat":0,"ReasoningEffort":"","ReasoningBudgetTokens":0,"CacheRetention":"","CacheKey":"","SessionID":"","MaxOutputTokens":0,"Temperature":null,"TopP":null,"PresencePenalty":null,"FrequencyPenalty":null,"Stop":null}`},
+		{"parallel tool calls", Request{ParallelToolCalls: new(false)}, `{"Messages":null,"Tools":null,"ToolChoice":{"Mode":"","Name":""},"ParallelToolCalls":false,"ResponseFormat":0,"ReasoningEffort":"","ReasoningBudgetTokens":0,"CacheRetention":"","CacheKey":"","SessionID":"","MaxOutputTokens":0,"Temperature":null,"TopP":null,"PresencePenalty":null,"FrequencyPenalty":null,"Stop":null}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Existing consumers persist transcripts using encoding/json v1.

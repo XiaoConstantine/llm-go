@@ -222,7 +222,7 @@ type Request struct {
 	// tool call in a single response. Nil leaves the provider default. It
 	// requires declared tools and has no effect when ToolChoice disables tool
 	// use. Adapters whose protocol cannot express it reject a non-nil value.
-	ParallelToolCalls *bool
+	ParallelToolCalls *bool `json:",omitzero"`
 	ResponseFormat    ResponseFormat
 	ReasoningEffort   ReasoningEffort
 	// ReasoningBudgetTokens requests an explicit provider reasoning-token
