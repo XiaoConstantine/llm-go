@@ -132,6 +132,68 @@ func TestStreamUsageDecreaseReportsRawCounters(t *testing.T) {
 	}
 }
 
+// Gemini may report cachedContentTokenCount only in a later event, which
+// lowers prompt minus cached tokens while every raw counter still grows.
+func TestStreamUsageAllowsLateCacheReadCount(t *testing.T) {
+	first := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"one"}]}}],"usageMetadata":{"promptTokenCount":16641,"candidatesTokenCount":157,"thoughtsTokenCount":88,"totalTokenCount":16886}}` + "\n\n"
+	final := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"two"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":17911,"candidatesTokenCount":171,"thoughtsTokenCount":88,"cachedContentTokenCount":8223,"totalTokenCount":18170}}` + "\n\n"
+	for _, test := range []struct {
+		name      string
+		events    []string
+		wantUsage *llm.Usage
+		wantErr   string
+	}{
+		{
+			name:      "cache read reported late",
+			events:    []string{first, final},
+			wantUsage: &llm.Usage{InputTokens: 17911 - 8223, OutputTokens: 171 + 88, CacheReadTokens: 8223, ReasoningTokens: 88, TotalTokens: 18170},
+		},
+		{
+			name: "prompt including cache reads decreases",
+			events: []string{
+				`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"one"}]}}],"usageMetadata":{"promptTokenCount":17911,"candidatesTokenCount":157,"cachedContentTokenCount":8223,"totalTokenCount":18068}}` + "\n\n",
+				`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"two"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":16641,"candidatesTokenCount":171,"cachedContentTokenCount":8223,"totalTokenCount":16812}}` + "\n\n",
+			},
+			wantErr: "input tokens including cache reads decreased from 17911 to 16641",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, strings.Join(test.events, ""))
+			}))
+			client := mustTestClient(t, server, llm.CapabilityStreaming)
+			stream, err := client.Stream(context.Background(), textRequest("hello"))
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			chunks, terminal := receiveAll(stream)
+			if err := stream.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			if test.wantErr != "" {
+				var llmErr *llm.Error
+				if !errors.As(terminal, &llmErr) || llmErr.Kind != llm.KindMalformedResponse || !strings.Contains(terminal.Error(), test.wantErr) {
+					t.Fatalf("Recv() terminal = %v, want malformed response containing %q", terminal, test.wantErr)
+				}
+				return
+			}
+			if !errors.Is(terminal, io.EOF) {
+				t.Fatalf("Recv() terminal = %v, want io.EOF", terminal)
+			}
+			var usages []llm.Usage
+			for _, chunk := range chunks {
+				if chunk.Usage != nil {
+					usages = append(usages, *chunk.Usage)
+				}
+			}
+			if len(usages) != 1 || usages[0] != *test.wantUsage || chunks[len(chunks)-1].Usage == nil {
+				t.Fatalf("chunk usage = %#v, want only the final chunk to report %#v", usages, *test.wantUsage)
+			}
+		})
+	}
+}
+
 func TestStreamTranslatesToolCallAndThoughtSignature(t *testing.T) {
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

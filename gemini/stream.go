@@ -244,11 +244,18 @@ func (accumulator *streamAccumulator) observeUsage(usage *llm.Usage, raw *genai.
 		return nil
 	}
 	if accumulator.usage != nil {
+		// Gemini can report cachedContentTokenCount only in a later event, so
+		// InputTokens, which excludes cache reads, may legitimately shrink.
+		// Compare the cumulative prompt count that includes them instead.
 		for _, counter := range []struct {
 			name              string
 			previous, current int
 		}{
-			{name: "input tokens", previous: accumulator.usage.InputTokens, current: usage.InputTokens},
+			{
+				name:     "input tokens including cache reads",
+				previous: accumulator.usage.InputTokens + accumulator.usage.CacheReadTokens,
+				current:  usage.InputTokens + usage.CacheReadTokens,
+			},
 			{name: "output tokens", previous: accumulator.usage.OutputTokens, current: usage.OutputTokens},
 			{name: "cache-read tokens", previous: accumulator.usage.CacheReadTokens, current: usage.CacheReadTokens},
 			{name: "cache-write tokens", previous: accumulator.usage.CacheWriteTokens, current: usage.CacheWriteTokens},
