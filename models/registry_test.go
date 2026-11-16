@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -112,6 +114,47 @@ func TestBuiltinGoogleVertexFactory(t *testing.T) {
 	info := generator.Info()
 	if info.Provider != ProviderGoogleVertex || info.Model != "gemini-2.5-flash" || info.API != llm.APIGoogleVertex {
 		t.Fatalf("Info() = %#v", info)
+	}
+}
+
+func TestBuiltinGoogleVertexFactoryUseDefaultCredentials(t *testing.T) {
+	// ADC discovery fails in this environment, so construction errors only
+	// when UseDefaultCredentials reaches the Vertex client.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
+	vertexRoute := ProviderAPIConfig{API: llm.APIGoogleVertex, Project: "project", Location: "us-central1",
+		HTTPClient: &http.Client{}, UseDefaultCredentials: true}
+	for name, config := range map[string]ProviderConfig{
+		"default route": {ID: "vertex", API: GoogleVertex, Project: "project", Location: "us-central1",
+			HTTPClient: &http.Client{}, UseDefaultCredentials: true},
+		"additional route": {ID: "vertex", API: GeminiGenerateContent, APIKey: "key",
+			AdditionalAPIs: []ProviderAPIConfig{vertexRoute}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			info := llm.ModelInfo{Provider: "vertex", Model: "gemini-2.5-flash", API: llm.APIGoogleVertex}
+			collection, err := New(config)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if _, err := collection.Generator(info); err == nil || !strings.Contains(err.Error(), "Application Default Credentials") {
+				t.Fatalf("Generator() error = %v, want ADC discovery error", err)
+			}
+
+			external := config
+			external.UseDefaultCredentials = false
+			external.AdditionalAPIs = nil
+			if len(config.AdditionalAPIs) != 0 {
+				route := vertexRoute
+				route.UseDefaultCredentials = false
+				external.AdditionalAPIs = []ProviderAPIConfig{route}
+			}
+			collection, err = New(external)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if _, err := collection.Generator(info); err != nil {
+				t.Fatalf("externally authenticated Generator() error = %v", err)
+			}
+		})
 	}
 }
 

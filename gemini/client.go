@@ -49,6 +49,9 @@ const (
 // were accepted before these limits were introduced now return short
 // malformed-response errors. The total stream length is not limited. Error
 // bodies are truncated at 1 MiB. These limits also apply to NewVertex.
+//
+// UseDefaultCredentials applies only to NewVertex; New rejects it. See
+// NewVertex for how it selects Vertex authentication.
 type Config struct {
 	Provider           string
 	Model              string
@@ -60,6 +63,8 @@ type Config struct {
 	APIVersion         string
 	HTTPClient         *http.Client
 	Headers            http.Header
+
+	UseDefaultCredentials bool
 }
 
 // Client is an immutable Gemini Developer API client. It is safe for
@@ -86,9 +91,17 @@ func New(config Config) (_ *Client, err error) {
 
 // NewVertex constructs a Vertex AI client using the shared GenerateContent
 // protocol implementation. An API key may be supplied without project and
-// location. Without an API key, project and location are required; a supplied
-// HTTP client must already authenticate requests, while a nil client uses
-// Application Default Credentials.
+// location. Without an API key, project and location are required.
+//
+// Authentication is selected in this order:
+//   - A nonempty APIKey uses Vertex API-key authentication; Application Default
+//     Credentials (ADC) are not discovered.
+//   - With UseDefaultCredentials or a nil HTTPClient, ADC are discovered at
+//     construction and an OAuth bearer token is added to each request. A
+//     supplied HTTPClient keeps its transport and timeout: authorization wraps
+//     the client's own copy, and the caller's client is not mutated.
+//   - Otherwise the supplied HTTPClient is externally authenticated, such as
+//     an authenticating gateway or transport, and no credentials are added.
 func NewVertex(config Config, project, location string) (*Client, error) {
 	return newClient(config, clientOptions{api: llm.APIGoogleVertex, backend: genai.BackendVertexAI,
 		defaultProvider: vertexProvider, defaultAPIVersion: vertexAPIVersion,
@@ -123,6 +136,9 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	}
 	if strings.ContainsAny(model, "?&") || strings.Contains(model, "..") {
 		return nil, configError("model contains an invalid path or query component")
+	}
+	if config.UseDefaultCredentials && !options.vertex {
+		return nil, configError("UseDefaultCredentials is supported only by Vertex AI")
 	}
 	apiKey := strings.TrimSpace(config.APIKey)
 	if options.requireAPIKey && apiKey == "" {
@@ -200,7 +216,8 @@ func newClient(config Config, options clientOptions) (_ *Client, err error) {
 	if options.vertex && baseURL != "" {
 		sdkConfig.HTTPOptions.BaseURLResourceScope = genai.ResourceScopeCollection
 	}
-	if options.vertex && apiKey == "" && config.HTTPClient == nil {
+	if options.vertex && apiKey == "" && (config.HTTPClient == nil || config.UseDefaultCredentials) {
+		// The SDK wraps sdkConfig.HTTPClient, which is the client's own copy.
 		if err := sdkConfig.UseDefaultCredentials(); err != nil {
 			return nil, configError("initialize Vertex Application Default Credentials: %w", err)
 		}

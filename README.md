@@ -39,7 +39,7 @@ model; a ✓ does not imply that every model exposed by an endpoint supports it.
 | [`openai/codex`](./openai/codex) · ChatGPT subscription Codex Responses | ✓ | — | ✓ | — | ✓ | WAV/MP3/M4A/WebM/Ogg input | Summaries and encrypted replay | Read/write | Access token or credential resolver |
 | [`anthropic`](./anthropic) · Anthropic-compatible Messages | ✓ | — | ✓ | — | ✓ | — | Signed thinking replay | Read/write, including 1h writes | API key, OAuth token, or custom headers |
 | [`gemini`](./gemini) · Gemini Developer API | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key |
-| [`vertex`](./vertex) · Google Vertex AI | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key, ADC, or authenticated HTTP client |
+| [`vertex`](./vertex) · Google Vertex AI | ✓ | — | ✓ | ✓ | ✓ | ✓ | Controls and thought-signature replay | Read | API key, ADC (also with a custom HTTP client via `UseDefaultCredentials`), or authenticated HTTP client |
 | [`bedrock`](./bedrock) · Amazon Bedrock ConverseStream | ✓ | — | ✓ | — | ✓ | — | Controls and signed replay | Read/write | AWS credentials, profile, bearer token, or unauthenticated gateway |
 | [`mistral`](./mistral) · Mistral Conversations | ✓ | — | ✓ | — | ✓ | — | Thinking blocks and controls | — | API key |
 

@@ -2,12 +2,20 @@ package vertex
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	llm "github.com/XiaoConstantine/llm-go"
 )
@@ -83,6 +91,112 @@ func TestProjectLocationWithAuthenticatedHTTPClient(t *testing.T) {
 	}
 	if _, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hi"}}}}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultCredentialsWrapSuppliedHTTPClient(t *testing.T) {
+	var tokenRequests atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		tokenRequests.Add(1)
+		if err := request.ParseForm(); err != nil || request.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" {
+			t.Errorf("token request form = %v, %v", request.Form, err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"access_token":"adc-token","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", writeServiceAccount(t, tokenServer.URL))
+
+	var authorizations []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		authorizations = append(authorizations, request.Header.Get("Authorization"))
+		if request.Header.Get("X-Supplied-Transport") != "yes" {
+			t.Errorf("request did not pass through the supplied transport")
+		}
+		if request.URL.Query().Get("alt") == "sse" {
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(writer, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`+"\n\n")
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer server.Close()
+	var transportCalls atomic.Int32
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		request = request.Clone(request.Context())
+		request.Header.Set("X-Supplied-Transport", "yes")
+		return server.Client().Transport.RoundTrip(request)
+	})
+	supplied := &http.Client{Transport: transport, Timeout: time.Minute}
+	request := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hi"}}}}}
+
+	client, err := New(Config{Model: "model", Project: "project", Location: "us-central1", BaseURL: server.URL,
+		HTTPClient: supplied, UseDefaultCredentials: true, Capabilities: []llm.Capability{llm.CapabilityStreaming}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response, err := llm.CollectStructural(stream); err != nil || response.Text() != "ok" {
+		t.Fatalf("stream = %#v, %v", response, err)
+	}
+	if len(authorizations) != 2 || authorizations[0] != "Bearer adc-token" || authorizations[1] != "Bearer adc-token" {
+		t.Fatalf("Authorization headers = %q", authorizations)
+	}
+	if transportCalls.Load() != 2 || tokenRequests.Load() != 1 {
+		t.Fatalf("transport calls = %d, token requests = %d", transportCalls.Load(), tokenRequests.Load())
+	}
+	if _, ok := supplied.Transport.(roundTripFunc); !ok || supplied.Timeout != time.Minute {
+		t.Fatalf("supplied client was mutated: %#v", supplied)
+	}
+
+	// Without UseDefaultCredentials, a supplied client is externally authenticated.
+	authorizations = nil
+	external, err := New(Config{Model: "model", Project: "project", Location: "us-central1", BaseURL: server.URL, HTTPClient: supplied})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := external.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(authorizations) != 1 || authorizations[0] != "" || tokenRequests.Load() != 1 {
+		t.Fatalf("external Authorization = %q, token requests = %d", authorizations, tokenRequests.Load())
+	}
+}
+
+func TestAPIKeyTakesPrecedenceOverDefaultCredentials(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", missing)
+	var header http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		header = request.Header.Clone()
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer server.Close()
+
+	// Discovery fails with this environment, so success shows it was skipped.
+	if client, err := New(Config{Model: "model", Project: "project", Location: "us-central1",
+		HTTPClient: server.Client(), UseDefaultCredentials: true}); client != nil || err == nil {
+		t.Fatalf("New() with unusable ADC = %#v, %v", client, err)
+	}
+	client, err := New(Config{Model: "model", APIKey: "vertex-key", Project: "project", Location: "us-central1",
+		BaseURL: server.URL, HTTPClient: server.Client(), UseDefaultCredentials: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Generate(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.Part{{Text: "hi"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if header.Get("X-Goog-Api-Key") != "vertex-key" || header.Get("Authorization") != "" {
+		t.Fatalf("headers = %#v", header)
 	}
 }
 
@@ -178,6 +292,31 @@ func TestCustomBaseURLContainingVersionIsNotDuplicated(t *testing.T) {
 	if !ok || base != "https://gateway.example" || version != "proxy/v1" {
 		t.Fatalf("normalizeCustomBaseURL() = %q, %q, %v", base, version, ok)
 	}
+}
+
+func writeServiceAccount(t *testing.T, tokenURL string) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]string{
+		"type": "service_account", "project_id": "project", "private_key_id": "key-id",
+		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+		"client_email": "test@project.iam.gserviceaccount.com", "token_uri": tokenURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

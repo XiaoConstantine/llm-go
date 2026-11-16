@@ -30,6 +30,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		{name: "base URL query", config: Config{Model: "model", APIKey: "key", BaseURL: "https://example.com?x=1"}, wantError: "query or fragment"},
 		{name: "invalid API version", config: Config{Model: "model", APIKey: "key", APIVersion: "v1/beta"}, wantError: "one path segment"},
 		{name: "unsupported capability", config: Config{Model: "model", APIKey: "key", Capabilities: []llm.Capability{"future"}}, wantError: "not implemented"},
+		{name: "default credentials", config: Config{Model: "model", APIKey: "key", UseDefaultCredentials: true}, wantError: "only by Vertex AI"},
 	}
 
 	for _, test := range tests {

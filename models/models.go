@@ -55,7 +55,10 @@ type CredentialResolver func(ctx context.Context, rejectedAccessToken string) (C
 //
 // BaseURL, Project, Location, HTTPClient, and Headers are forwarded to the
 // selected provider implementation. Project and Location configure Vertex AI
-// ADC routing. New copies Headers. The caller remains responsible for safe
+// ADC routing. UseDefaultCredentials makes Vertex AI use Application Default
+// Credentials around a supplied HTTPClient; without it, a supplied Vertex
+// HTTPClient must authenticate requests itself. A Vertex APIKey takes
+// precedence over both. New copies Headers. The caller remains responsible for safe
 // concurrent use of HTTPClient. A nil HTTPClient ultimately uses
 // [http.DefaultClient], so operations should have a context deadline when an
 // unbounded request is not acceptable.
@@ -73,6 +76,8 @@ type ProviderConfig struct {
 	SkipAuth           bool
 	HTTPClient         *http.Client
 	Headers            http.Header
+	// UseDefaultCredentials applies to Google Vertex AI; see ProviderConfig.
+	UseDefaultCredentials bool
 	// AdditionalAPIs explicitly enables model-selected protocols for this
 	// provider. Its storage is copied by Collection construction.
 	AdditionalAPIs []ProviderAPIConfig
@@ -94,6 +99,8 @@ type ProviderAPIConfig struct {
 	SkipAuth           bool
 	HTTPClient         *http.Client
 	Headers            http.Header
+	// UseDefaultCredentials applies to Google Vertex AI; see ProviderConfig.
+	UseDefaultCredentials bool
 }
 
 type providerConfig struct {
@@ -115,6 +122,7 @@ type providerRoute struct {
 	skipAuth           bool
 	httpClient         *http.Client
 	headers            http.Header
+	useDefaultCreds    bool
 }
 
 // Collection is an immutable set of provider configurations. It is safe for
@@ -170,7 +178,7 @@ func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *F
 		defaultRoute := providerRoute{api: defaultAPI, apiKey: config.APIKey, credentials: config.Credentials,
 			resolveCredentials: config.ResolveCredentials, baseURL: config.BaseURL, project: config.Project, location: config.Location,
 			region: config.Region, profile: config.Profile, skipAuth: config.SkipAuth,
-			httpClient: config.HTTPClient, headers: config.Headers.Clone()}
+			httpClient: config.HTTPClient, headers: config.Headers.Clone(), useDefaultCreds: config.UseDefaultCredentials}
 		if err := validateRoute(id, defaultRoute, registry); err != nil {
 			return nil, err
 		}
@@ -187,7 +195,7 @@ func NewWithCredentialManagerAndRegistry(manager *CredentialManager, registry *F
 				resolveCredentials: additional.ResolveCredentials, baseURL: additional.BaseURL,
 				project: additional.Project, location: additional.Location,
 				region: additional.Region, profile: additional.Profile, skipAuth: additional.SkipAuth,
-				httpClient: additional.HTTPClient, headers: additional.Headers.Clone()}
+				httpClient: additional.HTTPClient, headers: additional.Headers.Clone(), useDefaultCreds: additional.UseDefaultCredentials}
 			if err := validateRoute(id, route, registry); err != nil {
 				return nil, err
 			}
@@ -205,7 +213,7 @@ func validateRoute(provider string, route providerRoute, registry *FactoryRegist
 	config := ProviderConfig{ID: provider, API: API(route.api), APIKey: route.apiKey, Credentials: route.credentials,
 		ResolveCredentials: route.resolveCredentials, BaseURL: route.baseURL, Project: route.project, Location: route.location,
 		Region: route.region, Profile: route.profile, SkipAuth: route.skipAuth,
-		HTTPClient: route.httpClient, Headers: route.headers}
+		HTTPClient: route.httpClient, Headers: route.headers, UseDefaultCredentials: route.useDefaultCreds}
 	return validateCredentials(provider, API(route.api), config)
 }
 
@@ -339,7 +347,7 @@ func (c *Collection) GeneratorContext(ctx context.Context, info llm.ModelInfo) (
 		Credentials: resolved.credentials, ResolveCredentials: resolved.resolveCredentials,
 		ResolveCredential: credentialResolver, BaseURL: resolved.baseURL, HTTPClient: resolved.httpClient,
 		Project: route.project, Location: route.location, Region: route.region, Profile: route.profile, SkipAuth: route.skipAuth,
-		Headers: resolved.headers.Clone(),
+		Headers: resolved.headers.Clone(), UseDefaultCredentials: route.useDefaultCreds,
 	}
 	generator, err := callGeneratorFactory(ctx, factory, factoryConfig)
 	if err != nil {

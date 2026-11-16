@@ -16,10 +16,20 @@ const defaultAPIVersion = "v1"
 // Client is a Vertex-configured GenerateContent client.
 type Client = gemini.Client
 
-// Config configures a Vertex AI client. Model is required. APIKey selects
-// Vertex API-key authentication. When APIKey is empty, Project and Location are
-// required; HTTPClient must already authenticate requests, or a nil HTTPClient
-// uses Application Default Credentials. Provider defaults to "google-vertex".
+// Config configures a Vertex AI client. Model is required. Provider defaults to
+// "google-vertex". When APIKey is empty, Project and Location are required.
+//
+// Authentication is selected in this order:
+//   - A nonempty APIKey uses Vertex API-key authentication; Application Default
+//     Credentials (ADC) are not discovered, even with UseDefaultCredentials.
+//   - With UseDefaultCredentials or a nil HTTPClient, ADC (for example
+//     GOOGLE_APPLICATION_CREDENTIALS, gcloud user credentials, or workload
+//     credentials) are discovered by New, and requests carry an OAuth bearer
+//     token that the client refreshes. A supplied HTTPClient keeps its
+//     transport and timeout; authorization wraps the client's own copy, and
+//     the caller's client is not mutated.
+//   - Otherwise a supplied HTTPClient must already authenticate requests, such
+//     as an authenticating transport or gateway; no credentials are added.
 //
 // BaseURL is optional and primarily intended for gateways and tests. APIVersion
 // defaults to v1. Capabilities and Headers have the same ownership and feature
@@ -43,6 +53,8 @@ type Config struct {
 	APIVersion         string
 	HTTPClient         *http.Client
 	Headers            http.Header
+
+	UseDefaultCredentials bool
 }
 
 // New constructs a Vertex AI client.
@@ -60,7 +72,7 @@ func New(config Config) (*Client, error) {
 	return gemini.NewVertex(gemini.Config{Provider: config.Provider, Model: config.Model,
 		Capabilities: config.Capabilities, Reasoning: config.Reasoning, ModelCompatibility: config.ModelCompatibility,
 		APIKey: config.APIKey, BaseURL: baseURL, APIVersion: apiVersion, HTTPClient: config.HTTPClient,
-		Headers: config.Headers}, config.Project, config.Location)
+		Headers: config.Headers, UseDefaultCredentials: config.UseDefaultCredentials}, config.Project, config.Location)
 }
 
 func normalizeCustomBaseURL(value, defaultVersion string) (string, string, bool) {

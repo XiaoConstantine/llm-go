@@ -42,6 +42,9 @@ type GeneratorFactoryConfig struct {
 	SkipAuth           bool
 	HTTPClient         *http.Client
 	Headers            http.Header
+	// UseDefaultCredentials requests Google Vertex AI Application Default
+	// Credentials around HTTPClient; see ProviderConfig.
+	UseDefaultCredentials bool
 }
 
 // GeneratorFactory constructs a generator for one API. It may be called
@@ -203,7 +206,7 @@ func vertexFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Genera
 	return vertex.New(vertex.Config{Provider: config.Provider, Model: config.Model.Model,
 		Capabilities: config.Model.Capabilities, Reasoning: config.Model.Reasoning, ModelCompatibility: geminiCompatibility(config.Model.Compatibility),
 		APIKey: config.APIKey, Project: config.Project, Location: config.Location, BaseURL: config.BaseURL,
-		HTTPClient: config.HTTPClient, Headers: config.Headers})
+		HTTPClient: config.HTTPClient, Headers: config.Headers, UseDefaultCredentials: config.UseDefaultCredentials})
 }
 
 func bedrockFactory(_ context.Context, config GeneratorFactoryConfig) (llm.Generator, error) {
