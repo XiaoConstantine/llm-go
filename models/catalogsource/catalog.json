@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "revision": 25,
+  "revision": 26,
   "models": [
     {
       "provider": "amazon-bedrock",
@@ -3703,6 +3703,72 @@
         "gemini": {
           "thinking_levels_only": true
         }
+      }
+    },
+    {
+      "provider": "google-vertex",
+      "id": "gemini-4-argon",
+      "name": "Gemini 4 Argon",
+      "api": "google-vertex",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision",
+        "audio"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 32768,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.1,
+        "cache_write": 0
+      }
+    },
+    {
+      "provider": "google-vertex",
+      "id": "gemini-4-carbon",
+      "name": "Gemini 4 Carbon",
+      "api": "google-vertex",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision",
+        "audio"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 32768,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.1,
+        "cache_write": 0
+      }
+    },
+    {
+      "provider": "google-vertex",
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen",
+      "api": "google-vertex",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "json",
+        "vision",
+        "audio"
+      ],
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "cost": {
+        "input": 1.5,
+        "output": 7.5,
+        "cache_read": 0.075,
+        "cache_write": 0
       }
     },
     {

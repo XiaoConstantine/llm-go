@@ -95,6 +95,13 @@ func TestBuiltinCatalogSnapshot(t *testing.T) {
 		vertex.Compatibility.Gemini.ThinkingLevelsOnly != llm.CompatibilityEnabled {
 		t.Fatalf("Vertex Gemini 3.8 Flash model = %#v", vertex)
 	}
+	for _, id := range []string{"gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"} {
+		vertex, ok := catalog.Model(ProviderGoogleVertex, id)
+		if !ok || vertex.API != llm.APIGoogleVertex || !vertex.Reasoning ||
+			!hasCapability(vertex.Capabilities, llm.CapabilityTools) || vertex.ContextWindow != 1_048_576 {
+			t.Fatalf("Vertex %s model = %#v, ok = %v", id, vertex, ok)
+		}
+	}
 
 	bedrock, ok := catalog.Model(ProviderAmazonBedrock, "anthropic.claude-opus-4-6-v1")
 	if !ok || bedrock.API != llm.APIBedrockConverseStream || !bedrock.Reasoning ||
