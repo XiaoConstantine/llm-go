@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "revision": 27,
+  "revision": 28,
   "models": [
     {
       "provider": "amazon-bedrock",
@@ -5456,6 +5456,43 @@
     },
     {
       "provider": "openai",
+      "id": "gpt-6-astra-healthcare",
+      "source": "models.dev",
+      "name": "GPT-6 Astra Healthcare",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cache_read": 1,
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 20,
+            "output": 75,
+            "cache_read": 2,
+            "cache_write": 0
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
       "id": "gpt-6-luna",
       "name": "GPT-6 Luna",
       "api": "openai-responses",
@@ -5567,6 +5604,43 @@
     },
     {
       "provider": "openai",
+      "id": "gpt-6.1-sol-healthcare",
+      "source": "models.dev",
+      "name": "GPT-6.1 Sol Healthcare",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.1,
+        "cache_write": 0,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.2,
+            "cache_write": 0
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
       "id": "gpt-6.1-terra",
       "source": "models.dev",
       "name": "GPT-6.1 Terra",
@@ -5641,9 +5715,83 @@
     },
     {
       "provider": "openai",
+      "id": "gpt-6.2-astra-healthcare",
+      "source": "models.dev",
+      "name": "GPT-6.2 Astra Healthcare",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 8,
+        "output": 40,
+        "cache_read": 0.4,
+        "cache_write": 10,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 16,
+            "output": 60,
+            "cache_read": 0.8,
+            "cache_write": 20
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
       "id": "gpt-6.2-sol",
       "source": "models.dev",
       "name": "GPT-6.2 Sol",
+      "api": "openai-responses",
+      "reasoning": true,
+      "capabilities": [
+        "streaming",
+        "tools",
+        "vision"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cache_read": 0.1,
+        "cache_write": 2.5,
+        "tiers": [
+          {
+            "input_tokens_above": 272000,
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.2,
+            "cache_write": 5
+          }
+        ]
+      },
+      "compatibility": {
+        "openai_responses": {
+          "strict_tools": true,
+          "additional_tools": true,
+          "tool_search": true
+        }
+      }
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6.2-sol-healthcare",
+      "source": "models.dev",
+      "name": "GPT-6.2 Sol Healthcare",
       "api": "openai-responses",
       "reasoning": true,
       "capabilities": [
